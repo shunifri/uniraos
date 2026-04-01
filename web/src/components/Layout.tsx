@@ -24,6 +24,7 @@ import {
   LogoutOutlined,
   UserOutlined,
   GlobalOutlined,
+  ReconciliationOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -84,6 +85,15 @@ const Layout: React.FC = () => {
       icon: <SettingOutlined />,
       label: t('nav_config'),
     },
+    ...(isAdmin || isDeveloper
+      ? [
+          {
+            key: 'evolution',
+            icon: <ReconciliationOutlined />,
+            label: t('nav_evolution') || 'Evolution',
+          },
+        ]
+      : []),
     ...(isAdmin
       ? [
           {
