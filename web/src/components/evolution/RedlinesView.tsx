@@ -88,7 +88,7 @@ export default function RedlinesView() {
       onOk: async () => {
         try {
           setActionLoading(true);
-          await api.delete(`/api/evolution/redlines/${redline.id}`);
+          await api.del(`/api/evolution/redlines/${redline.id}`);
           message.success(`Redline "${redline.name}" deleted`);
           loadRedlines();
         } catch (e: any) {

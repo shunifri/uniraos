@@ -25,6 +25,7 @@ import {
   UserOutlined,
   GlobalOutlined,
   ReconciliationOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -91,6 +92,11 @@ const Layout: React.FC = () => {
             key: 'evolution',
             icon: <ReconciliationOutlined />,
             label: t('nav_evolution') || 'Evolution',
+          },
+          {
+            key: 'federation',
+            icon: <TeamOutlined />,
+            label: t('nav_federation') || 'Federation',
           },
         ]
       : []),
