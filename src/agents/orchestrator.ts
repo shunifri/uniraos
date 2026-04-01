@@ -415,6 +415,9 @@ export class Orchestrator {
         case "simple":
           result = await this.runSimple(enrichedInput);
           break;
+        case "team":
+          result = await this.runTeam(enrichedInput, decision);
+          break;
         default:
           result = await this.runReact(enrichedInput);
       }
@@ -474,9 +477,14 @@ export class Orchestrator {
       },
     };
 
-    const stream = decision.level === "simple"
-      ? this.runSimpleStream(enrichedInput)
-      : this.runReactStream(enrichedInput);
+    let stream: AsyncGenerator<AgentStreamEvent>;
+    if (decision.level === "simple") {
+      stream = this.runSimpleStream(enrichedInput);
+    } else if (decision.level === "team") {
+      stream = this.runTeamStream(enrichedInput, decision);
+    } else {
+      stream = this.runReactStream(enrichedInput);
+    }
 
     for await (const event of stream) {
       if (event.event === "agent_done") {
@@ -517,19 +525,45 @@ ${skillNames || "（无）"}
 ### 级别
 - simple: 简单问答、闲聊、翻译、知识查询 — 不需要工具调用
 - react: 需要使用工具的单人任务 — 搜索、计算、数据库查询、记忆、图表生成等（绝大多数任务应使用此级别）
+- team: 多智能体协作任务 — 需要多个专家分工合作、并行分析、或复杂的协调流程
+
+### Team 协议选择指南
+当选择 team 级别时，根据任务特点选择协议：
+- HIERARCHICAL: 任务有明确的层次结构或管理关系（如：代码审查需要架构师→前端专家→后端专家）
+- SEQUENTIAL: 任务需要按顺序执行，后续任务依赖前面的结果（如：数据处理流水线：清洗→验证→分析→生成报告）
+- SWARM: 多个独立子任务可并行执行，最后汇聚结果（如：从多个来源搜索信息然后合成）
+- CONTRACT_NET: 任务分配时需要多个智能体竞争投标（如：多个专家评估同一个方案）
+- A2A: 点对点移交，智能体间需要协议协商（如：前端设计→后端实现→测试）
+- BLACKBOARD: 需要共享工作区协调多个智能体的异步工作（如：复杂系统设计，多个专家在黑板上更新进度）
+- MARKET_BASED: 基于资源和能力的经济博弈（如：任务分配时根据成本和能力分配资源）
 
 ## 输出格式（仅 JSON，无 markdown）
 {
-  "level": "simple|react",
+  "level": "simple|react|team",
   "reasoning": "一句话说明选择原因",
-  "topicChange": false
+  "topicChange": false,
+  "protocol": "HIERARCHICAL|SEQUENTIAL|SWARM|CONTRACT_NET|A2A|BLACKBOARD|MARKET_BASED（仅当 level=team 时必需）",
+  "team": {
+    "members": [{"role":"角色名","expertise":["领域1"],"personality":"人格描述"}],
+    "manager": {"role":"经理角色","expertise":["领域"],"personality":"人格描述"},
+    "pipelineSteps": ["步骤1","步骤2"]
+  }
 }
+
+## Team 触发条件
+选择 team 级别仅当：
+- 任务包含多个独立子目标（如：分析文档同时生成摘要和数据可视化）
+- 明确涉及多角色协作（如：评审代码需要多个专家视角）
+- 需要并行分析或竞争选择（如：多个方案需要同时评估）
+- LLM 识别需要特定协议的情况
+
+否则优先选 react（更简洁高效）。
 
 ## 重要规则
 - 如果对话上下文中已经在进行某项任务（如数据库查询、数据分析），用户的后续追问（如"继续"、"详细分析"、"再查一下"等）**必须**选 react，延续已有任务
-- 需要工具的任务（查数据库、搜索、生成图表、文件操作等）一律选 react
+- 需要工具的单步任务（查数据库、搜索、生成图表、文件操作等）一律选 react
 - 只有纯粹的闲聊、问答、翻译才选 simple
-- 不确定时选 react（更安全）
+- Team 应谨慎使用，仅当任务确实需要多智能体协作时才使用
 
 ## 话题变化检测（topicChange）
 - 如果用户的新消息与最近对话上下文的话题**明显不同**，设置 topicChange=true
