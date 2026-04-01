@@ -17,6 +17,7 @@ import { log } from "../utils/logger.js";
 import { MetricsCollector } from "./metrics.js";
 import { CircuitBreakerManager } from "./circuit-breaker.js";
 import type { EmergenceDetector } from "./emergence-detector.js";
+import type { SkillLifecycleManager } from "./skill-lifecycle.js";
 
 export interface EngineConfig {
   maxDepth: number;
@@ -42,6 +43,7 @@ export class ExecutionEngine {
   readonly metrics: MetricsCollector;
   readonly circuitBreakers: CircuitBreakerManager;
   private emergenceDetector: EmergenceDetector | null = null;
+  private lifecycleManager: SkillLifecycleManager | null = null;
 
   /** 执行历史（供 UI 查询） */
   private history: ExecutionResult[] = [];
@@ -61,6 +63,11 @@ export class ExecutionEngine {
   /** 设置涌现检测器 */
   setEmergenceDetector(detector: EmergenceDetector): void {
     this.emergenceDetector = detector;
+  }
+
+  /** 设置生命周期管理器 */
+  setLifecycleManager(manager: SkillLifecycleManager): void {
+    this.lifecycleManager = manager;
   }
 
   /** 执行一个 Skill（顶层入口） */
@@ -222,6 +229,9 @@ export class ExecutionEngine {
         duration,
       });
 
+      // 生命周期管理：记录使用
+      this.lifecycleManager?.recordUsage(skillName);
+
       log("info", "skill.executed", {
         traceId: context.traceId,
         skill: skillName,
@@ -258,6 +268,9 @@ export class ExecutionEngine {
         success: false,
         duration,
       });
+
+      // 生命周期管理：记录使用（即使失败）
+      this.lifecycleManager?.recordUsage(skillName);
 
       this.wal.fail(walId, traceEntry.error);
 

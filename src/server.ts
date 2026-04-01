@@ -84,12 +84,16 @@ const configManager = new ConfigManager();
 const sessionManager = new UserSessionManager(join(process.cwd(), ".raos", "ltm"), configManager.getMemory());
 const taskManager = new AsyncTaskManager();
 let engine = new ExecutionEngine(registry, wal);
-const evolutionController = new EvolutionController();
+const evolutionController = new EvolutionController(
+  undefined,
+  join(process.cwd(), ".raos", "evolution.db")
+);
 const emergenceDetector = new EmergenceDetector();
 engine.setEmergenceDetector(emergenceDetector);
 const promptManager = new PromptManager();
 const modelRouter = new ModelRouter();
 const lifecycleManager = new SkillLifecycleManager(registry, engine.metrics);
+engine.setLifecycleManager(lifecycleManager);
 const marketplace = new SkillMarketplace(registry);
 const pluginLoader = new PluginLoader(registry, {
   skillsDir: join(process.cwd(), "skills"),
@@ -3967,4 +3971,17 @@ app.listen(PORT, () => {
   const evoConfig = configManager.getEvolution();
   evolutionEngine.start();
   console.log(`   Evolution engine: started (auto=${evoConfig.autoExecute})\n`);
+});
+
+// 优雅关闭：处理 SIGTERM 和 SIGINT
+process.on("SIGTERM", () => {
+  console.log("\n✓ SIGTERM received, closing resources...");
+  evolutionController.close();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("\n✓ SIGINT received, closing resources...");
+  evolutionController.close();
+  process.exit(0);
 });
