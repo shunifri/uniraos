@@ -1,0 +1,3970 @@
+import express from "express";
+import { fileURLToPath } from "url";
+import { dirname, join, resolve } from "path";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream } from "fs";
+import { SkillRegistry } from "./registry/index.js";
+import { ExecutionEngine, AsyncTaskManager } from "./engine/index.js";
+import { WALManager } from "./wal/index.js";
+import { FileWALStore } from "./wal/file-wal-store.js";
+import { Autonomy, defineSkill } from "./types/index.js";
+import { ConfigManager } from "./config/config-manager.js";
+import { OpenAIProvider } from "./llm/openai-provider.js";
+import { ClaudeProvider } from "./llm/claude-provider.js";
+import { AgentLoop } from "./llm/agent-loop.js";
+import { skillsToTools } from "./llm/tool-bridge.js";
+import { createMemorySkills } from "./memory/memory-skills.js";
+import { createMultimodalSkills } from "./llm/multimodal-skills.js";
+import { createDataSkills } from "./skills/data-skills.js";
+import { createDatabaseSkills } from "./skills/db-skills.js";
+import { createWebSkills } from "./skills/web-skills.js";
+import { createDocumentSkills } from "./skills/document-skills.js";
+import { createChartSkills } from "./skills/chart-skills.js";
+import { createProtocolSkills } from "./skills/protocol-skills.js";
+import { createKnowledgeSkills } from "./skills/knowledge-skills.js";
+import { createApiGenSkills } from "./skills/api-gen-skills.js";
+import { createMetaSkills } from "./skills/meta-skills.js";
+import { createPlanningSkill } from "./skills/planning-skill.js";
+import { SkillMarketplace } from "./skills/skill-marketplace.js";
+import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
+import { PluginLoader } from "./plugin/plugin-loader.js";
+import { UserSessionManager } from "./user/user-session.js";
+import { requestContext } from "./user/request-context.js";
+import { initDatabase, getDb } from "./db/database.js";
+import { extractPptxStyle } from "./services/pptx-style-extractor.js";
+import { authMiddleware, requireAuth, requirePermission, requireAdmin } from "./db/auth-middleware.js";
+import { createSession, destroySession, cleanExpiredSessions } from "./db/auth.js";
+import * as userRepo from "./db/user-repository.js";
+import * as deptRepo from "./db/department-repository.js";
+import * as resRepo from "./db/resource-repository.js";
+import type { LLMProvider, LLMProviderConfig, MultimodalProvider } from "./llm/types.js";
+import { OpenAIEmbeddingProvider } from "./memory/embedding-provider.js";
+import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig, getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "./skills/knowledge-skills.js";
+import { parseDocument, type VisionModelConfig } from "./services/doc-parser.js";
+import { Orchestrator } from "./agents/index.js";
+import type { AgentStreamEvent } from "./agents/index.js";
+import { EvolutionController, SkillLifecycleManager, EmergenceDetector } from "./engine/index.js";
+import { createEvolutionSkills } from "./skills/evolution-skills.js";
+import { PromptManager } from "./llm/prompt-manager.js";
+import { ModelRouter } from "./llm/model-router.js";
+import {
+  HttpFederationTransport,
+  SkillMigrationManager,
+  FederationManager,
+  EvolutionEngine,
+  createFederationSkills,
+} from "./federation/index.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const app = express();
+app.use(express.json({ limit: "50mb" }));
+
+// 初始化数据库
+initDatabase();
+userRepo.ensureAdminExists();
+
+// 定时清理过期 session（每小时）
+setInterval(() => cleanExpiredSessions(), 60 * 60 * 1000);
+
+// 认证中间件：解析 Bearer token，挂载 req.user
+app.use(authMiddleware);
+
+// userId 上下文中间件：已登录用户用 user.id，未登录降级为 "default"
+app.use((req, _res, next) => {
+  const userId = req.user?.id ?? "default";
+  requestContext.run({ userId }, () => next());
+});
+
+// 核心实例
+const registry = new SkillRegistry();
+const walStore = new FileWALStore(join(process.cwd(), ".raos", "wal.jsonl"));
+const wal = new WALManager(walStore);
+const configManager = new ConfigManager();
+const sessionManager = new UserSessionManager(join(process.cwd(), ".raos", "ltm"), configManager.getMemory());
+const taskManager = new AsyncTaskManager();
+let engine = new ExecutionEngine(registry, wal);
+const evolutionController = new EvolutionController();
+const emergenceDetector = new EmergenceDetector();
+engine.setEmergenceDetector(emergenceDetector);
+const promptManager = new PromptManager();
+const modelRouter = new ModelRouter();
+const lifecycleManager = new SkillLifecycleManager(registry, engine.metrics);
+const marketplace = new SkillMarketplace(registry);
+const pluginLoader = new PluginLoader(registry, {
+  skillsDir: join(process.cwd(), "skills"),
+  hotReload: true,
+  continueOnError: true,
+});
+
+// 联邦/迁移/进化 组件 — 从 ConfigManager 读取配置
+const fedCfg = configManager.getFederation();
+const evoCfg = configManager.getEvolution();
+const instanceId = fedCfg.instanceId || `raos_${process.pid}`;
+const federationTransport = new HttpFederationTransport({
+  apiKey: fedCfg.federationKey || undefined,
+});
+const migrationManager = new SkillMigrationManager(registry, engine.metrics, federationTransport, instanceId);
+const federationManager = new FederationManager({
+  registry,
+  metrics: engine.metrics,
+  transport: federationTransport,
+  migration: migrationManager,
+  instanceId,
+});
+const evolutionEngine = new EvolutionEngine({
+  registry,
+  metrics: engine.metrics,
+  evolutionController,
+  lifecycleManager,
+  config: {
+    autoExecute: evoCfg.autoExecute,
+    cycleIntervalMs: evoCfg.cycleIntervalMs,
+    maxActionsPerCycle: evoCfg.maxActionsPerCycle,
+    skipApprovalRequired: evoCfg.skipApprovalRequired,
+  },
+});
+// 连接联邦推荐到进化引擎
+evolutionEngine.getFederatedRecommendations = () => federationManager.getRecommendations();
+let currentProvider: LLMProvider | null = null;
+let currentMultimodalProvider: MultimodalProvider | null = null;
+
+// 启动 session 清理（每小时清理 24 小时不活跃的 session）
+sessionManager.startCleanup();
+
+/** 根据配置创建 LLM Provider */
+function createProvider(config: LLMProviderConfig): LLMProvider {
+  if (config.type === "claude") {
+    return new ClaudeProvider(config);
+  }
+  // openai 和 openai-compatible 都用 OpenAIProvider
+  return new OpenAIProvider(config);
+}
+
+/** 获取视觉模型配置（用于文档 OCR） */
+function getVisionConfig(): VisionModelConfig | null {
+  // 优先使用 vision 模型卡片
+  const visionCard = configManager.getResolvedModelConfig("vision");
+  if (visionCard.apiKey && visionCard.model) {
+    return {
+      apiKey: visionCard.apiKey,
+      baseUrl: (visionCard.baseUrl || "https://api.openai.com/v1").replace(/\/$/, ""),
+      model: visionCard.model,
+    };
+  }
+  // 回退到多模态配置
+  const mm = configManager.getMultimodalResolved();
+  if (mm?.apiKey && mm?.visionModel) {
+    return {
+      apiKey: mm.apiKey,
+      baseUrl: (mm.baseUrl || "https://api.openai.com/v1").replace(/\/$/, ""),
+      model: mm.visionModel,
+    };
+  }
+  return null;
+}
+
+/** 重建多模态 Provider */
+function rebuildMultimodalProvider(): void {
+  const mmConfig = configManager.getMultimodalResolved();
+  if (mmConfig) {
+    currentMultimodalProvider = new OpenAIMultimodalProvider(mmConfig);
+    console.log(`   Multimodal provider configured (image: ${mmConfig.imageModel ?? "dall-e-3"}, vision: ${mmConfig.visionModel ?? "gpt-4o"})`);
+  } else {
+    currentMultimodalProvider = null;
+  }
+}
+
+/** 获取 Agent 配置 */
+function getAgentConfig() {
+  const agentConfig = configManager.get().agent;
+  return {
+    maxIterations: agentConfig.maxIterations,
+    systemPrompt: agentConfig.systemPrompt || undefined,
+    includeTrace: agentConfig.includeTrace,
+  };
+}
+
+/** 获取或创建指定用户的 AgentLoop */
+function getAgentLoop(userId: string): AgentLoop | null {
+  if (!currentProvider) return null;
+  const session = sessionManager.getOrCreate(userId);
+  if (!session.agentLoop) {
+    session.agentLoop = new AgentLoop(registry, engine, currentProvider, getAgentConfig());
+  }
+  return session.agentLoop;
+}
+
+/** 重建所有活跃 session 的 AgentLoop（配置变更时调用） */
+function rebuildAllAgentLoops(): void {
+  if (!currentProvider) return;
+  sessionManager.rebuildAllAgentLoops(registry, engine, currentProvider, getAgentConfig());
+}
+
+/** 获取或创建 Orchestrator（智能策略选择器） */
+function getOrchestrator(): Orchestrator | null {
+  if (!currentProvider) return null;
+  // 共享单实例，因为 Orchestrator 本身无状态（状态在子 Agent 中）
+  if (!(globalThis as any).__orchestrator) {
+    const agentConfig = configManager.get().agent;
+    (globalThis as any).__orchestrator = new Orchestrator(
+      { registry, engine, provider: currentProvider },
+      {
+        autoStrategy: true,
+        defaultSystemPrompt: agentConfig.systemPrompt || undefined,
+        maxIterations: agentConfig.maxIterations,
+      },
+    );
+  }
+  return (globalThis as any).__orchestrator as Orchestrator;
+}
+
+/** 重建 Orchestrator（LLM 配置变更时） */
+function rebuildOrchestrator(): void {
+  (globalThis as any).__orchestrator = null;
+}
+
+// ===== 注册示例 Skills =====
+function loadExampleSkills() {
+  registry.register(
+    defineSkill({
+      name: "log_before",
+      visible: false,
+      autonomy: Autonomy.AUTO_PRE,
+      handler: async (params) => {
+        console.log(`[AUTO_PRE] About to execute: ${params.target}`);
+        return { success: true, data: { logged: true } };
+      },
+      description: "自动在执行前打印日志",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "log_after",
+      visible: false,
+      autonomy: Autonomy.AUTO_POST,
+      handler: async (params) => {
+        console.log(`[AUTO_POST] Finished: ${params.target}`);
+        return { success: true, data: { logged: true } };
+      },
+      description: "自动在执行后打印日志",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "checkpoint",
+      visible: false,
+      autonomy: Autonomy.GUARDIAN,
+      handler: async (params) => {
+        console.log(`[GUARDIAN] Checkpoint saved for: ${params.target}`);
+        return { success: true, data: { checkpoint: Date.now() } };
+      },
+      description: "守护级检查点保存",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "greet",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      dependencies: ["log_before", "log_after"],
+      handler: async (params) => {
+        const name = (params.name as string) || "World";
+        return { success: true, data: { message: `Hello, ${name}!` } };
+      },
+      description: "打招呼 Skill，接受 name 参数",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "add",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      handler: async (params) => {
+        const a = Number(params.a ?? 0);
+        const b = Number(params.b ?? 0);
+        return { success: true, data: { result: a + b } };
+      },
+      description: "加法计算，接受 a 和 b 参数",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "slow_task",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      timeout: 5000,
+      retry: { maxRetries: 2, backoffMs: 500, backoffMultiplier: 2 },
+      handler: async (params) => {
+        const delay = Number(params.delay ?? 1000);
+        await new Promise((r) => setTimeout(r, delay));
+        return { success: true, data: { waited: delay } };
+      },
+      description: "模拟慢任务，接受 delay(ms) 参数",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "random_fail",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      retry: { maxRetries: 3, backoffMs: 200, backoffMultiplier: 2 },
+      handler: async () => {
+        if (Math.random() < 0.6) {
+          throw new Error("Random failure!");
+        }
+        return { success: true, data: { lucky: true } };
+      },
+      description: "60% 概率失败的 Skill，用于测试重试",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "get_time",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      handler: async () => {
+        return {
+          success: true,
+          data: {
+            iso: new Date().toISOString(),
+            timestamp: Date.now(),
+            readable: new Date().toLocaleString("zh-CN"),
+          },
+        };
+      },
+      description: "获取当前时间",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "calculate",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      handler: async (params) => {
+        const { expression } = params as { expression: string };
+        if (!expression) {
+          return { success: false, error: new Error("Missing expression") };
+        }
+        // 简单安全计算（只允许数字和基本运算符）
+        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
+          return { success: false, error: new Error("Invalid expression") };
+        }
+        const result = new Function(`return (${expression})`)();
+        return { success: true, data: { expression, result } };
+      },
+      description: "数学表达式计算，接受 expression 参数，如 '2 + 3 * 4'",
+    }),
+  );
+
+  registry.register(
+    defineSkill({
+      name: "list_skills",
+      visible: true,
+      autonomy: Autonomy.MANUAL,
+      handler: async () => {
+        const skills = registry.listVisible().map((s) => ({
+          name: s.name,
+          description: s.description,
+        }));
+        return { success: true, data: { skills } };
+      },
+      description: "列出所有可用的 Skill 及其描述",
+    }),
+  );
+}
+
+loadExampleSkills();
+
+// 注册记忆 Skills（handler 通过 AsyncLocalStorage 获取当前用户的 STM/LTM）
+// 传入 engine 引用实现记忆 Skill 的递归自指性
+for (const skill of createMemorySkills(sessionManager, engine, () => currentProvider)) {
+  registry.register(skill);
+}
+console.log(`   Memory skills registered (STM + LTM + meta)`);
+
+// 注册进化系统 Skills
+for (const skill of createEvolutionSkills(evolutionController, emergenceDetector)) {
+  registry.register(skill);
+}
+console.log(`   Evolution skills registered (genealogy + emergence + red-lines)`);
+
+// 注册多模态 + 异步任务 Skills
+for (const skill of createMultimodalSkills(() => currentMultimodalProvider, taskManager)) {
+  registry.register(skill);
+}
+console.log(`   Multimodal + async task skills registered`);
+
+// 注册数据操作 Skills (file/http/shell)
+createDataSkills(registry);
+
+// 注册数据库 Skills (SQLite + 可选 MySQL/PostgreSQL/Redis/MSSQL/Oracle)
+await createDatabaseSkills(registry);
+
+// 注册网络检索 Skills (web_fetch/web_search/web_extract_links/web_screenshot)
+createWebSkills(registry);
+
+// 注册文档解析 Skills (doc_read/doc_read_csv + PDF/Excel/Word)
+createDocumentSkills(registry);
+
+// 注册数据可视化 Skills (chart_recommend/chart_generate/chart_multi)
+createChartSkills(registry);
+
+// 注册通信协议 Skills (WebSocket + 消息总线)
+createProtocolSkills(registry);
+
+// 注册知识库 Skills (kb_ingest/kb_search/kb_list/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)
+createKnowledgeSkills(registry);
+
+// 注册 API 文档自动生成 Skills (api_import/api_auth_config/api_list/api_delete/api_test)
+createApiGenSkills(registry);
+
+// 注册联邦/迁移/进化 Skills (skill_migrate_*/federation_*/evolution_*)
+createFederationSkills(registry, migrationManager, federationManager, evolutionEngine);
+
+// 注册元 Skills (compose/template/info)
+createMetaSkills(registry, engine, () => currentProvider);
+
+// 注册 Prompt 管理 Skills
+registry.register(
+  defineSkill({
+    name: "prompt_register",
+    description: "注册 Prompt 模板。参数: name(string), template(string), description?(string), version?(string)",
+    handler: async (params) => {
+      try {
+        const pt = promptManager.register(
+          params.name as string,
+          params.template as string,
+          { description: params.description as string, version: params.version as string },
+        );
+        return { success: true, data: pt };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+      }
+    },
+  }),
+);
+
+registry.register(
+  defineSkill({
+    name: "prompt_render",
+    description: "渲染 Prompt 模板。参数: name(string), variables(object)",
+    handler: async (params) => {
+      try {
+        const result = promptManager.render(
+          params.name as string,
+          params.variables as Record<string, string>,
+        );
+        return { success: true, data: { rendered: result } };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+      }
+    },
+  }),
+);
+
+registry.register(
+  defineSkill({
+    name: "prompt_list",
+    description: "列出所有 Prompt 模板。",
+    handler: async () => {
+      return { success: true, data: { templates: promptManager.list() } };
+    },
+  }),
+);
+
+console.log("   Prompt management skills registered");
+
+// 注册多步规划 Skill
+createPlanningSkill(registry, engine, () => currentProvider);
+
+// 加载插件目录中的 Skill
+pluginLoader.on((event) => {
+  if (event.type === "loaded") console.log(`   Plugin loaded: ${event.plugin.name}@${event.plugin.version}`);
+  if (event.type === "reloaded") console.log(`   Plugin reloaded: ${event.plugin.name}`);
+  if (event.type === "error") console.error(`   Plugin error [${event.name}]: ${event.error.message}`);
+});
+pluginLoader.loadAll().then(({ loaded, errors }) => {
+  if (loaded.length > 0) console.log(`   Plugins loaded: ${loaded.join(", ")}`);
+  if (errors.length > 0) console.log(`   Plugin errors: ${errors.map((e) => `${e.name}(${e.error})`).join(", ")}`);
+
+  // 插件加载后同步 Skill 资源
+  syncSkillsToResources();
+});
+
+// 从持久化配置恢复 LLM Provider
+if (configManager.isLLMConfigured()) {
+  const llmConfig = configManager.getLLM()!;
+  currentProvider = createProvider(llmConfig);
+  console.log(`   LLM restored: ${llmConfig.type} / ${llmConfig.model}`);
+}
+
+// 恢复多模态 Provider
+if (configManager.isMultimodalConfigured()) {
+  rebuildMultimodalProvider();
+}
+
+// 恢复 Embedding Provider（从 modelCards 配置）
+{
+  const embeddingCard = configManager.getResolvedModelConfig("embedding");
+  if (embeddingCard.apiKey && embeddingCard.model) {
+    const embProvider = new OpenAIEmbeddingProvider({
+      apiKey: embeddingCard.apiKey,
+      baseUrl: embeddingCard.baseUrl || undefined,
+      model: embeddingCard.model,
+      mode: embeddingCard.embeddingMode || "openai",
+    });
+    setGlobalKBEmbeddingProvider(embProvider);
+    sessionManager.setEmbeddingProvider(embProvider);
+    console.log(`   Embedding provider restored: ${embeddingCard.model} (mode: ${embeddingCard.embeddingMode || "openai"})`);
+  }
+}
+
+// 恢复视觉模型配置（用于文档 OCR）
+{
+  const vc = getVisionConfig();
+  if (vc) {
+    setGlobalKBVisionConfig(vc);
+    console.log(`   Vision config restored: ${vc.model} (for doc OCR)`);
+  }
+}
+
+// 同步 Skill 到资源表
+function syncSkillsToResources() {
+  const skills = registry.list().map((s) => ({
+    name: s.name,
+    description: s.description,
+  }));
+  const result = resRepo.syncSkillResources(skills);
+  console.log(`   Skills synced to resources: ${result.added} added, ${result.total} total`);
+}
+syncSkillsToResources();
+
+// ===== Auth Routes（公开） =====
+
+// 登录
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body as { username: string; password: string };
+  if (!username || !password) {
+    res.status(400).json({ success: false, error: "username and password are required" });
+    return;
+  }
+
+  const user = userRepo.authenticate(username, password);
+  if (!user) {
+    res.status(401).json({ success: false, error: "Invalid credentials" });
+    return;
+  }
+
+  const session = createSession(user.id);
+  const details = userRepo.getUserWithDetails(user.id);
+
+  res.json({
+    success: true,
+    token: session.token,
+    expiresAt: session.expiresAt,
+    user: details,
+  });
+});
+
+// 登出
+app.post("/api/auth/logout", requireAuth, (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    destroySession(authHeader.slice(7));
+  }
+  res.json({ success: true });
+});
+
+// 获取当前用户信息
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  const details = userRepo.getUserWithDetails(req.user!.id);
+  if (!details) {
+    res.status(404).json({ success: false, error: "User not found" });
+    return;
+  }
+  res.json({ success: true, user: details });
+});
+
+// ===== 用户管理 API（需要 admin） =====
+
+app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
+  // If ?id= query param is present, return user details
+  const userId = req.query.id as string | undefined;
+  if (userId) {
+    const details = userRepo.getUserWithDetails(userId);
+    if (!details) {
+      res.status(404).json({ success: false, error: "User not found" });
+      return;
+    }
+    res.json({ success: true, user: details });
+    return;
+  }
+  const users = userRepo.listUsers();
+  res.json({ success: true, users });
+});
+
+app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
+  const { username, password, displayName, departmentId } = req.body;
+  if (!username || !password) {
+    res.status(400).json({ success: false, error: "username and password are required" });
+    return;
+  }
+  try {
+    const user = userRepo.createUser({ username, password, displayName, departmentId });
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const { displayName, avatar, status, departmentId } = req.body;
+  const id = req.params.id as string;
+  const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId });
+  if (!user) {
+    res.status(404).json({ success: false, error: "User not found" });
+    return;
+  }
+  res.json({ success: true, user });
+});
+
+app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  if (id === req.user!.id) {
+    res.status(400).json({ success: false, error: "Cannot delete yourself" });
+    return;
+  }
+  const deleted = userRepo.deleteUser(id);
+  res.json({ success: true, deleted });
+});
+
+// 用户角色分配
+app.post("/api/users/:id/roles", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
+  if (!roleId || !action) {
+    res.status(400).json({ success: false, error: "roleId and action (assign/remove) are required" });
+    return;
+  }
+  if (action === "assign") {
+    userRepo.assignRole(id, roleId);
+  } else {
+    userRepo.removeRole(id, roleId);
+  }
+  const roles = userRepo.getUserRoles(id);
+  res.json({ success: true, roles });
+});
+
+// 用户密码修改
+app.post("/api/users/:id/password", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { password } = req.body as { password: string };
+  if (!password) {
+    res.status(400).json({ success: false, error: "password is required" });
+    return;
+  }
+  const changed = userRepo.changePassword(id, password);
+  res.json({ success: true, changed });
+});
+
+// ===== 部门管理 API（需要 admin） =====
+
+app.get("/api/departments", requireAuth, requireAdmin, (_req, res) => {
+  const departments = deptRepo.getDepartmentTree();
+  res.json({ success: true, departments });
+});
+
+app.post("/api/departments", requireAuth, requireAdmin, (req, res) => {
+  const { name, parentId, description } = req.body;
+  if (!name) {
+    res.status(400).json({ success: false, error: "name is required" });
+    return;
+  }
+  try {
+    const dept = deptRepo.createDepartment({ name, parentId, description });
+    res.json({ success: true, department: dept });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.put("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { name, description } = req.body;
+  const dept = deptRepo.updateDepartment(id, { name, description });
+  if (!dept) {
+    res.status(404).json({ success: false, error: "Department not found" });
+    return;
+  }
+  res.json({ success: true, department: dept });
+});
+
+app.delete("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  try {
+    deptRepo.deleteDepartment(id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 部门资源分配
+app.post("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { resourceIds } = req.body as { resourceIds: string[] };
+  if (!resourceIds || !Array.isArray(resourceIds)) {
+    res.status(400).json({ success: false, error: "resourceIds array is required" });
+    return;
+  }
+  deptRepo.assignResources(id, resourceIds);
+  const resources = deptRepo.getDepartmentResources(id);
+  res.json({ success: true, resources });
+});
+
+app.delete("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { resourceIds } = req.body as { resourceIds: string[] };
+  if (!resourceIds || !Array.isArray(resourceIds)) {
+    res.status(400).json({ success: false, error: "resourceIds array is required" });
+    return;
+  }
+  deptRepo.removeResources(id, resourceIds);
+  const resources = deptRepo.getDepartmentResources(id);
+  res.json({ success: true, resources });
+});
+
+app.get("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const effective = req.query.effective === "true";
+  const resources = effective
+    ? deptRepo.getDepartmentEffectiveResources(id)
+    : deptRepo.getDepartmentResources(id);
+  res.json({ success: true, resources });
+});
+
+// ===== 资源管理 API（需要 admin） =====
+
+app.get("/api/resources", requireAuth, requireAdmin, (req, res) => {
+  const type = req.query.type as string | undefined;
+  const resources = resRepo.listResources(type);
+  res.json({ success: true, resources });
+});
+
+app.post("/api/resources/sync", requireAuth, requireAdmin, (_req, res) => {
+  syncSkillsToResources();
+  const resources = resRepo.listResources("skill");
+  res.json({ success: true, resources });
+});
+
+// ===== 角色权限管理 API（需要 admin） =====
+
+app.get("/api/roles", requireAuth, requireAdmin, (_req, res) => {
+  const roles = userRepo.listRoles();
+  res.json({ success: true, roles });
+});
+
+app.get("/api/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const permissions = resRepo.getPermissionsByRole(id);
+  res.json({ success: true, permissions });
+});
+
+app.post("/api/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
+  if (!permissionIds || !action) {
+    res.status(400).json({ success: false, error: "permissionIds and action (assign/remove) are required" });
+    return;
+  }
+  if (action === "assign") {
+    resRepo.assignPermissionsToRole(id, permissionIds);
+  } else {
+    resRepo.removePermissionsFromRole(id, permissionIds);
+  }
+  const permissions = resRepo.getPermissionsByRole(id);
+  res.json({ success: true, permissions });
+});
+
+app.get("/api/permissions", requireAuth, requireAdmin, (_req, res) => {
+  const permissions = resRepo.listPermissions();
+  res.json({ success: true, permissions });
+});
+
+app.post("/api/roles", requireAuth, requireAdmin, (req, res) => {
+  const { name, description } = req.body as { name: string; description?: string };
+  if (!name) {
+    res.status(400).json({ success: false, error: "name is required" });
+    return;
+  }
+  try {
+    const role = userRepo.createRole({ name, description });
+    res.json({ success: true, role });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.delete("/api/roles/:id", requireAuth, requireAdmin, (req, res) => {
+  const id = req.params.id as string;
+  try {
+    const ok = userRepo.deleteRole(id);
+    if (!ok) {
+      res.status(404).json({ success: false, error: "Role not found" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ===== Skill Routes（带权限守卫） =====
+
+// 列出所有 Skills
+app.get("/api/skills", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  const skills = registry.list().map((s) => ({
+    name: s.name,
+    visible: s.visible,
+    autonomy: s.autonomy,
+    dependencies: s.dependencies,
+    timeout: s.timeout,
+    retry: s.retry,
+    description: s.description,
+  }));
+  res.json(skills);
+});
+
+// 列出可见 Skills
+app.get("/api/skills/visible", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  const skills = registry.listVisible().map((s) => ({
+    name: s.name,
+    autonomy: s.autonomy,
+    dependencies: s.dependencies,
+    description: s.description,
+  }));
+  res.json(skills);
+});
+
+// 执行 Skill
+app.post("/api/execute", requireAuth, requirePermission("skills.execute"), async (req, res) => {
+  const { skillName, params } = req.body as {
+    skillName: string;
+    params?: Record<string, unknown>;
+  };
+
+  try {
+    const result = await engine.execute(skillName, params ?? {});
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+      errorType: err instanceof Error ? err.constructor.name : "UnknownError",
+    });
+  }
+});
+
+// 动态注册 Skill
+app.post("/api/skills", requireAuth, requirePermission("skills.manage"), (req, res) => {
+  const { name, visible, autonomy, dependencies, timeout, description } =
+    req.body;
+
+  try {
+    registry.register(
+      defineSkill({
+        name,
+        visible: visible ?? true,
+        autonomy: autonomy ?? Autonomy.MANUAL,
+        dependencies: dependencies ?? [],
+        timeout: timeout ?? 30000,
+        description: description ?? "",
+        handler: async (params) => {
+          return { success: true, data: { echo: params } };
+        },
+      }),
+    );
+    // 同步新 Skill 到资源表
+    syncSkillsToResources();
+    res.json({ success: true, message: `Skill "${name}" registered` });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 删除 Skill
+app.delete("/api/skills/:name", requireAuth, requirePermission("skills.manage"), (req, res) => {
+  try {
+    registry.unregister(req.params.name as string);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 获取拓扑排序
+app.get("/api/topology", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  try {
+    const order = registry.getTopologicalOrder();
+    res.json({ order });
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 获取 WAL 状态
+app.get("/api/wal", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  res.json({
+    all: wal.getAll(),
+    incomplete: wal.getIncomplete(),
+    recovery: wal.recover(),
+  });
+});
+
+// 执行历史
+app.get("/api/history", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  res.json(engine.getHistory());
+});
+
+// ===== LLM Configuration APIs（带权限守卫） =====
+
+// 获取当前 LLM 配置（隐藏 API Key）
+app.get("/api/config", requireAuth, requirePermission("config.read"), (_req, res) => {
+  const config = configManager.get();
+  res.json({
+    llm: config.llm
+      ? {
+          ...config.llm,
+          apiKey: config.llm.apiKey ? "***" + config.llm.apiKey.slice(-4) : "",
+        }
+      : null,
+    multimodal: {
+      ...config.multimodal,
+      apiKey: config.multimodal.apiKey ? "***" + config.multimodal.apiKey.slice(-4) : "",
+    },
+    engine: config.engine,
+    agent: config.agent,
+    isLLMConfigured: configManager.isLLMConfigured(),
+    isMultimodalConfigured: configManager.isMultimodalConfigured(),
+  });
+});
+
+// 设置 LLM 配置
+app.post("/api/config/llm", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { type, apiKey, baseUrl, model, maxTokens, temperature } = req.body;
+
+  if (!type || !apiKey || !model) {
+    res.status(400).json({
+      success: false,
+      error: "type, apiKey, and model are required",
+    });
+    return;
+  }
+
+  const llmConfig: LLMProviderConfig = {
+    type,
+    apiKey,
+    baseUrl,
+    model,
+    maxTokens: maxTokens ?? 4096,
+    temperature: temperature ?? 0.7,
+  };
+
+  configManager.setLLM(llmConfig);
+  currentProvider = createProvider(llmConfig);
+  rebuildAllAgentLoops();
+  rebuildOrchestrator();
+
+  res.json({
+    success: true,
+    message: `LLM configured: ${type} / ${model}`,
+  });
+});
+
+// 设置 Agent 配置
+app.post("/api/config/agent", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { maxIterations, systemPrompt, includeTrace } = req.body;
+  configManager.setAgent({ maxIterations, systemPrompt, includeTrace });
+  rebuildAllAgentLoops();
+  rebuildOrchestrator();
+  res.json({ success: true });
+});
+
+// 获取多模态配置
+app.get("/api/config/multimodal", requireAuth, requirePermission("config.read"), (_req, res) => {
+  const mm = configManager.getMultimodal();
+  res.json({
+    ...mm,
+    apiKey: mm.apiKey ? "***" + mm.apiKey.slice(-4) : "",
+    isConfigured: configManager.isMultimodalConfigured(),
+  });
+});
+
+// 获取所有模型卡片配置
+app.get("/api/config/model-cards", requireAuth, requirePermission("config.read"), (_req, res) => {
+  const cards = configManager.getModelCards();
+  // 遮掩 apiKey，但标记是否已设置
+  const masked: Record<string, any> = {};
+  for (const [type, card] of Object.entries(cards)) {
+    masked[type] = {
+      ...card,
+      hasApiKey: !!card.apiKey,
+      apiKey: card.apiKey ? "***" + card.apiKey.slice(-4) : "",
+    };
+  }
+  res.json({ success: true, cards: masked });
+});
+
+// 保存单个模型卡片配置
+app.post("/api/config/model-cards/:type", requireAuth, requirePermission("config.write"), (req, res) => {
+  const cardType = req.params.type as any;
+  const validTypes = ["llm", "vision", "imageGen", "tts", "stt", "embedding"];
+  if (!validTypes.includes(cardType)) {
+    res.status(400).json({ success: false, error: `Invalid model card type: ${cardType}` });
+    return;
+  }
+  const { type, apiKey, baseUrl, model, maxTokens, temperature, embeddingMode } = req.body;
+  // 如果前端传来遮掩的 apiKey（以 *** 开头）或空值，保留已有的 key
+  const existingCards = configManager.getModelCards();
+  const existingCard = (existingCards as Record<string, any>)[cardType] ?? {};
+  const resolvedApiKey = (!apiKey || apiKey.startsWith("***")) ? existingCard.apiKey : apiKey;
+  configManager.setModelCard(cardType, { type, apiKey: resolvedApiKey, baseUrl, model, maxTokens, temperature, embeddingMode });
+
+  // 如果保存的是 LLM 卡片且有完整信息，同步更新主 LLM 配置
+  if (cardType === "llm" && type && resolvedApiKey && model) {
+    configManager.setLLM({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });
+    currentProvider = createProvider({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });
+    rebuildAllAgentLoops();
+    rebuildOrchestrator();
+  }
+
+  // 非 LLM 模型变更时更新多模态
+  if (["vision", "imageGen", "tts", "stt"].includes(cardType)) {
+    configManager.setMultimodal({ ...configManager.getMultimodal(), enabled: true });
+    rebuildMultimodalProvider();
+  }
+
+  // Vision 卡片变更时，更新文档 OCR 的视觉配置
+  if (cardType === "vision") {
+    const vc = getVisionConfig();
+    setGlobalKBVisionConfig(vc);
+  }
+
+  // Embedding 卡片变更时，更新知识库的 embedding provider
+  if (cardType === "embedding") {
+    const resolved = configManager.getResolvedModelConfig("embedding");
+    if (resolved.apiKey && resolved.model) {
+      const provider = new OpenAIEmbeddingProvider({
+        apiKey: resolved.apiKey,
+        baseUrl: resolved.baseUrl || undefined,
+        model: resolved.model,
+        mode: resolved.embeddingMode || "openai",
+      });
+      setGlobalKBEmbeddingProvider(provider);
+      sessionManager.setEmbeddingProvider(provider);
+      console.log(`   Embedding provider configured: ${resolved.model} (mode: ${resolved.embeddingMode || "openai"})`);
+    }
+  }
+
+  res.json({ success: true, message: `Model card '${cardType}' saved` });
+});
+
+// 设置多模态配置
+app.post("/api/config/multimodal", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { enabled, apiKey, baseUrl, imageModel, visionModel, ttsModel, whisperModel } = req.body;
+
+  configManager.setMultimodal({
+    enabled: enabled ?? true,
+    apiKey: apiKey || undefined,
+    baseUrl: baseUrl || undefined,
+    imageModel: imageModel || undefined,
+    visionModel: visionModel || undefined,
+    ttsModel: ttsModel || undefined,
+    whisperModel: whisperModel || undefined,
+  });
+
+  rebuildMultimodalProvider();
+
+  res.json({
+    success: true,
+    message: "Multimodal config saved",
+    isConfigured: configManager.isMultimodalConfigured(),
+  });
+});
+
+// ===== Federation Config APIs =====
+
+app.get("/api/config/federation", requireAuth, requireAdmin, (_req, res) => {
+  const cfg = configManager.getFederation();
+  res.json({
+    success: true,
+    config: {
+      ...cfg,
+      federationKey: cfg.federationKey ? "***" + cfg.federationKey.slice(-4) : "",
+    },
+  });
+});
+
+app.post("/api/config/federation", requireAuth, requireAdmin, (req, res) => {
+  const { instanceId: iid, federationKey, heartbeatIntervalMs, syncIntervalMs } = req.body;
+  configManager.setFederation({
+    ...(iid !== undefined && { instanceId: iid }),
+    ...(federationKey !== undefined && { federationKey }),
+    ...(heartbeatIntervalMs !== undefined && { heartbeatIntervalMs }),
+    ...(syncIntervalMs !== undefined && { syncIntervalMs }),
+  });
+  // 运行时更新 transport 密钥
+  if (federationKey !== undefined) {
+    (federationTransport as any).apiKey = federationKey;
+  }
+  res.json({ success: true, message: "Federation config saved" });
+});
+
+app.post("/api/config/federation/peers", requireAuth, requireAdmin, (req, res) => {
+  const { endpoint, name } = req.body;
+  if (!endpoint) {
+    res.status(400).json({ success: false, error: "endpoint is required" });
+    return;
+  }
+  configManager.addFederationPeer({ endpoint, name });
+  // 运行时添加到 transport
+  federationTransport.addPeer({
+    instanceId: endpoint,
+    endpoint,
+    version: "2.0",
+    capabilities: [],
+    skillCount: 0,
+    lastHeartbeat: Date.now(),
+  });
+  res.json({ success: true, message: `Peer ${endpoint} added` });
+});
+
+app.delete("/api/config/federation/peers", requireAuth, requireAdmin, (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) {
+    res.status(400).json({ success: false, error: "endpoint is required" });
+    return;
+  }
+  configManager.removeFederationPeer(endpoint);
+  federationTransport.removePeer(endpoint);
+  res.json({ success: true, message: `Peer ${endpoint} removed` });
+});
+
+// ===== Evolution Engine Config APIs =====
+
+app.get("/api/config/evolution-engine", requireAuth, requireAdmin, (_req, res) => {
+  const cfg = configManager.getEvolution();
+  res.json({ success: true, config: cfg });
+});
+
+app.post("/api/config/evolution-engine", requireAuth, requireAdmin, (req, res) => {
+  const updates: Record<string, unknown> = {};
+  const fields = [
+    "autoExecute", "cycleIntervalMs", "maxActionsPerCycle", "skipApprovalRequired",
+    "successRateThreshold", "latencyThresholdMs", "inactiveDays", "minFederationConfidence",
+  ];
+  for (const f of fields) {
+    if (req.body[f] !== undefined) updates[f] = req.body[f];
+  }
+  configManager.setEvolution(updates as any);
+  // 运行时更新 evolutionEngine
+  evolutionEngine.updateConfig(updates as any);
+  res.json({ success: true, config: configManager.getEvolution() });
+});
+
+// 扩展 GET /api/config 以包含 federation/evolution
+app.get("/api/config/full", requireAuth, requireAdmin, (_req, res) => {
+  const config = configManager.get();
+  res.json({
+    success: true,
+    llm: config.llm ? { ...config.llm, apiKey: "***" + config.llm.apiKey.slice(-4) } : null,
+    multimodal: { ...config.multimodal, apiKey: config.multimodal.apiKey ? "***" + config.multimodal.apiKey.slice(-4) : "" },
+    engine: config.engine,
+    agent: config.agent,
+    federation: { ...config.federation, federationKey: config.federation.federationKey ? "***" : "" },
+    evolution: config.evolution,
+  });
+});
+
+// 测试 LLM 连接
+app.post("/api/llm/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  if (!currentProvider) {
+    res.status(400).json({ success: false, error: "LLM not configured" });
+    return;
+  }
+
+  try {
+    const response = await currentProvider.chat([
+      { role: "user", content: "Say hello in one sentence." },
+    ]);
+    res.json({
+      success: true,
+      response: response.content,
+      model: currentProvider.model,
+      usage: response.usage,
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// ===== Agent Chat API（带权限守卫） =====
+
+// Agent 对话（LLM + Tool Use）
+app.post("/api/agent/chat", requireAuth, requirePermission("chat"), async (req, res) => {
+  const userId = req.user!.id;
+  const { message, mode } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy" };
+  if (!message) {
+    res.status(400).json({ success: false, error: "message is required" });
+    return;
+  }
+
+  // mode=legacy 或未配置 orchestrator 时，使用原有 AgentLoop
+  if (mode === "legacy" || mode === "react") {
+    const loop = getAgentLoop(userId);
+    if (!loop) {
+      res.status(400).json({ success: false, error: "LLM not configured" });
+      return;
+    }
+    try {
+      const result = await loop.run(message);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
+  // mode=auto|simple|undefined → 使用 Orchestrator
+  const orchestrator = getOrchestrator();
+  if (!orchestrator) {
+    res.status(400).json({ success: false, error: "LLM not configured" });
+    return;
+  }
+
+  try {
+    const result = await orchestrator.run({ message, userId });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Agent 流式对话（SSE）— 支持 Orchestrator 自动策略，后端实时保存消息
+app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream"), async (req, res) => {
+  const userId = req.user!.id;
+  const { message, mode, conversationId } = req.body as {
+    message: string;
+    mode?: "auto" | "simple" | "react" | "legacy";
+    conversationId?: string;
+  };
+  if (!message) {
+    res.status(400).json({ success: false, error: "message is required" });
+    return;
+  }
+
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  res.write(`event: connected\ndata: {}\n\n`);
+
+  let closed = false;
+  res.on("close", () => { closed = true; });
+
+  const write = (eventName: string, data: unknown) => {
+    if (closed) return;
+    res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // ===== 后端消息持久化 =====
+  const convId = conversationId || null;
+  const insertMsg = convId
+    ? getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    : null;
+
+  function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
+    if (!insertMsg || !convId) return;
+    try {
+      insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, opts?.extra ? JSON.stringify(opts.extra) : null);
+    } catch {}
+  }
+
+  function updateConvTitle(title: string) {
+    if (!convId) return;
+    try {
+      const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+      if (msgCount <= 2) { // 第一条用户消息+一条策略或助手消息
+        getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+      } else {
+        getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+      }
+    } catch {}
+  }
+
+  // 保存用户消息
+  saveMsg("user", message);
+  updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
+
+  // 解析附件：用视觉模型 OCR 解析文件内容，拼入消息
+  let enrichedMessage = message;
+  const attachmentMatch = message.match(/^\[附件: (.+?)\]\n?([\s\S]*)$/);
+  if (attachmentMatch) {
+    const attachmentStr = attachmentMatch[1];
+    const userText = attachmentMatch[2] || "";
+    // 解析每个附件: "filename (路径: path)"
+    const fileEntries = attachmentStr.split(", ").map((entry) => {
+      const m = entry.match(/^(.+?)\s*\(路径:\s*(.+?)\)$/);
+      return m ? { name: m[1], path: m[2] } : null;
+    }).filter(Boolean) as Array<{ name: string; path: string }>;
+
+    if (fileEntries.length > 0) {
+      const visionConfig = getVisionConfig();
+      const SAFE_BASE = join(process.cwd(), ".raos", "workspace");
+      const fileContents: string[] = [];
+
+      for (const file of fileEntries) {
+        try {
+          const safePath = join(SAFE_BASE, file.path);
+          write("tool_start", { skillName: "doc_parse", args: { file: file.name } });
+          const result = await parseDocument(safePath, visionConfig);
+          if (result.success) {
+            let content = result.content;
+            if (content.length > 8000) content = content.slice(0, 8000) + "\n...[内容已截断]";
+            fileContents.push(`### 文件: ${file.name}\n${content}`);
+            write("tool_result", { result: { success: true, data: { message: `${file.name} 解析完成 (${result.format}, ${result.metadata?.method})` } } });
+          } else {
+            fileContents.push(`### 文件: ${file.name}\n[解析失败: ${result.error}]`);
+            write("tool_result", { result: { success: false, error: result.error } });
+          }
+        } catch (e: any) {
+          fileContents.push(`### 文件: ${file.name}\n[读取失败: ${e.message}]`);
+          write("tool_result", { result: { success: false, error: e.message } });
+        }
+      }
+      enrichedMessage = `${userText}\n\n---\n## 用户上传的文件内容\n${fileContents.join("\n\n")}`;
+    }
+  }
+
+  // 用于跟踪流式文本和 chart 数据
+  let currentAssistantText = "";
+  let pendingToolName = "";
+  let kbRefsSent = false;
+  let kbRefsForSave: unknown[] = [];
+  let webRefsForSave: unknown[] = [];
+
+  try {
+    const processEvent = (eventName: string, eventData: any) => {
+      write(eventName, eventData);
+
+      // 按事件类型保存消息
+      if (eventName === "strategy_selected") {
+        const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
+        const label = levelMap[eventData.level] || eventData.level;
+        saveMsg("strategy", `策略: ${label}${eventData.reasoning ? " — " + eventData.reasoning : ""}`);
+      } else if (eventName === "text_delta") {
+        currentAssistantText += eventData.text ?? "";
+      } else if (eventName === "tool_call") {
+        // tool_call 前保存已有文本（不附加 kbRefs，留给最终回复）
+        if (currentAssistantText) {
+          saveMsg("assistant", currentAssistantText);
+          currentAssistantText = "";
+        }
+      } else if (eventName === "tool_start") {
+        pendingToolName = eventData.skillName ?? "";
+      } else if (eventName === "tool_result") {
+        const r = eventData.result;
+        let summary = "";
+        let extra: Record<string, unknown> | undefined;
+
+        if (r?.success) {
+          if (r.data?.__type === "file_download" && r.data?.files) {
+            summary = `已准备 ${r.data.files.length} 个文件`;
+            extra = { fileDownload: r.data };
+          } else if (r.data?.option && r.data?.chartType) {
+            summary = `已生成${r.data.chartType}图表`;
+            extra = { chartOptions: [r.data.option] };
+          } else if (r.data?.charts && Array.isArray(r.data.charts)) {
+            summary = `已生成 ${r.data.charts.length} 个图表`;
+            extra = { chartOptions: r.data.charts.map((c: any) => c.option).filter(Boolean) };
+          } else if (r.data?.message) {
+            summary = r.data.message;
+          } else if (r.data?.results && Array.isArray(r.data.results)) {
+            summary = `获取到 ${r.data.results.length} 条结果`;
+          } else {
+            summary = "完成";
+          }
+        } else {
+          summary = r?.error?.message || r?.error || "失败";
+        }
+        saveMsg("tool", summary, {
+          skillName: eventData.skillName ?? pendingToolName,
+          status: r?.success ? "done" : "error",
+          isError: !r?.success,
+          extra,
+        });
+      } else if (eventName === "agent_done" || eventName === "done") {
+        // 保存最终 assistant 文本（附加 KB 引用 + Web 引用）
+        if (currentAssistantText) {
+          const extraObj: Record<string, unknown> = {};
+          if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
+          if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
+          const kbExtra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
+          saveMsg("assistant", currentAssistantText, { extra: kbExtra });
+          currentAssistantText = "";
+          kbRefsForSave = [];
+          webRefsForSave = [];
+        }
+        if (eventData.hitMax) {
+          saveMsg("system", "已达最大迭代次数");
+        }
+      } else if (eventName === "error") {
+        saveMsg("assistant", eventData.error || "未知错误", { isError: true });
+      }
+    };
+
+    if (mode === "legacy" || mode === "react") {
+      const loop = getAgentLoop(userId);
+      if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
+      for await (const event of loop.runStream(enrichedMessage)) {
+        if (closed) break;
+        processEvent(event.event, event.data);
+      }
+    } else {
+      const orchestrator = getOrchestrator();
+      if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
+      for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
+        if (closed) break;
+        // 在第一个 text_delta 之前发送 KB 引用（必须先于 processEvent）
+        if (!kbRefsSent && (event.event === "strategy_selected" || event.event === "text_delta")) {
+          const refs = orchestrator.getLastKbReferences();
+          console.log(`[KB-REF] event=${event.event}, refs.length=${refs.length}`);
+          if (refs.length > 0) {
+            write("kb_references", { references: refs });
+            kbRefsSent = true;
+            kbRefsForSave = refs;
+          }
+        }
+        // 从 tool_result 中收集 web 引用
+        if (event.event === "tool_result") {
+          const ed = event.data as any;
+          orchestrator.collectWebReferences(ed.skillName ?? "", ed.result);
+        }
+        // 在 done/agent_done 事件保存消息之前，收集并过滤 web 引用
+        if (event.event === "agent_done" || event.event === "done") {
+          const allWebRefs = orchestrator.getLastWebReferences();
+          if (allWebRefs.length > 0) {
+            // 只保留 AI 回复文本中实际引用了的 URL（出现了完整 URL 或域名）
+            const text = currentAssistantText || "";
+            const filtered = allWebRefs.filter((wr) => {
+              if (text.includes(wr.url)) return true;
+              try {
+                const domain = new URL(wr.url).hostname;
+                return text.includes(domain);
+              } catch { return false; }
+            });
+            // 重新编号
+            const webRefs = filtered.map((wr, i) => ({ ...wr, index: i + 1 }));
+            if (webRefs.length > 0) {
+              write("web_references", { references: webRefs });
+              webRefsForSave = webRefs;
+            }
+          }
+        }
+        processEvent(event.event, event.data);
+      }
+    }
+
+    // 流结束后，如果还有未保存的文本
+    if (currentAssistantText) {
+      const extraObj: Record<string, unknown> = {};
+      if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
+      if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
+      const extra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
+      saveMsg("assistant", currentAssistantText, { extra });
+      currentAssistantText = "";
+    }
+  } catch (err) {
+    write("error", { error: err instanceof Error ? err.message : String(err) });
+    saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
+  }
+
+  if (!closed) {
+    res.end();
+  }
+});
+
+// 策略分析 API — 预览 Orchestrator 会选择什么策略（不执行）
+app.post("/api/agent/strategy", requireAuth, requirePermission("chat"), async (req, res) => {
+  const orchestrator = getOrchestrator();
+  if (!orchestrator) {
+    res.status(400).json({ success: false, error: "LLM not configured" });
+    return;
+  }
+
+  const { message } = req.body as { message: string };
+  if (!message) {
+    res.status(400).json({ success: false, error: "message is required" });
+    return;
+  }
+
+  try {
+    const decision = await orchestrator.analyzeStrategy(message);
+    res.json({ success: true, strategy: decision });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 清空对话历史
+app.post("/api/agent/clear", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const session = sessionManager.getOrCreate(userId);
+  if (session.agentLoop) {
+    session.agentLoop.clearHistory();
+  }
+  // 同时清理 Orchestrator 的用户对话历史
+  const orchestrator = getOrchestrator();
+  if (orchestrator) {
+    orchestrator.clearHistory(userId);
+  }
+  res.json({ success: true, message: "Conversation history cleared" });
+});
+
+// ===== 聊天历史持久化 API =====
+
+// 获取当前用户的会话列表
+app.get("/api/conversations", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const rows = getDb().prepare(
+    "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
+  ).all(userId);
+  res.json({ success: true, conversations: rows });
+});
+
+// 创建新会话
+app.post("/api/conversations", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const id = "conv_" + crypto.randomUUID().slice(0, 12);
+  const title = req.body.title || "新对话";
+  getDb().prepare(
+    "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
+  ).run(id, userId, title);
+  res.json({ success: true, id, title });
+});
+
+// 获取某个会话的消息
+app.get("/api/conversations/:id/messages", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const convId = req.params.id as string;
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const beforeId = parseInt(req.query.before_id as string) || 0;
+
+  const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
+  if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
+
+  let rows: any[];
+  if (beforeId > 0) {
+    // 加载 before_id 之前的消息（向上翻页）
+    rows = getDb().prepare(
+      "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+    ).all(convId, beforeId, limit) as any[];
+    rows.reverse(); // 恢复正序
+  } else {
+    // 加载最新 N 条（首次加载）
+    rows = getDb().prepare(
+      "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
+    ).all(convId, limit) as any[];
+    rows.reverse();
+  }
+
+  const msgs = rows.map((r) => ({
+    ...r,
+    extra: r.extra ? JSON.parse(r.extra) : undefined,
+  }));
+
+  // 检查是否还有更早的消息
+  const hasMore = rows.length > 0 && (getDb().prepare(
+    "SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?"
+  ).get(convId, rows[0].id) as any).c > 0;
+
+  res.json({ success: true, messages: msgs, hasMore });
+});
+
+// 向会话追加消息
+app.post("/api/conversations/:id/messages", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const convId = req.params.id as string;
+  console.log(`   [CHAT] Save messages to ${convId}: ${JSON.stringify((req.body.messages || []).map((m: any) => ({ role: m.role, len: m.content?.length })))}`);
+  const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
+  if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
+
+  const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
+  const insert = getDb().prepare(
+    "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  const insertMany = getDb().transaction((items: typeof msgs) => {
+    for (const m of items) {
+      const extraJson = m.extra ? JSON.stringify(m.extra) : null;
+      insert.run(convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson);
+    }
+  });
+  insertMany(msgs);
+
+  // 更新会话标题（如果是第一条用户消息，自动设置标题）
+  const firstUser = msgs.find(m => m.role === "user");
+  if (firstUser) {
+    const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+    if (msgCount <= msgs.length) {
+      // 这是新会话的第一批消息，用用户消息内容设置标题
+      const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
+      getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+    } else {
+      getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// 删除会话
+app.delete("/api/conversations/:id", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const convId = req.params.id as string;
+  getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
+  res.json({ success: true });
+});
+
+// 获取 Tool 定义（LLM 视角看到的 Skills）
+app.get("/api/llm/tools", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  const tools = skillsToTools(registry.list());
+  res.json(tools);
+});
+
+// ===== Metrics API =====
+
+app.get("/api/metrics", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  res.json({
+    success: true,
+    summary: engine.metrics.getSummary(),
+    skills: engine.metrics.getAllMetrics(),
+  });
+});
+
+app.get("/api/metrics/skill/:name", requireAuth, requirePermission("skills.read"), (req, res) => {
+  const name = req.params.name as string;
+  const metrics = engine.metrics.getMetrics(name);
+  if (!metrics) {
+    res.status(404).json({ success: false, error: "No metrics for this skill" });
+    return;
+  }
+  res.json({ success: true, metrics });
+});
+
+// ===== Evolution Control APIs =====
+
+app.get("/api/evolution/config", requireAuth, requireAdmin, (_req, res) => {
+  res.json({ success: true, config: evolutionController.getConfig() });
+});
+
+app.post("/api/evolution/config", requireAuth, requireAdmin, (req, res) => {
+  evolutionController.updateConfig(req.body);
+  res.json({ success: true, config: evolutionController.getConfig() });
+});
+
+app.get("/api/evolution/history", requireAuth, requireAdmin, (_req, res) => {
+  res.json({
+    success: true,
+    history: evolutionController.getGenerationHistory(),
+  });
+});
+
+app.get("/api/evolution/pending", requireAuth, requireAdmin, (_req, res) => {
+  res.json({
+    success: true,
+    pending: evolutionController.getPendingApprovals(),
+  });
+});
+
+app.post("/api/evolution/approve/:id", requireAuth, requireAdmin, (req, res) => {
+  const item = evolutionController.approve(req.params.id as string);
+  if (!item) {
+    res.status(404).json({ success: false, error: "Approval not found" });
+    return;
+  }
+  // Register the approved skill
+  try {
+    const handler = new Function("params", "context", item.code) as any;
+    const skill = defineSkill({
+      name: item.name,
+      description: `[AI生成] ${item.description}`,
+      capabilities: item.capabilities,
+      handler: async (p: Record<string, unknown>, ctx: any) => {
+        try { return await handler(p, ctx); }
+        catch (err: any) { return { success: false, error: err instanceof Error ? err : new Error(String(err)) }; }
+      },
+    });
+    registry.register(skill);
+    evolutionController.recordGeneration(item.name, item.generatedBy);
+    res.json({ success: true, name: item.name });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/evolution/reject/:id", requireAuth, requireAdmin, (req, res) => {
+  const success = evolutionController.reject(req.params.id as string, req.body.reason || "Rejected");
+  if (!success) {
+    res.status(404).json({ success: false, error: "Approval not found" });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// ===== Skill Marketplace APIs =====
+
+app.get("/api/marketplace", requireAuth, requirePermission("skills.read"), (req, res) => {
+  const query = req.query.q as string | undefined;
+  res.json({ success: true, packages: marketplace.search(query), stats: marketplace.stats() });
+});
+
+app.post("/api/marketplace/export/:name", requireAuth, requireAdmin, (req, res) => {
+  const pkg = marketplace.exportSkill(req.params.name as string, {
+    author: req.body.author,
+    source: req.body.source,
+  });
+  if (!pkg) {
+    res.status(404).json({ success: false, error: "Skill not found" });
+    return;
+  }
+  res.json({ success: true, package: pkg });
+});
+
+app.post("/api/marketplace/import", requireAuth, requireAdmin, (req, res) => {
+  const result = marketplace.importSkill(req.body);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+app.post("/api/marketplace/publish", requireAuth, requireAdmin, (req, res) => {
+  marketplace.publish(req.body);
+  res.json({ success: true });
+});
+
+// ===== Skill Lifecycle APIs =====
+
+app.get("/api/lifecycle", requireAuth, requireAdmin, (_req, res) => {
+  res.json({ success: true, skills: lifecycleManager.getAll() });
+});
+
+app.post("/api/lifecycle/canary", requireAuth, requireAdmin, (req, res) => {
+  const { name, oldVersion, newVersion, trafficPercent, promoteThreshold, rollbackThreshold, minCalls } = req.body;
+  lifecycleManager.startCanary(name, oldVersion, newVersion, {
+    trafficPercent, promoteThreshold, rollbackThreshold, minCalls,
+  });
+  res.json({ success: true, info: lifecycleManager.getInfo(name) });
+});
+
+app.post("/api/lifecycle/evaluate/:name", requireAuth, requireAdmin, (req, res) => {
+  const name = req.params.name as string;
+  const result = lifecycleManager.evaluateCanary(name);
+  if (result === "promote") lifecycleManager.promoteCanary(name);
+  if (result === "rollback") lifecycleManager.rollbackCanary(name);
+  res.json({ success: true, decision: result, info: lifecycleManager.getInfo(name) });
+});
+
+app.post("/api/lifecycle/deprecate/:name", requireAuth, requireAdmin, (req, res) => {
+  lifecycleManager.deprecate(req.params.name as string);
+  res.json({ success: true });
+});
+
+app.post("/api/lifecycle/retire-inactive", requireAuth, requireAdmin, (req, res) => {
+  const maxInactiveMs = (req.body.maxInactiveDays ?? 30) * 86400000;
+  const retired = lifecycleManager.retireInactive(maxInactiveMs);
+  res.json({ success: true, retired });
+});
+
+// ===== Prompt Management APIs =====
+
+app.get("/api/prompts", requireAuth, requirePermission("config.read"), (_req, res) => {
+  res.json({ success: true, templates: promptManager.list() });
+});
+
+app.post("/api/prompts", requireAuth, requirePermission("config.write"), (req, res) => {
+  try {
+    const pt = promptManager.register(req.body.name, req.body.template, {
+      description: req.body.description,
+      version: req.body.version,
+    });
+    res.json({ success: true, template: pt });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/prompts/render", requireAuth, requirePermission("config.read"), (req, res) => {
+  try {
+    const rendered = promptManager.render(req.body.name, req.body.variables || {});
+    res.json({ success: true, rendered });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/prompts/:name", requireAuth, requirePermission("config.write"), (req, res) => {
+  promptManager.delete(req.params.name as string);
+  res.json({ success: true });
+});
+
+// ===== Model Router APIs =====
+
+app.get("/api/models", requireAuth, requirePermission("config.read"), (_req, res) => {
+  res.json({
+    success: true,
+    models: modelRouter.getModels().map((m) => ({
+      name: m.name,
+      model: m.provider.model,
+      capabilities: m.capabilities,
+      costPer1kTokens: m.costPer1kTokens,
+      contextWindow: m.contextWindow,
+    })),
+  });
+});
+
+// ===== Memory APIs（按用户隔离，带权限守卫） =====
+
+app.get("/api/memory/stm", requireAuth, requirePermission("memory.read"), (req, res) => {
+  const { stm } = sessionManager.getOrCreate(req.user!.id);
+  res.json({ entries: stm.list(), size: stm.size });
+});
+
+app.get("/api/memory/ltm", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const stats = await ltm.stats();
+  res.json({ entries: await ltm.list(), ...stats });
+});
+
+app.get("/api/memory/archives", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  res.json({ archives: await ltm.getArchiveManifests() });
+});
+
+app.get("/api/memory/stats", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  try {
+    const result = await engine.execute("memory_stats", {});
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(500).json({ success: false, error: result.error?.message || "Failed to get stats" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 定时归档调度管理
+app.get("/api/memory/schedule", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const stats = await ltm.stats();
+  res.json({
+    running: stats.scheduledArchive.running,
+    lastRunAt: stats.scheduledArchive.lastRunAt || null,
+  });
+});
+
+app.post("/api/memory/schedule", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const { action, intervalMinutes } = req.body as {
+    action: "start" | "stop";
+    intervalMinutes?: number;
+  };
+
+  if (action === "start") {
+    const minutes = intervalMinutes ?? 60;
+    if (minutes < 1) {
+      res.status(400).json({ success: false, error: "intervalMinutes must be >= 1" });
+      return;
+    }
+    ltm.startScheduledArchive(minutes * 60 * 1000);
+    res.json({ success: true, action: "started", intervalMinutes: minutes });
+  } else if (action === "stop") {
+    ltm.stopScheduledArchive();
+    res.json({ success: true, action: "stopped" });
+  } else {
+    res.status(400).json({ success: false, error: "action must be 'start' or 'stop'" });
+  }
+});
+
+// 手动触发一次归档
+app.post("/api/memory/archive", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const reason = (req.body?.reason as string) || "manual_ui";
+  const result = await ltm.archive(reason);
+  res.json({
+    success: true,
+    archived: result.archived,
+    manifest: result.manifest,
+    activeRemaining: ltm.size,
+  });
+});
+
+// 从归档恢复
+app.post("/api/memory/restore", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const { archiveId, keys } = req.body as { archiveId: string; keys?: string[] };
+  if (!archiveId) {
+    res.status(400).json({ success: false, error: "archiveId is required" });
+    return;
+  }
+  const restored = await ltm.restoreFromArchive(archiveId, keys);
+  res.json({ success: true, restored, activeTotal: ltm.size });
+});
+
+// ===== Enhanced LTM APIs（新增功能）=====
+
+// 获取用户记忆画像
+app.get("/api/memory/profile/:userId?", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const targetUserId = req.params.userId || req.user!.id;
+
+  try {
+    const result = await engine.execute("ltm_profile", { userId: targetUserId });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Profile generation failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 获取版本历史
+app.get("/api/memory/versions/:key", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { key } = req.params;
+  const { includeForgotten } = req.query as { includeForgotten?: string };
+
+  try {
+    const result = await engine.execute("ltm_version_history", {
+      key,
+      includeForgotten: includeForgotten === "true",
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Version history not available" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 查询遗忘日志
+app.get("/api/memory/forgotten", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { since, limit, reason } = req.query as { since?: string; limit?: string; reason?: string };
+
+  try {
+    const result = await engine.execute("ltm_forgotten_log", {
+      since: since ? parseInt(since, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : 50,
+      reason,
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Forgotten log not available" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 检测矛盾
+app.post("/api/memory/check-conflicts", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { key, value, topN } = req.body as { key: string; value: unknown; topN?: number };
+
+  if (!key) {
+    res.status(400).json({ success: false, error: "key is required" });
+    return;
+  }
+  if (value === undefined) {
+    res.status(400).json({ success: false, error: "value is required" });
+    return;
+  }
+
+  try {
+    const result = await engine.execute("ltm_check_conflicts", {
+      key,
+      value,
+      topN,
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Conflict detection failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 提取事实
+app.post("/api/memory/extract-facts", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { text, entityContext, tags } = req.body as { text: string; entityContext?: string; tags?: string[] };
+
+  if (!text) {
+    res.status(400).json({ success: false, error: "text is required" });
+    return;
+  }
+
+  try {
+    const result = await engine.execute("ltm_extract_facts", {
+      text,
+      entityContext,
+      tags,
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Fact extraction requires LLM provider" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 存储记忆
+app.post("/api/memory/store", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { key, value, tags, summary, relation, expiresInSec } = req.body as {
+    key: string;
+    value: unknown;
+    tags?: string[];
+    summary?: string;
+    relation?: string;
+    expiresInSec?: number;
+  };
+
+  if (!key) {
+    res.status(400).json({ success: false, error: "key is required" });
+    return;
+  }
+
+  try {
+    const result = await engine.execute("ltm_store", {
+      key,
+      value,
+      tags,
+      summary,
+      relation,
+      expiresInSec,
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Store operation failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 搜索记忆
+app.get("/api/memory/search", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const { query, limit, tags, rerank, filters, includeForgotten } = req.query as {
+    query?: string;
+    limit?: string;
+    tags?: string;
+    rerank?: string;
+    filters?: string;
+    includeForgotten?: string;
+  };
+
+  if (!query) {
+    res.status(400).json({ success: false, error: "query is required" });
+    return;
+  }
+
+  try {
+    const parsedTags = tags ? tags.split(",") : undefined;
+    let parsedFilters: any;
+    if (filters) {
+      try {
+        parsedFilters = JSON.parse(filters);
+      } catch {
+        res.status(400).json({ success: false, error: "Invalid filters JSON" });
+        return;
+      }
+    }
+
+    const result = await engine.execute("ltm_search", {
+      query,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      tags: parsedTags,
+      rerank: rerank === "true",
+      filters: parsedFilters,
+      includeForgotten: includeForgotten === "true",
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Search operation failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 删除记忆
+app.delete("/api/memory/:id", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { id } = req.params;
+  const { reason, hard } = req.body as { reason?: string; hard?: boolean };
+
+  if (!id) {
+    res.status(400).json({ success: false, error: "id is required" });
+    return;
+  }
+
+  try {
+    const result = await engine.execute("ltm_delete", {
+      id,
+      reason,
+      hard,
+    });
+
+    if (result.success) {
+      res.json({ success: true, ...result.data });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Delete operation failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// ===== Evolution APIs =====
+
+app.get("/api/evolution/genealogy", requireAuth, requirePermission("config.read"), (req, res) => {
+  const action = (req.query.action as string) || "tree";
+  const name = req.query.name as string | undefined;
+
+  switch (action) {
+    case "ancestry":
+      if (!name) { res.status(400).json({ error: "name required" }); return; }
+      res.json({ success: true, ancestry: evolutionController.getAncestry(name) });
+      break;
+    case "descendants":
+      if (!name) { res.status(400).json({ error: "name required" }); return; }
+      res.json({ success: true, descendants: evolutionController.getDescendants(name) });
+      break;
+    case "siblings":
+      if (!name) { res.status(400).json({ error: "name required" }); return; }
+      res.json({ success: true, siblings: evolutionController.getSiblings(name) });
+      break;
+    case "stats":
+      res.json({ success: true, stats: evolutionController.getGenealogyStats() });
+      break;
+    default:
+      res.json({ success: true, tree: evolutionController.getGenealogyTree() });
+  }
+});
+
+app.get("/api/evolution/emergence", requireAuth, requirePermission("config.read"), (req, res) => {
+  const since = req.query.since ? Number(req.query.since) : undefined;
+  const severity = req.query.severity as string | undefined;
+  const type = req.query.type as string | undefined;
+
+  if (req.query.report === "true") {
+    res.json({ success: true, report: emergenceDetector.getReport() });
+  } else {
+    res.json({ success: true, patterns: emergenceDetector.getPatterns({ since, severity, type }) });
+  }
+});
+
+app.get("/api/evolution/red-lines", requireAuth, requirePermission("config.read"), (_req, res) => {
+  res.json({
+    success: true,
+    redLines: evolutionController.getRedLines().map((r) => ({
+      id: r.id,
+      description: r.description,
+      blocking: r.blocking,
+    })),
+    violations: evolutionController.getViolations(),
+  });
+});
+
+app.post("/api/evolution/red-lines", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { action, id, description, blocking } = req.body as {
+    action: "add" | "remove";
+    id: string;
+    description?: string;
+    blocking?: boolean;
+  };
+
+  if (action === "remove") {
+    const removed = evolutionController.removeRedLine(id);
+    res.json({ success: true, removed });
+  } else if (action === "add") {
+    if (!id || !description) {
+      res.status(400).json({ success: false, error: "id and description required" });
+      return;
+    }
+    evolutionController.addRedLine({
+      id,
+      description,
+      blocking: blocking ?? true,
+      check: () => null, // Custom logic must be added programmatically
+    });
+    res.json({ success: true, added: id });
+  } else {
+    res.status(400).json({ success: false, error: "action must be 'add' or 'remove'" });
+  }
+});
+
+// ===== Knowledge Base APIs =====
+
+app.get("/api/knowledge/documents", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("kb_list", {
+      query: req.query.q || undefined,
+      tags: req.query.tags ? String(req.query.tags).split(",") : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+      owner: req.user!.id,
+    });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/knowledge/ingest", requireAuth, async (req, res) => {
+  try {
+    const { name, content, path, tags } = req.body;
+    if (!name || (!content && !path)) {
+      res.status(400).json({ success: false, error: "name and (content or path) are required" });
+      return;
+    }
+
+    const userId = req.user!.id;
+
+    // 如果是文件路径（需要解析），先建占位记录立即返回，后台异步解析
+    if (path && !content) {
+      const kb = getKnowledgeBase(userId);
+      const docId = kb.createPlaceholder(name, { source: path, tags: tags || [] });
+      // 立即返回
+      res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
+
+      // 后台异步：解析 → 入库 → 向量化
+      requestContext.run({ userId }, () => {
+        engine.execute("kb_ingest", {
+          name,
+          path,
+          tags: tags || [],
+          owner: userId,
+          skipEmbedding: true,
+        }).then((result) => {
+          if (result.success) {
+            const docId = (result.data as any).docId;
+            if (docId) {
+              engine.execute("kb_vectorize", { docId, owner: userId }).catch(() => {});
+            }
+          }
+        }).catch(() => {});
+      });
+      return;
+    }
+
+    // content 模式（已有内容，如从聊天附件加入知识库），直接入库
+    const params: Record<string, unknown> = {
+      name,
+      content,
+      tags: tags || [],
+      owner: userId,
+      skipEmbedding: true,
+    };
+    const result = await engine.execute("kb_ingest", params);
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+
+    // 异步向量化
+    if (result.success && result.data) {
+      const docId = (result.data as any).docId;
+      if (docId) {
+        requestContext.run({ userId }, () => {
+          engine.execute("kb_vectorize", { docId, owner: userId }).catch(() => {});
+        });
+      }
+    }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get("/api/knowledge/search", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("kb_search", {
+      query: String(req.query.q || ""),
+      tags: req.query.tags ? String(req.query.tags).split(",") : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : 10,
+      owner: req.user!.id,
+    });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 获取文档解析内容
+app.get("/api/knowledge/documents/:docId/content", requireAuth, (req, res) => {
+  try {
+    const kb = getKnowledgeBase(req.user!.id);
+    const content = kb.getDocumentContent(req.params.docId as string);
+    if (content === null) {
+      res.status(404).json({ success: false, error: "文档不存在" });
+    } else {
+      res.json({ success: true, content });
+    }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 获取知识库文档页面图片
+app.get("/api/knowledge/documents/:docId/pages", requireAuth, (req, res) => {
+  const owner = req.user!.id;
+  const docId = String(req.params.docId);
+  const page = req.query.page ? String(req.query.page) : undefined;
+
+  if (page) {
+    const imgPath = getKBPageImagePath(owner, docId, Number(page));
+    if (!imgPath) {
+      res.status(404).json({ success: false, error: "page not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    createReadStream(imgPath).pipe(res);
+    return;
+  }
+
+  const pages = getKBPageImageList(owner, docId);
+  res.json({ success: true, pages });
+});
+
+app.delete("/api/knowledge/documents/:docId", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("kb_delete", { docId: req.params.docId, owner: req.user!.id });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get("/api/knowledge/stats", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("kb_stats", { owner: req.user!.id });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/knowledge/rebuild", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("kb_rebuild", { owner: req.user!.id });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/knowledge/share", requireAuth, async (req, res) => {
+  try {
+    const { docId, shared } = req.body;
+    const result = await engine.execute("kb_share", { docId, shared: !!shared, owner: req.user!.id });
+    res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ===== User Session APIs =====
+
+app.get("/api/user/sessions", requireAuth, (_req, res) => {
+  res.json({ sessions: sessionManager.listSessions() });
+});
+
+// ===== Async Task APIs（带权限守卫） =====
+
+app.get("/api/tasks", requireAuth, requirePermission("tasks.read"), (_req, res) => {
+  const status = _req.query.status as string | undefined;
+  const tasks = status
+    ? taskManager.list({ status: status as import("./types/index.js").TaskStatus })
+    : taskManager.list();
+  res.json({ tasks, total: tasks.length });
+});
+
+app.get("/api/tasks/:taskId", requireAuth, requirePermission("tasks.read"), (req, res) => {
+  const taskId = req.params.taskId as string;
+  const task = taskManager.get(taskId);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  res.json(task);
+});
+
+app.post("/api/tasks/:taskId/cancel", requireAuth, requirePermission("tasks.read"), (req, res) => {
+  const taskId = req.params.taskId as string;
+  const task = taskManager.cancel(taskId);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  res.json({ success: true, task });
+});
+
+app.post("/api/tasks/:taskId/wait", requireAuth, requirePermission("tasks.read"), async (req, res) => {
+  const taskId = req.params.taskId as string;
+  const timeoutMs = Number(req.body?.timeoutMs ?? 30000);
+  try {
+    const task = await taskManager.waitFor(taskId, timeoutMs);
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(408).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ===== Plugin APIs（带权限守卫） =====
+
+app.get("/api/plugins", requireAuth, requirePermission("plugins.manage"), (_req, res) => {
+  res.json({ plugins: pluginLoader.getLoaded() });
+});
+
+app.post("/api/plugins/reload", requireAuth, requirePermission("plugins.manage"), async (req, res) => {
+  const { name } = req.body as { name?: string };
+  if (name) {
+    try {
+      const plugin = await pluginLoader.reloadPlugin(name);
+      if (plugin) {
+        // 同步新 Skill
+        syncSkillsToResources();
+        res.json({ success: true, plugin });
+      } else {
+        res.status(404).json({ success: false, error: `Plugin "${name}" not found` });
+      }
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  } else {
+    const result = await pluginLoader.loadAll();
+    syncSkillsToResources();
+    res.json({ success: true, ...result });
+  }
+});
+
+// ===== WAL 恢复 API =====
+
+app.get("/api/wal/status", requireAuth, (req, res) => {
+  const incomplete = wal.getIncomplete();
+  const lastRecovery = wal.getLastRecoveryResult();
+  res.json({
+    incompleteCount: incomplete.length,
+    incomplete: incomplete.map((e) => ({
+      id: e.id,
+      skillName: e.skillName,
+      timestamp: e.timestamp,
+      traceId: e.traceId,
+    })),
+    lastRecovery,
+  });
+});
+
+app.post("/api/wal/replay", requireAuth, async (req, res) => {
+  try {
+    const result = await wal.replay(engine);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+app.post("/api/wal/compact", requireAuth, (req, res) => {
+  try {
+    wal.compact();
+    res.json({ success: true, message: "WAL compacted" });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// ===== 联邦 API 端点 =====
+
+// 联邦请求入口：远程实例通过此端点发送迁移/心跳/指标请求
+app.post("/api/federation/:action", express.json(), async (req, res) => {
+  try {
+    const action = req.params.action;
+    const from = (req.headers["x-raos-instance"] as string) ?? "unknown";
+    const result = await federationTransport.handleRequest(action, req.body, from);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 联邦状态概览
+app.get("/api/federation/status", requireAuth, (_req, res) => {
+  res.json({
+    instanceId,
+    evolution: evolutionEngine.getStatus(),
+    federation: {
+      peers: federationManager.getRemoteSnapshots().size,
+      recommendations: federationManager.getRecommendations().length,
+    },
+    migration: {
+      historyCount: migrationManager.getHistory().length,
+    },
+  });
+});
+
+// ===== 文件上传 API（委托给 file_upload Skill） =====
+
+/** 文件解析状态缓存：path → { status, content, error, tags } */
+const fileParseCache = new Map<string, { status: "parsing" | "done" | "error"; content?: string; error?: string; format?: string; tags?: string[]; pageCount?: number }>();
+
+/** 根据上传文件路径生成图片存储目录（存在上传人的 workspace 中） */
+function getImageDir(relativePath: string): string {
+  // relativePath 格式如 "uploads/u_xxx/filename.pptx"，图片存在同级 .parse-images/ 下
+  const wsBase = join(process.cwd(), ".raos", "workspace");
+  const parentDir = dirname(join(wsBase, relativePath));
+  const baseName = relativePath.split("/").pop()?.replace(/\.[^.]+$/, "") || "file";
+  const safe = baseName.replace(/[^a-zA-Z0-9\u4e00-\u9fff._-]/g, "_");
+  return join(parentDir, ".parse-images", safe);
+}
+
+/** 将页面图片持久化到磁盘 */
+function savePageImages(relativePath: string, pages: Array<{ page: number; imageBase64: string }>): void {
+  if (pages.length === 0) return;
+  const dir = getImageDir(relativePath);
+  mkdirSync(dir, { recursive: true });
+  const { writeFileSync: wfs } = require("fs") as typeof import("fs");
+  for (const p of pages) {
+    const buf = Buffer.from(p.imageBase64, "base64");
+    wfs(join(dir, `page-${p.page}.png`), buf);
+  }
+  // 写入页面列表索引
+  wfs(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
+}
+
+/** 读取已保存的页面图片列表 */
+function getPageImageList(relativePath: string): number[] {
+  const indexFile = join(getImageDir(relativePath), "pages.json");
+  if (!existsSync(indexFile)) return [];
+  try {
+    return JSON.parse(readFileSync(indexFile, "utf-8"));
+  } catch { return []; }
+}
+
+/** 上传后异步解析文件（fire-and-forget） */
+function asyncParseFile(filePath: string, relativePath: string): void {
+  fileParseCache.set(relativePath, { status: "parsing" });
+  const visionConfig = getVisionConfig();
+  const absPath = join(process.cwd(), ".raos", "workspace", relativePath);
+  parseDocument(absPath, visionConfig).then((result) => {
+    if (result.success) {
+      let content = result.content;
+      if (content.length > 10000) content = content.slice(0, 10000) + "\n...[内容已截断]";
+      // 持久化页面图片到磁盘
+      const pageImages = result.pages?.filter((p) => p.imageBase64).map((p) => ({ page: p.page, imageBase64: p.imageBase64! })) || [];
+      if (pageImages.length > 0) savePageImages(relativePath, pageImages);
+      fileParseCache.set(relativePath, { status: "done", content, format: result.format, tags: result.tags || [], pageCount: pageImages.length });
+    } else {
+      fileParseCache.set(relativePath, { status: "error", error: result.error });
+    }
+    // 10 分钟后清理内存缓存（图片已在磁盘，不受影响）
+    setTimeout(() => fileParseCache.delete(relativePath), 10 * 60 * 1000);
+  }).catch((err) => {
+    fileParseCache.set(relativePath, { status: "error", error: err.message });
+  });
+}
+
+/** 解析 multipart/form-data（不依赖 multer） */
+function parseMultipart(buf: Buffer, boundary: string): Array<{ filename: string; data: Buffer }> {
+  const files: Array<{ filename: string; data: Buffer }> = [];
+  const boundaryBuf = Buffer.from(`--${boundary}`);
+  let start = 0;
+
+  while (true) {
+    const idx = buf.indexOf(boundaryBuf, start);
+    if (idx < 0) break;
+    const nextIdx = buf.indexOf(boundaryBuf, idx + boundaryBuf.length);
+    if (nextIdx < 0) break;
+
+    const part = buf.subarray(idx + boundaryBuf.length, nextIdx);
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd < 0) { start = nextIdx; continue; }
+
+    const headers = part.subarray(0, headerEnd).toString();
+    const filenameMatch = headers.match(/filename="([^"]+)"/);
+    if (!filenameMatch) { start = nextIdx; continue; }
+
+    const data = part.subarray(headerEnd + 4, part.length - 2); // strip trailing \r\n
+    files.push({ filename: filenameMatch[1], data });
+    start = nextIdx;
+  }
+
+  return files;
+}
+
+// 上传文件 — 前端 multipart 入口，内部调用 file_upload Skill
+app.post("/api/upload", requireAuth, express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  try {
+    const contentType = req.headers["content-type"] as string;
+    const boundaryMatch = contentType?.match(/boundary=(.+)/);
+    if (!boundaryMatch) {
+      res.status(400).json({ success: false, error: "缺少 multipart boundary" });
+      return;
+    }
+
+    const files = parseMultipart(req.body as Buffer, boundaryMatch[1]);
+    if (files.length === 0) {
+      res.status(400).json({ success: false, error: "未发现文件" });
+      return;
+    }
+
+    const mode = (req.query.mode as string) || "auto"; // "auto" | "overwrite" | "new_version"
+    const folder = (req.query.folder as string) || ""; // 目标文件夹（相对 workspace）
+    const results = [];
+    for (const file of files) {
+      const skillParams: Record<string, any> = {
+        filename: file.filename,
+        content: file.data.toString("base64"),
+        uploadedBy: req.user?.id ?? "default",
+        mode,
+      };
+      if (folder) skillParams.targetDir = folder;
+      const result = await engine.execute("file_upload", skillParams);
+      if (result.success) {
+        const fileData = result.data as any;
+        results.push(fileData);
+        // 内容重复或名称冲突时不需要再解析
+        if (fileData.path && !fileData.duplicate) {
+          asyncParseFile(fileData.path, fileData.path);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        files: results,
+        message: `已上传 ${results.length} 个文件`,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 查询文件解析状态
+app.get("/api/upload/parse-status", requireAuth, (req, res) => {
+  const path = req.query.path as string;
+  if (!path) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+  const status = fileParseCache.get(path);
+  if (!status) {
+    res.json({ success: true, status: "unknown" });
+  } else {
+    // 从磁盘检查页面图片数量
+    const diskPages = getPageImageList(path);
+    const pageCount = status.pageCount || diskPages.length;
+    res.json({ success: true, ...status, hasPageImages: pageCount > 0, pageCount });
+  }
+});
+
+// 获取解析文件的页面图片
+app.get("/api/upload/parse-images", requireAuth, (req, res) => {
+  const path = req.query.path as string;
+  const page = req.query.page as string;
+  if (!path) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+
+  const imgDir = getImageDir(path);
+
+  if (page) {
+    // 返回单页图片
+    const imgPath = join(imgDir, `page-${page}.png`);
+    if (!existsSync(imgPath)) {
+      res.status(404).json({ success: false, error: "page not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    createReadStream(imgPath).pipe(res);
+    return;
+  }
+
+  // 返回页码列表
+  const pages = getPageImageList(path);
+  res.json({ success: true, pages });
+});
+
+// 列出已上传文件 — 调用 file_upload_list Skill
+app.get("/api/upload", requireAuth, async (_req, res) => {
+  try {
+    const result = await engine.execute("file_upload_list", {});
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 删除已上传文件 — 调用 file_upload_delete Skill
+app.delete("/api/upload/:filename", requireAuth, async (req, res) => {
+  try {
+    const result = await engine.execute("file_upload_delete", { path: `uploads/${req.params.filename}` });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// ===== 文件管理 API =====
+
+const WS_BASE = join(process.cwd(), ".raos", "workspace");
+
+// 获取文件树
+app.get("/api/files/tree", requireAuth, (req, res) => {
+
+  interface TreeNode {
+    key: string;
+    title: string;
+    isLeaf: boolean;
+    children?: TreeNode[];
+    size?: number;
+    modifiedAt?: number;
+    ext?: string;
+  }
+
+  // 排除中间/临时文件和目录
+  const EXCLUDED_DIRS = new Set(["excel_content", "node_modules", "__MACOSX", "Excel解包文件"]);
+  const EXCLUDED_EXTS = new Set([".db", ".db-shm", ".db-wal", ".tmp", ".lock"]);
+
+  function buildTree(dir: string, prefix: string): TreeNode[] {
+    const entries: TreeNode[] = [];
+    try {
+      const items = readdirSync(dir);
+      for (const item of items) {
+        if (item.startsWith(".")) continue; // 隐藏文件
+        if (EXCLUDED_DIRS.has(item) || item.includes("解包")) continue; // 排除临时目录
+        const fullPath = join(dir, item);
+        const relativePath = prefix ? `${prefix}/${item}` : item;
+        try {
+          const stat = statSync(fullPath);
+          if (stat.isDirectory()) {
+            entries.push({
+              key: relativePath,
+              title: item,
+              isLeaf: false,
+              children: buildTree(fullPath, relativePath),
+            });
+          } else {
+            const ext = item.includes(".") ? item.slice(item.lastIndexOf(".")).toLowerCase() : "";
+            if (EXCLUDED_EXTS.has(ext)) continue; // 排除临时文件
+            entries.push({
+              key: relativePath,
+              title: item,
+              isLeaf: true,
+              size: stat.size,
+              modifiedAt: stat.mtimeMs,
+              ext,
+            });
+          }
+        } catch { /* skip inaccessible */ }
+      }
+    } catch { /* dir not readable */ }
+
+    // 同名文件去重（去时间戳后相同的只保留最新）
+    const stripTs = (n: string) => n.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
+    const deduped = new Map<string, TreeNode>();
+    for (const e of entries) {
+      const key = e.isLeaf ? stripTs(e.title) : e.title;
+      const existing = deduped.get(key);
+      if (!existing || (e.isLeaf && e.modifiedAt && existing.modifiedAt && e.modifiedAt > existing.modifiedAt)) {
+        deduped.set(key, e);
+      }
+    }
+    const result = Array.from(deduped.values());
+
+    // 文件夹排前面，再按名称排序
+    result.sort((a, b) => {
+      if (a.isLeaf !== b.isLeaf) return a.isLeaf ? 1 : -1;
+      return a.title.localeCompare(b.title);
+    });
+    return result;
+  }
+
+  res.json({ success: true, tree: buildTree(WS_BASE, "") });
+});
+
+// 列出指定目录下的文件
+app.get("/api/files/list", requireAuth, (req, res) => {
+  const dirPath = (req.query.path as string) || "";
+  const absDir = join(WS_BASE, dirPath);
+  if (!absDir.startsWith(WS_BASE)) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  if (!existsSync(absDir)) {
+    res.json({ success: true, files: [] });
+    return;
+  }
+
+  try {
+    const EXCL_DIRS = new Set(["excel_content", "node_modules", "__MACOSX", "Excel解包文件"]);
+    const EXCL_EXTS = new Set([".db", ".db-shm", ".db-wal", ".tmp", ".lock"]);
+    const items = readdirSync(absDir);
+    const files = items
+      .filter((i) => !i.startsWith("."))
+      .map((item) => {
+        const fullPath = join(absDir, item);
+        const stat = statSync(fullPath);
+        const ext = item.includes(".") ? item.slice(item.lastIndexOf(".")).toLowerCase() : "";
+        return {
+          name: item,
+          path: dirPath ? `${dirPath}/${item}` : item,
+          isDir: stat.isDirectory(),
+          size: stat.size,
+          modifiedAt: stat.mtimeMs,
+          ext,
+        };
+      })
+      .filter((f) => f.isDir ? (!EXCL_DIRS.has(f.name) && !f.name.includes("解包")) : !EXCL_EXTS.has(f.ext));
+
+    // 同名文件去重（去掉时间戳后相同的只保留最新）
+    const stripTs = (n: string) => n.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
+    const deduped = new Map<string, typeof files[0]>();
+    for (const f of files) {
+      const key = f.isDir ? f.name : stripTs(f.name);
+      const existing = deduped.get(key);
+      if (!existing || (f.modifiedAt > existing.modifiedAt)) {
+        deduped.set(key, f);
+      }
+    }
+    const result = Array.from(deduped.values());
+
+    // 文件夹排前面
+    result.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    res.json({ success: true, files: result });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 检查哪些文件已导入知识库（返回详细的向量化状态）
+app.get("/api/files/kb-status", requireAuth, (req, res) => {
+  const userId = req.user?.id || "default";
+  try {
+    const kb = getKnowledgeBase(userId);
+    const docs = kb.listDocuments();
+    // 返回文档名称 → 向量化状态映射
+    const kbNames = docs.map((d: any) => d.name);
+    const kbDocs: Record<string, { docId: string; vectorized: number; vectorTotal: number; chunkCount: number; status: string }> = {};
+    for (const d of docs) {
+      let status = "done";
+      if (d.chunkCount === 0) status = "parsing";
+      else if (d.vectorized < d.vectorTotal) status = "vectorizing";
+      kbDocs[d.name] = { docId: d.docId, vectorized: d.vectorized, vectorTotal: d.vectorTotal, chunkCount: d.chunkCount, status };
+    }
+    res.json({ success: true, kbNames, kbDocs });
+  } catch {
+    res.json({ success: true, kbNames: [], kbDocs: {} });
+  }
+});
+
+// 获取用户文档列表（聚合上传文件 + KB状态，去重去时间戳）
+app.get("/api/files/user-documents", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const userUploadDir = join(WS_BASE, "uploads", userId);
+
+  // 1. 扫描用户上传目录
+  interface UserDoc {
+    originalName: string;
+    path: string;
+    size: number;
+    modifiedAt: number;
+    ext: string;
+    kbStatus: { inKb: boolean; docId?: string; vectorized?: number; vectorTotal?: number; status?: string } | null;
+  }
+
+  const fileMap = new Map<string, UserDoc>(); // originalName → latest file
+
+  // 从文件名还原原始名：去掉 _<timestamp> 后缀
+  const stripTimestamp = (name: string): string => {
+    return name.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
+  };
+
+  if (existsSync(userUploadDir)) {
+    try {
+      const items = readdirSync(userUploadDir);
+      for (const item of items) {
+        if (item.startsWith(".")) continue; // 跳过隐藏文件/目录
+        const fullPath = join(userUploadDir, item);
+        try {
+          const stat = statSync(fullPath);
+          if (stat.isDirectory()) continue; // 跳过子目录
+          const ext = item.includes(".") ? item.slice(item.lastIndexOf(".")).toLowerCase() : "";
+          const originalName = stripTimestamp(item);
+          const existing = fileMap.get(originalName);
+          // 保留最新版本
+          if (!existing || stat.mtimeMs > existing.modifiedAt) {
+            fileMap.set(originalName, {
+              originalName,
+              path: `uploads/${userId}/${item}`,
+              size: stat.size,
+              modifiedAt: stat.mtimeMs,
+              ext,
+              kbStatus: null,
+            });
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* dir not readable */ }
+  }
+
+  // 2. 获取 KB 文档状态
+  try {
+    const kb = getKnowledgeBase(userId);
+    const docs = kb.listDocuments();
+    for (const d of docs) {
+      let status = "done";
+      if (d.chunkCount === 0) status = "parsing";
+      else if (d.vectorized < d.vectorTotal) status = "vectorizing";
+      const kbInfo = { inKb: true, docId: d.docId, vectorized: d.vectorized, vectorTotal: d.vectorTotal, status };
+
+      const existing = fileMap.get(d.name);
+      if (existing) {
+        existing.kbStatus = kbInfo;
+      }
+      // KB 中有但上传目录没有的（如直接 content 导入的），也显示
+      if (!existing) {
+        fileMap.set(d.name, {
+          originalName: d.name,
+          path: d.source || "",
+          size: 0,
+          modifiedAt: d.ingestedAt || 0,
+          ext: d.name.includes(".") ? d.name.slice(d.name.lastIndexOf(".")).toLowerCase() : "",
+          kbStatus: kbInfo,
+        });
+      }
+    }
+  } catch { /* no KB */ }
+
+  // 3. 排序：最近修改的在前
+  const documents = Array.from(fileMap.values()).sort((a, b) => b.modifiedAt - a.modifiedAt);
+  res.json({ success: true, documents });
+});
+
+// 创建文件夹
+app.post("/api/files/mkdir", requireAuth, (req, res) => {
+  const { path: dirPath } = req.body as { path: string };
+  if (!dirPath) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+  const absPath = join(WS_BASE, dirPath);
+  if (!absPath.startsWith(WS_BASE)) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  try {
+    mkdirSync(absPath, { recursive: true });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 移动/重命名文件
+app.post("/api/files/move", requireAuth, (req, res) => {
+  const { from, to } = req.body as { from: string; to: string };
+  if (!from || !to) {
+    res.status(400).json({ success: false, error: "from and to required" });
+    return;
+  }
+  const absFrom = join(WS_BASE, from);
+  const absTo = join(WS_BASE, to);
+  if (!absFrom.startsWith(WS_BASE) || !absTo.startsWith(WS_BASE)) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  try {
+    mkdirSync(dirname(absTo), { recursive: true });
+    renameSync(absFrom, absTo);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 删除文件/文件夹
+app.delete("/api/files", requireAuth, (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+  const absPath = join(WS_BASE, filePath);
+  if (!absPath.startsWith(WS_BASE) || absPath === WS_BASE) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  try {
+    rmSync(absPath, { recursive: true, force: true });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// AI 自动整理文件
+app.post("/api/files/organize", requireAuth, async (req, res) => {
+  try {
+    // 收集所有文件（扁平）
+    function collectFiles(dir: string, prefix: string): Array<{ name: string; path: string; size: number; ext: string }> {
+      const result: Array<{ name: string; path: string; size: number; ext: string }> = [];
+      try {
+        const items = readdirSync(dir);
+        for (const item of items) {
+          if (item.startsWith(".")) continue;
+          const fullPath = join(dir, item);
+          const relativePath = prefix ? `${prefix}/${item}` : item;
+          const stat = statSync(fullPath);
+          if (stat.isDirectory()) {
+            result.push(...collectFiles(fullPath, relativePath));
+          } else {
+            const ext = item.includes(".") ? item.slice(item.lastIndexOf(".")).toLowerCase() : "";
+            result.push({ name: item, path: relativePath, size: stat.size, ext });
+          }
+        }
+      } catch {}
+      return result;
+    }
+
+    const allFiles = collectFiles(WS_BASE, "");
+    if (allFiles.length === 0) {
+      res.json({ success: true, message: "没有文件需要整理", moves: [] });
+      return;
+    }
+
+    // 用 LLM 分析文件，决定整理方案
+    const fileList = allFiles.map((f) => `${f.path} (${f.ext}, ${(f.size / 1024).toFixed(1)}KB)`).join("\n");
+
+    const prompt = `你是一个文件整理助手。请分析以下文件列表，将它们整理到合理的文件夹结构中。
+
+当前文件列表：
+${fileList}
+
+要求：
+1. 根据文件类型、名称语义进行智能分类
+2. 合理的文件夹命名（中文即可）
+3. 已经在合理文件夹中的文件无需移动
+4. uploads/ 下的上传文件保持不动
+5. 数据库文件（.db/.db-shm/.db-wal）归到"数据库"文件夹
+6. 代码脚本（.py/.js/.ts）归到"脚本"文件夹
+7. 文档（.docx/.pdf/.pptx/.xlsx/.md/.txt）按内容语义分类
+8. 已在有意义的文件夹中（非uploads）的文件可保持不动
+
+输出 JSON 数组（仅 JSON，无 markdown）：
+[{"from": "原始路径", "to": "目标路径"}, ...]
+只输出需要移动的文件。不需要移动的不要输出。`;
+
+    const orch = getOrchestrator();
+    const provider = orch?.["deps"]?.provider;
+    if (!provider) {
+      res.status(500).json({ success: false, error: "LLM provider not available" });
+      return;
+    }
+
+    const response = await provider.chat([{ role: "user", content: prompt }]);
+    const content = response.content?.trim() ?? "[]";
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      res.json({ success: true, message: "AI 分析完成，无需移动", moves: [] });
+      return;
+    }
+
+    const moves = JSON.parse(jsonMatch[0]) as Array<{ from: string; to: string }>;
+
+    // 执行移动
+    const executed: Array<{ from: string; to: string; success: boolean; error?: string }> = [];
+    for (const m of moves) {
+      const absFrom = join(WS_BASE, m.from);
+      const absTo = join(WS_BASE, m.to);
+      if (!absFrom.startsWith(WS_BASE) || !absTo.startsWith(WS_BASE)) {
+        executed.push({ ...m, success: false, error: "path security violation" });
+        continue;
+      }
+      if (!existsSync(absFrom)) {
+        executed.push({ ...m, success: false, error: "source not found" });
+        continue;
+      }
+      try {
+        mkdirSync(dirname(absTo), { recursive: true });
+        renameSync(absFrom, absTo);
+        executed.push({ ...m, success: true });
+      } catch (e: any) {
+        executed.push({ ...m, success: false, error: e.message });
+      }
+    }
+
+    res.json({ success: true, message: `已整理 ${executed.filter((e) => e.success).length} 个文件`, moves: executed });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ===== Markdown 预览 & 转码下载 API =====
+
+// 返回 markdown 原文（供前端预览）
+app.get("/api/file/content", requireAuth, (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+  const wsBase = join(process.cwd(), ".raos", "workspace");
+  const absPath = join(wsBase, filePath);
+  if (!absPath.startsWith(wsBase)) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  if (!existsSync(absPath)) {
+    res.status(404).json({ success: false, error: "file not found" });
+    return;
+  }
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  createReadStream(absPath).pipe(res);
+});
+
+// markdown 转码下载
+app.get("/api/download/convert", requireAuth, async (req, res) => {
+  const filePath = req.query.path as string;
+  const format = req.query.format as string;
+  if (!filePath || !format) {
+    res.status(400).json({ success: false, error: "path and format required" });
+    return;
+  }
+  if (!["pdf", "docx", "pptx"].includes(format)) {
+    res.status(400).json({ success: false, error: "format must be pdf, docx, or pptx" });
+    return;
+  }
+  const wsBase = join(process.cwd(), ".raos", "workspace");
+  const absPath = join(wsBase, filePath);
+  if (!absPath.startsWith(wsBase)) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  if (!existsSync(absPath)) {
+    res.status(404).json({ success: false, error: "file not found" });
+    return;
+  }
+
+  try {
+    const mdContent = readFileSync(absPath, "utf-8");
+    const baseName = (filePath.split("/").pop() || "document").replace(/\.md$/i, "");
+
+    if (format === "pdf") {
+      const buf = await convertToPdf(mdContent);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(baseName + ".pdf")}`);
+      res.send(buf);
+    } else if (format === "docx") {
+      const buf = await convertToDocx(mdContent);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(baseName + ".docx")}`);
+      res.send(buf);
+    } else if (format === "pptx") {
+      const theme = req.query.theme as string | undefined;
+      const buf = await convertToPptx(mdContent, theme);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(baseName + ".pptx")}`);
+      res.send(buf);
+    }
+  } catch (e: any) {
+    console.error("Convert error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// --- 转码函数 ---
+
+async function convertToPdf(md: string): Promise<Buffer> {
+  const { marked } = await import("marked");
+  const html = await marked(md);
+  const styledHtml = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.8; color: #333; }
+  h1 { font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 8px; }
+  h2 { font-size: 20px; margin-top: 24px; }
+  h3 { font-size: 16px; margin-top: 20px; }
+  code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 4px solid #ddd; margin: 16px 0; padding: 8px 16px; color: #666; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f5f5f5; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+</style></head><body>${html}</body></html>`;
+
+  const puppeteer = await import("puppeteer");
+  const browser = await puppeteer.default.launch({ headless: true, args: ["--no-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(styledHtml, { waitUntil: "networkidle0" });
+    const pdfBuf = await page.pdf({ format: "A4", margin: { top: "20mm", bottom: "20mm", left: "15mm", right: "15mm" }, printBackground: true });
+    return Buffer.from(pdfBuf);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function convertToDocx(md: string): Promise<Buffer> {
+  const { marked } = await import("marked");
+  const docx = await import("docx");
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = docx;
+
+  const tokens = marked.lexer(md);
+  const children: any[] = [];
+
+  for (const token of tokens) {
+    if (token.type === "heading") {
+      const levelMap: Record<number, any> = {
+        1: HeadingLevel.HEADING_1,
+        2: HeadingLevel.HEADING_2,
+        3: HeadingLevel.HEADING_3,
+        4: HeadingLevel.HEADING_4,
+        5: HeadingLevel.HEADING_5,
+        6: HeadingLevel.HEADING_6,
+      };
+      children.push(new Paragraph({
+        text: token.text,
+        heading: levelMap[token.depth] || HeadingLevel.HEADING_1,
+        spacing: { before: 240, after: 120 },
+      }));
+    } else if (token.type === "paragraph") {
+      children.push(new Paragraph({
+        children: parseInlineTokens(token.tokens || [], TextRun),
+        spacing: { after: 120 },
+      }));
+    } else if (token.type === "list") {
+      for (const item of token.items) {
+        children.push(new Paragraph({
+          children: parseInlineTokens(item.tokens?.[0]?.type === "text" ? (item.tokens[0] as any).tokens || item.tokens : item.tokens || [], TextRun),
+          bullet: { level: 0 },
+          spacing: { after: 60 },
+        }));
+      }
+    } else if (token.type === "code") {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: token.text, font: { name: "Courier New" }, size: 20 })],
+        spacing: { before: 120, after: 120 },
+      }));
+    } else if (token.type === "blockquote") {
+      const bqText = token.tokens?.map((t: any) => t.text || t.raw || "").join("\n") || token.raw;
+      children.push(new Paragraph({
+        children: [new TextRun({ text: bqText, italics: true, color: "666666" })],
+        indent: { left: 720 },
+        spacing: { before: 120, after: 120 },
+      }));
+    } else if (token.type === "hr") {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: "" })],
+        border: { bottom: { style: docx.BorderStyle.SINGLE, size: 6, color: "CCCCCC" } },
+        spacing: { before: 240, after: 240 },
+      }));
+    } else if (token.type === "space") {
+      // skip
+    } else {
+      // fallback: raw text
+      const rawText = (token as any).text || (token as any).raw || "";
+      if (rawText.trim()) {
+        children.push(new Paragraph({
+          children: [new TextRun({ text: rawText })],
+          spacing: { after: 120 },
+        }));
+      }
+    }
+  }
+
+  const doc = new Document({
+    sections: [{ children }],
+  });
+  const buf = await Packer.toBuffer(doc);
+  return Buffer.from(buf);
+}
+
+function parseInlineTokens(tokens: any[], TextRun: any): any[] {
+  const runs: any[] = [];
+  for (const t of tokens) {
+    if (t.type === "text") {
+      runs.push(new TextRun({ text: t.text || t.raw || "" }));
+    } else if (t.type === "strong") {
+      runs.push(new TextRun({ text: t.text || "", bold: true }));
+    } else if (t.type === "em") {
+      runs.push(new TextRun({ text: t.text || "", italics: true }));
+    } else if (t.type === "codespan") {
+      runs.push(new TextRun({ text: t.text || "", font: { name: "Courier New" }, size: 20 }));
+    } else if (t.type === "link") {
+      runs.push(new TextRun({ text: t.text || t.href || "" }));
+    } else {
+      runs.push(new TextRun({ text: t.text || t.raw || "" }));
+    }
+  }
+  if (runs.length === 0) {
+    runs.push(new TextRun({ text: "" }));
+  }
+  return runs;
+}
+
+// ===== PPTX 主题系统 =====
+
+interface PptxTheme {
+  name: string;
+  label: string;
+  background: string;            // slide 背景色
+  backgroundGrad?: { color: string; color2: string; type: "linear"; }; // 渐变背景
+  titleColor: string;
+  bodyColor: string;
+  accentColor: string;            // 强调色（装饰线等）
+  titleFont: string;
+  bodyFont: string;
+  titleSize: number;
+  bodySize: number;
+  coverTitleSize: number;
+  coverSubtitleSize: number;
+}
+
+const PPTX_THEMES: Record<string, PptxTheme> = {
+  "business-blue": {
+    name: "business-blue", label: "商务蓝",
+    background: "FFFFFF",
+    titleColor: "1B3A5C", bodyColor: "444444", accentColor: "2B7AE0",
+    titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei",
+    titleSize: 28, bodySize: 16, coverTitleSize: 36, coverSubtitleSize: 18,
+  },
+  "tech-dark": {
+    name: "tech-dark", label: "科技深色",
+    background: "1A1A2E",
+    backgroundGrad: { color: "1A1A2E", color2: "16213E", type: "linear" },
+    titleColor: "E0E0FF", bodyColor: "B0B0CC", accentColor: "00D4FF",
+    titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei",
+    titleSize: 28, bodySize: 16, coverTitleSize: 38, coverSubtitleSize: 18,
+  },
+  "minimal-white": {
+    name: "minimal-white", label: "简约白",
+    background: "FAFAFA",
+    titleColor: "222222", bodyColor: "555555", accentColor: "888888",
+    titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei",
+    titleSize: 26, bodySize: 15, coverTitleSize: 34, coverSubtitleSize: 16,
+  },
+  "vibrant-orange": {
+    name: "vibrant-orange", label: "活力橙",
+    background: "FFFAF5",
+    titleColor: "D4520A", bodyColor: "4A4A4A", accentColor: "FF6B2B",
+    titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei",
+    titleSize: 28, bodySize: 16, coverTitleSize: 36, coverSubtitleSize: 18,
+  },
+  "academic-green": {
+    name: "academic-green", label: "学术绿",
+    background: "F5FAF5",
+    titleColor: "1B5E20", bodyColor: "3E3E3E", accentColor: "43A047",
+    titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei",
+    titleSize: 28, bodySize: 16, coverTitleSize: 36, coverSubtitleSize: 18,
+  },
+};
+
+function parsePptxFrontmatter(md: string): { theme: string; content: string } {
+  const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!fmMatch) return { theme: "business-blue", content: md };
+  const fmBlock = fmMatch[1];
+  const themeMatch = fmBlock.match(/theme:\s*(.+)/);
+  const theme = themeMatch ? themeMatch[1].trim() : "business-blue";
+  const content = md.slice(fmMatch[0].length);
+  return { theme, content };
+}
+
+/** 去掉 HTML 标签，保留纯文本 */
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+    .trim();
+}
+
+/** 将 HTML <table> 转为 markdown 表格 */
+function htmlTableToMarkdown(tableHtml: string): string {
+  const rows: string[][] = [];
+  // 匹配每一行 <tr>
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let trMatch;
+  while ((trMatch = trRegex.exec(tableHtml)) !== null) {
+    const cells: string[] = [];
+    const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+    let cellMatch;
+    while ((cellMatch = cellRegex.exec(trMatch[1])) !== null) {
+      cells.push(stripHtmlTags(cellMatch[1]));
+    }
+    if (cells.length > 0) rows.push(cells);
+  }
+
+  if (rows.length === 0) return "";
+
+  // 统一列数
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const normalized = rows.map((r) => {
+    while (r.length < colCount) r.push("");
+    return r;
+  });
+
+  // 生成 markdown 表格
+  const lines: string[] = [];
+  // 第一行作为表头
+  lines.push("| " + normalized[0].join(" | ") + " |");
+  lines.push("| " + normalized[0].map(() => "---").join(" | ") + " |");
+  // 后续行
+  for (let i = 1; i < normalized.length; i++) {
+    lines.push("| " + normalized[i].join(" | ") + " |");
+  }
+  return lines.join("\n");
+}
+
+/** 清理 slide 内容中的 HTML，转为纯 markdown 格式 */
+function cleanSlideHtml(raw: string): string {
+  let text = raw;
+
+  // 0. 移除 <style> 块
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+
+  // 1. 提取 <h1>~<h6> 标签为 markdown heading
+  text = text.replace(/<h(\d)[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level, content) => {
+    const clean = stripHtmlTags(content);
+    return clean ? `${"#".repeat(parseInt(level))} ${clean}` : "";
+  });
+
+  // 2. 将 HTML <table> 转为 markdown 表格
+  text = text.replace(/<table[^>]*>([\s\S]*?)<\/table>/gi, (_m, inner) => {
+    return htmlTableToMarkdown(inner);
+  });
+
+  // 3. 提取 <div>/<p> 中的文本
+  text = text.replace(/<(?:div|p)[^>]*>([\s\S]*?)<\/(?:div|p)>/gi, (_m, inner) => {
+    const cleaned = stripHtmlTags(inner);
+    return cleaned || "";
+  });
+
+  // 4. 移除剩余 HTML 标签
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<[^>]+>/g, "");
+
+  // 5. 解码剩余 HTML 实体
+  text = text.replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+
+  // 6. 清理多余空行，去重连续相同行
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  const lines = text.split("\n");
+  const deduped: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && deduped.length > 0 && deduped[deduped.length - 1].trim() === trimmed) continue;
+    deduped.push(line);
+  }
+
+  return deduped.join("\n");
+}
+
+async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
+  const pptxgenjs = await import("pptxgenjs");
+  const PptxGenJS = pptxgenjs.default || pptxgenjs;
+  const pptx = new (PptxGenJS as any)();
+  pptx.layout = "LAYOUT_WIDE";
+
+  // 解析 frontmatter 获取主题
+  const parsed = parsePptxFrontmatter(md);
+  const resolvedTheme = themeName || parsed.theme;
+  let theme: PptxTheme = PPTX_THEMES[resolvedTheme] || PPTX_THEMES["business-blue"];
+
+  // 如果不在内置主题中，尝试从 DB 查询自定义主题
+  if (!PPTX_THEMES[resolvedTheme]) {
+    try {
+      const row = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?").get(resolvedTheme, resolvedTheme) as any;
+      if (row) {
+        const colors = JSON.parse(row.colors_json);
+        const fonts = JSON.parse(row.fonts_json);
+        theme = {
+          name: row.id,
+          label: row.name,
+          background: colors.background || "FFFFFF",
+          titleColor: colors.text || colors.primary || "333333",
+          bodyColor: "444444",
+          accentColor: colors.secondary || colors.accent || "4472C4",
+          titleFont: fonts.heading || "Microsoft YaHei",
+          bodyFont: fonts.body || "Microsoft YaHei",
+          titleSize: 28, bodySize: 16, coverTitleSize: 36, coverSubtitleSize: 18,
+        };
+      }
+    } catch { /* DB 查询失败则使用默认主题 */ }
+  }
+
+  const content = parsed.content;
+
+  const slides = content.split(/\n---\n/).map((s) => s.trim()).filter(Boolean);
+
+  for (let si = 0; si < slides.length; si++) {
+    const slideContent = slides[si];
+    const slide = pptx.addSlide();
+
+    // 设置背景
+    if (theme.backgroundGrad) {
+      slide.background = { color: theme.background };
+    } else {
+      slide.background = { color: theme.background };
+    }
+
+    // 清理 HTML 内容，转为纯 markdown
+    const cleanedContent = cleanSlideHtml(slideContent);
+    const lines = cleanedContent.split("\n");
+    let title = "";
+    let subtitle = "";
+    const bullets: string[] = [];
+    const tableRows: string[][] = [];  // markdown 表格数据
+    let isCover = false;
+    let inTable = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) { inTable = false; continue; }
+
+      // 检测 markdown 表格行 | col | col |
+      if (/^\|.+\|$/.test(trimmed)) {
+        // 跳过分隔行 |---|---|
+        if (/^\|[\s\-:|]+\|$/.test(trimmed)) { inTable = true; continue; }
+        const cells = trimmed.split("|").slice(1, -1).map((c) => c.trim());
+        if (cells.length > 0) { tableRows.push(cells); inTable = true; }
+        continue;
+      }
+      inTable = false;
+
+      if (!title && /^#{1,3}\s+/.test(trimmed)) {
+        title = trimmed.replace(/^#{1,3}\s+/, "");
+        if (si === 0 && /^#\s+/.test(trimmed)) isCover = true;
+      } else if (/^>\s+/.test(trimmed) && !subtitle) {
+        subtitle = trimmed.replace(/^>\s+/, "");
+      } else if (/^[-*+]\s+/.test(trimmed)) {
+        bullets.push(trimmed.replace(/^[-*+]\s+/, ""));
+      } else if (trimmed && !title) {
+        title = trimmed;
+      } else if (trimmed) {
+        bullets.push(trimmed);
+      }
+    }
+
+    // 顶部装饰线
+    slide.addShape("rect" as any, {
+      x: 0, y: 0, w: "100%", h: 0.06,
+      fill: { color: theme.accentColor },
+    });
+
+    if (isCover || (si === 0 && !bullets.length && tableRows.length === 0)) {
+      // 封面页布局：居中大标题
+      if (title) {
+        slide.addText(title, {
+          x: 0.8, y: 1.5, w: "85%", h: 1.5,
+          fontSize: theme.coverTitleSize, bold: true,
+          color: theme.titleColor, fontFace: theme.titleFont,
+          align: "center", valign: "middle",
+        });
+      }
+      if (subtitle) {
+        slide.addText(subtitle, {
+          x: 0.8, y: 3.2, w: "85%", h: 0.8,
+          fontSize: theme.coverSubtitleSize, color: theme.bodyColor,
+          fontFace: theme.bodyFont, align: "center", valign: "top",
+        });
+      }
+      // 底部装饰线
+      slide.addShape("rect" as any, {
+        x: 4, y: 3.0, w: 5.3, h: 0.04,
+        fill: { color: theme.accentColor },
+      });
+    } else {
+      // 内容页布局
+      if (title) {
+        slide.addText(title, {
+          x: 0.6, y: 0.25, w: "88%", h: 0.9,
+          fontSize: theme.titleSize, bold: true,
+          color: theme.titleColor, fontFace: theme.titleFont,
+          align: "left", valign: "middle",
+        });
+        // 标题下装饰线
+        slide.addShape("rect" as any, {
+          x: 0.6, y: 1.15, w: 1.5, h: 0.04,
+          fill: { color: theme.accentColor },
+        });
+      }
+
+      // 计算内容区起始 Y 位置
+      const contentY = title ? 1.4 : 0.4;
+      let currentY = contentY;
+
+      // 渲染 markdown 表格为 pptx 原生表格
+      if (tableRows.length > 0) {
+        const colCount = Math.max(...tableRows.map((r) => r.length));
+        const tableWidth = 11.5; // inches (LAYOUT_WIDE ≈ 13.33)
+        const colW = tableWidth / colCount;
+
+        const pptxRows: any[][] = tableRows.map((row, ri) => {
+          while (row.length < colCount) row.push("");
+          return row.map((cell) => ({
+            text: cell,
+            options: {
+              fontSize: ri === 0 ? 12 : 11,
+              bold: ri === 0,
+              color: ri === 0 ? "FFFFFF" : theme.bodyColor,
+              fontFace: theme.bodyFont,
+              align: "center" as const,
+              valign: "middle" as const,
+              fill: ri === 0 ? { color: theme.accentColor } : undefined,
+            },
+          }));
+        });
+
+        const rowH = 0.4;
+        const tableH = Math.min(pptxRows.length * rowH, 4.5);
+
+        slide.addTable(pptxRows, {
+          x: 0.6, y: currentY, w: tableWidth,
+          colW: Array(colCount).fill(colW),
+          rowH,
+          border: { type: "solid", pt: 0.5, color: "CCCCCC" },
+          autoPage: false,
+        });
+
+        currentY += tableH + 0.2;
+      }
+
+      // 渲染 bullet 要点（在表格下方）
+      if (bullets.length > 0) {
+        const remainH = 6.0 - currentY;
+        const bodyText = bullets.map((b) => ({
+          text: b,
+          options: {
+            fontSize: theme.bodySize, color: theme.bodyColor,
+            fontFace: theme.bodyFont,
+            bullet: { type: "bullet" as const },
+            breakLine: true,
+            lineSpacingMultiple: 1.5,
+          },
+        }));
+        slide.addText(bodyText, {
+          x: 0.6, y: currentY, w: "88%", h: remainH > 0.5 ? remainH : 4.5,
+          valign: "top",
+          paraSpaceAfter: 6,
+        });
+      }
+    }
+
+    // 页码（非封面页）
+    if (si > 0 || (!isCover && bullets.length > 0)) {
+      slide.addText(`${si + 1}`, {
+        x: "90%", y: "92%", w: 0.8, h: 0.3,
+        fontSize: 10, color: theme.bodyColor,
+        fontFace: theme.bodyFont, align: "right",
+      });
+    }
+  }
+
+  const arrBuf = await pptx.write({ outputType: "nodebuffer" });
+  return Buffer.from(arrBuf as ArrayBuffer);
+}
+
+// PPTX 主题列表 API（内置 + 自定义）
+app.get("/api/pptx/themes", requireAuth, (req: any, res) => {
+  const builtIn = Object.values(PPTX_THEMES).map((t) => ({
+    name: t.name, label: t.label, custom: false,
+    preview: { bg: t.background, title: t.titleColor, accent: t.accentColor },
+  }));
+
+  let custom: any[] = [];
+  try {
+    const userId = req.user?.id;
+    if (userId) {
+      const rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+      custom = rows.map((r) => {
+        const colors = JSON.parse(r.colors_json);
+        return {
+          name: r.id, label: r.name, custom: true,
+          sourceFile: r.source_file,
+          preview: { bg: colors.background || "FFFFFF", title: colors.text || colors.primary, accent: colors.secondary || colors.accent },
+        };
+      });
+    }
+  } catch { /* 表可能不存在 */ }
+
+  res.json({ success: true, themes: [...builtIn, ...custom] });
+});
+
+// PPTX 风格学习 — 上传 PPTX 提取主题
+app.post("/api/pptx/themes/learn", requireAuth, express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  try {
+    const contentType = req.headers["content-type"] as string;
+    const boundaryMatch = contentType?.match(/boundary=(.+)/);
+    if (!boundaryMatch) {
+      res.status(400).json({ success: false, error: "缺少 multipart boundary" });
+      return;
+    }
+
+    const parts = parseMultipart(req.body as Buffer, boundaryMatch[1]);
+    const pptxFile = parts.find((p) => p.filename.toLowerCase().endsWith(".pptx"));
+    if (!pptxFile) {
+      res.status(400).json({ success: false, error: "请上传 .pptx 文件" });
+      return;
+    }
+
+    // 从 multipart 文本字段提取 name（简单方式：用查询参数或文件名）
+    const themeName = (req.query.name as string) || undefined;
+
+    const style = await extractPptxStyle(pptxFile.data, pptxFile.filename, themeName);
+
+    const id = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, error: "未认证" });
+      return;
+    }
+
+    getDb().prepare(
+      "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+
+    res.json({
+      success: true,
+      theme: {
+        id,
+        name: style.name,
+        colors: style.colors,
+        fonts: style.fonts,
+        sourceFile: style.sourceFile,
+      },
+    });
+  } catch (e: any) {
+    console.error("PPTX style learn error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 删除自定义 PPTX 主题
+app.delete("/api/pptx/themes/:id", requireAuth, (req: any, res) => {
+  try {
+    const themeId = req.params.id;
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, error: "未认证" });
+      return;
+    }
+
+    const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
+    if (result.changes === 0) {
+      res.status(404).json({ success: false, error: "主题不存在或无权删除" });
+      return;
+    }
+
+    res.json({ success: true, deleted: themeId });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ===== 文件下载 API =====
+
+// 单文件下载
+app.get("/api/download", requireAuth, (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ success: false, error: "path required" });
+    return;
+  }
+  const absPath = join(process.cwd(), ".raos", "workspace", filePath);
+  if (!absPath.startsWith(join(process.cwd(), ".raos", "workspace"))) {
+    res.status(403).json({ success: false, error: "access denied" });
+    return;
+  }
+  if (!existsSync(absPath)) {
+    res.status(404).json({ success: false, error: "file not found" });
+    return;
+  }
+  const fileName = filePath.split("/").pop() || "download";
+  const encodedName = encodeURIComponent(fileName);
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodedName}`);
+  res.setHeader("Content-Length", statSync(absPath).size);
+  createReadStream(absPath).pipe(res);
+});
+
+// 多文件 zip 下载
+app.post("/api/download/zip", requireAuth, async (req, res) => {
+  const { files } = req.body as { files: string[] };
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    res.status(400).json({ success: false, error: "files array required" });
+    return;
+  }
+
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    const wsBase = join(process.cwd(), ".raos", "workspace");
+
+    for (const f of files) {
+      const absPath = join(wsBase, f);
+      if (!absPath.startsWith(wsBase) || !existsSync(absPath)) continue;
+      const fileName = f.split("/").pop() || f;
+      zip.file(fileName, readFileSync(absPath));
+    }
+
+    const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="files_${Date.now()}.zip"`);
+    res.send(buf);
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 静态文件 - UI
+// assets/ 目录文件名含 content hash，可以长期缓存
+app.use("/assets", express.static(join(__dirname, "ui", "assets"), {
+  maxAge: "1y",
+  immutable: true,
+}));
+// 其他静态文件不缓存（特别是 index.html）
+app.use(express.static(join(__dirname, "ui"), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res, filePath) => {
+    // index.html 和非 hash 文件不缓存
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+  },
+}));
+
+// SPA fallback — 非 API 路由全部返回 index.html（禁止缓存）
+app.use((req, res, next) => {
+  if (req.method === "GET" && !req.path.startsWith("/api/") && !req.path.includes(".")) {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.sendFile(join(__dirname, "ui", "index.html"));
+  } else {
+    next();
+  }
+});
+
+const PORT = process.env.PORT ?? 3000;
+
+// 启动时自动 WAL 恢复
+const walRecoveryPlan = wal.recover();
+if (walRecoveryPlan.entries.length > 0) {
+  console.log(`\n   WAL recovery: ${walRecoveryPlan.description}`);
+  wal.replay(engine).then((result) => {
+    console.log(`   WAL replay complete: ${result.succeeded} succeeded, ${result.failed} failed, ${result.skipped} skipped (${result.durationMs}ms)`);
+  }).catch((err) => {
+    console.error(`   WAL replay error: ${err.message}`);
+  });
+}
+
+app.listen(PORT, () => {
+  console.log(`\n🚀 RAOS Dev Server running at http://localhost:${PORT}`);
+  console.log(`   API:  http://localhost:${PORT}/api/skills`);
+  console.log(`   UI:   http://localhost:${PORT}`);
+  console.log(`   Instance: ${instanceId}`);
+
+  // 启动联邦心跳和进化引擎 — 从 ConfigManager 读取 peers
+  const fedPeers = configManager.getFederation().peers;
+  if (fedPeers.length > 0) {
+    for (const peer of fedPeers) {
+      federationTransport.addPeer({
+        instanceId: peer.endpoint,
+        endpoint: peer.endpoint,
+        version: "2.0",
+        capabilities: [],
+        skillCount: 0,
+        lastHeartbeat: Date.now(),
+      });
+    }
+    federationManager.start();
+    console.log(`   Federation: ${fedPeers.length} peers configured`);
+  }
+
+  const evoConfig = configManager.getEvolution();
+  evolutionEngine.start();
+  console.log(`   Evolution engine: started (auto=${evoConfig.autoExecute})\n`);
+});

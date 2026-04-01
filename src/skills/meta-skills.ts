@@ -1,0 +1,756 @@
+/**
+ * 元 Skill：Skill 的自我进化能力
+ *
+ * - skill_compose: 声明式组合多个 Skill 为一个新 Skill（流水线/并行/条件）
+ * - skill_from_template: 基于参数化模板生成 Skill
+ * - skill_from_description: LLM 驱动，从自然语言描述生成 Skill
+ * - skill_optimizer: 分析 Skill 执行指标，建议优化
+ * - skill_list_all: 列出所有 Skill 的完整信息（含指标）
+ */
+import { defineSkill } from "../types/index.js";
+import type { SkillRegistry } from "../registry/index.js";
+import type { ExecutionEngine } from "../engine/index.js";
+import type { LLMProvider } from "../llm/types.js";
+
+export function createMetaSkills(
+  registry: SkillRegistry,
+  engine: ExecutionEngine,
+  llmProvider?: LLMProvider | (() => LLMProvider | null),
+): void {
+  function getProvider(): LLMProvider | null {
+    if (!llmProvider) return null;
+    return typeof llmProvider === "function" ? llmProvider() : llmProvider;
+  }
+  // ===== skill_compose: 声明式组合 =====
+  registry.register(
+    defineSkill({
+      name: "skill_compose",
+      description: `创建一个组合 Skill，将多个现有 Skill 串联或并行执行。
+参数:
+  name(string): 新 Skill 的名称
+  description(string): 描述
+  steps(array): 执行步骤数组，每个步骤:
+    - { skill: "skill名", params: {参数映射}, outputKey?: "结果存储键" }
+    - 参数映射中可用 $input 引用原始输入，$steps.stepKey 引用前序步骤结果
+  mode?("sequential"|"parallel"): 执行模式，默认 sequential`,
+      handler: async (params) => {
+        const name = params.name as string;
+        const description = params.description as string;
+        const steps = params.steps as Array<{
+          skill: string;
+          params?: Record<string, unknown>;
+          outputKey?: string;
+        }>;
+        const mode = (params.mode as string) ?? "sequential";
+
+        if (!name || !steps || steps.length === 0) {
+          return { success: false, error: new Error("name 和 steps 参数必填") };
+        }
+
+        // 验证所有引用的 Skill 存在
+        for (const step of steps) {
+          if (!registry.lookup(step.skill)) {
+            return { success: false, error: new Error(`Skill 不存在: ${step.skill}`) };
+          }
+        }
+
+        // 检查名字冲突
+        if (registry.lookup(name)) {
+          return { success: false, error: new Error(`Skill 已存在: ${name}`) };
+        }
+
+        // 创建组合 Skill
+        const composedSkill = defineSkill({
+          name,
+          description: `[组合] ${description}`,
+          handler: async (inputParams, context) => {
+            const results: Record<string, unknown> = {};
+            results["$input"] = inputParams;
+
+            if (mode === "parallel") {
+              // 并行执行所有步骤
+              const promises = steps.map(async (step) => {
+                const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
+                const result = await engine.execute(step.skill, resolvedParams);
+                return { key: step.outputKey ?? step.skill, result };
+              });
+
+              const parallelResults = await Promise.all(promises);
+              for (const { key, result } of parallelResults) {
+                results[key] = result.data;
+              }
+            } else {
+              // 顺序执行
+              for (const step of steps) {
+                const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
+                const result = await engine.execute(step.skill, resolvedParams);
+                const key = step.outputKey ?? step.skill;
+                results[key] = result.data;
+
+                if (!result.success) {
+                  return {
+                    success: false,
+                    error: new Error(`步骤 ${step.skill} 失败: ${result.error?.message}`),
+                    data: results,
+                  };
+                }
+              }
+            }
+
+            return { success: true, data: results };
+          },
+        });
+
+        registry.register(composedSkill);
+
+        return {
+          success: true,
+          data: {
+            name,
+            description,
+            steps: steps.length,
+            mode,
+            message: `组合 Skill "${name}" 创建成功，包含 ${steps.length} 个步骤`,
+          },
+        };
+      },
+    }),
+  );
+
+  // ===== skill_from_template: 模板生成 =====
+  registry.register(
+    defineSkill({
+      name: "skill_from_template",
+      description: `基于模板创建新 Skill。
+参数:
+  name(string): 新 Skill 名称
+  description(string): 描述
+  template("transform"|"validate"|"aggregate"): 模板类型
+  config(object): 模板配置
+    transform: { inputField: string, outputField: string, expression: string }
+    validate: { rules: [{field: string, condition: string, message: string}] }
+    aggregate: { skills: string[], mergeStrategy: "concat"|"merge"|"pick_best" }`,
+      handler: async (params) => {
+        const name = params.name as string;
+        const description = params.description as string;
+        const template = params.template as string;
+        const config = params.config as Record<string, unknown>;
+
+        if (!name || !template) {
+          return { success: false, error: new Error("name 和 template 必填") };
+        }
+
+        if (registry.lookup(name)) {
+          return { success: false, error: new Error(`Skill 已存在: ${name}`) };
+        }
+
+        let skill;
+
+        switch (template) {
+          case "transform":
+            skill = createTransformSkill(name, description, config);
+            break;
+          case "validate":
+            skill = createValidateSkill(name, description, config);
+            break;
+          case "aggregate":
+            skill = createAggregateSkill(name, description, config, engine);
+            break;
+          default:
+            return { success: false, error: new Error(`未知模板: ${template}`) };
+        }
+
+        registry.register(skill);
+
+        return {
+          success: true,
+          data: {
+            name,
+            template,
+            message: `从模板 "${template}" 创建 Skill "${name}" 成功`,
+          },
+        };
+      },
+    }),
+  );
+
+  // ===== skill_unregister: 删除动态 Skill =====
+  registry.register(
+    defineSkill({
+      name: "skill_unregister",
+      description: "注销一个动态创建的 Skill。参数: name(string)",
+      handler: async (params) => {
+        const name = params.name as string;
+        if (!name) {
+          return { success: false, error: new Error("name 必填") };
+        }
+
+        try {
+          registry.unregister(name);
+          return { success: true, data: { unregistered: name } };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    }),
+  );
+
+  // ===== skill_info: 获取 Skill 详情 + 指标 =====
+  registry.register(
+    defineSkill({
+      name: "skill_info",
+      description: "获取指定 Skill 的详细信息和执行指标。参数: name(string)",
+      handler: async (params) => {
+        const name = params.name as string;
+        const skill = registry.lookup(name);
+        if (!skill) {
+          return { success: false, error: new Error(`Skill 不存在: ${name}`) };
+        }
+
+        const metrics = engine.metrics.getMetrics(name);
+
+        return {
+          success: true,
+          data: {
+            name: skill.name,
+            version: skill.version,
+            description: skill.description,
+            visible: skill.visible,
+            autonomy: skill.autonomy,
+            timeout: skill.timeout,
+            dependencies: skill.dependencies,
+            async: skill.async,
+            retry: skill.retry,
+            capabilities: skill.capabilities,
+            circuitBreaker: skill.circuitBreaker,
+            errorPropagation: skill.errorPropagation,
+            metrics: metrics ?? { totalCalls: 0 },
+          },
+        };
+      },
+    }),
+  );
+
+  // ===== skill_from_description: LLM 驱动的 Skill 生成 =====
+  registry.register(
+    defineSkill({
+      name: "skill_from_description",
+      description: `从自然语言描述生成新 Skill。需要 LLM 支持。
+参数:
+  name(string): 新 Skill 名称
+  description(string): Skill 功能描述（自然语言）
+  examples?(array): 输入输出示例 [{input: {}, output: {}}]
+  capabilities?(string[]): 所需权限能力声明`,
+      handler: async (params) => {
+        const provider = getProvider();
+        if (!provider) {
+          return { success: false, error: new Error("LLM 未配置，无法生成 Skill") };
+        }
+
+        const name = params.name as string;
+        const description = params.description as string;
+        const examples = (params.examples as Array<{ input: Record<string, unknown>; output: Record<string, unknown> }>) ?? [];
+        const capabilities = (params.capabilities as string[]) ?? [];
+
+        if (!name || !description) {
+          return { success: false, error: new Error("name 和 description 必填") };
+        }
+
+        if (registry.lookup(name)) {
+          return { success: false, error: new Error(`Skill 已存在: ${name}`) };
+        }
+
+        // 构建 LLM Prompt
+        const exampleText = examples.length > 0
+          ? `\n示例:\n${examples.map((e, i) => `  ${i + 1}. 输入: ${JSON.stringify(e.input)} → 输出: ${JSON.stringify(e.output)}`).join("\n")}`
+          : "";
+
+        const prompt = `你是一个 Skill 代码生成器。根据以下描述生成一个 JavaScript 函数体。
+
+Skill 名称: ${name}
+Skill 描述: ${description}${exampleText}
+
+要求:
+1. 函数接收 params 对象（Record<string, unknown>），返回 { success: boolean, data?: unknown, error?: Error }
+2. 只输出函数体代码（不需要 function 关键字和大括号）
+3. 可以使用 async/await
+4. 代码应该简洁、安全，不能使用 eval、require、import
+5. 不能访问文件系统、网络或其他外部资源
+6. 用 JavaScript 语法（不是 TypeScript）
+
+只输出纯代码，不要任何解释或 markdown 标记。`;
+
+        try {
+          const response = await provider.chat([
+            { role: "user", content: prompt },
+          ]);
+
+          let code = (response.content ?? "").trim();
+          // 清理可能的 markdown 标记
+          if (code.startsWith("```")) {
+            code = code.replace(/^```(?:javascript|js|typescript|ts)?\n?/, "").replace(/\n?```$/, "");
+          }
+
+          // 安全检查
+          const forbidden = ["require(", "import ", "process.", "child_process", "__dirname", "__filename", "eval(", "Function("];
+          for (const f of forbidden) {
+            if (code.includes(f)) {
+              return { success: false, error: new Error(`生成的代码包含禁止的操作: ${f}`) };
+            }
+          }
+
+          // 创建函数
+          const handler = new Function("params", "context", code) as (
+            params: Record<string, unknown>,
+            context: unknown,
+          ) => Promise<{ success: boolean; data?: unknown; error?: Error }>;
+
+          // 测试执行（用示例或空参数）
+          const testParams = examples.length > 0 ? examples[0].input : {};
+          const testResult = await handler(testParams, {});
+          if (typeof testResult !== "object" || testResult === null) {
+            return { success: false, error: new Error("生成的 Skill 未返回有效结果对象") };
+          }
+
+          // 注册
+          const skill = defineSkill({
+            name,
+            description: `[AI生成] ${description}`,
+            capabilities,
+            handler: async (p, ctx) => {
+              try {
+                return await handler(p, ctx);
+              } catch (err) {
+                return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+              }
+            },
+          });
+
+          registry.register(skill);
+
+          return {
+            success: true,
+            data: {
+              name,
+              description,
+              generatedCode: code,
+              testResult,
+              message: `从描述生成 Skill "${name}" 成功`,
+            },
+          };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    }),
+  );
+
+  // ===== skill_optimizer: 分析 Skill 指标并建议优化 =====
+  registry.register(
+    defineSkill({
+      name: "skill_optimizer",
+      description: `分析 Skill 执行指标，给出优化建议。
+参数:
+  name?(string): 指定 Skill 名称，不指定则分析全局
+  threshold_success_rate?(number): 成功率阈值（默认 0.9）
+  threshold_p95_ms?(number): P95 延迟阈值（默认 5000ms）`,
+      handler: async (params) => {
+        const name = params.name as string | undefined;
+        const successThreshold = (params.threshold_success_rate as number) ?? 0.9;
+        const p95Threshold = (params.threshold_p95_ms as number) ?? 5000;
+
+        if (name) {
+          const metrics = engine.metrics.getMetrics(name);
+          if (!metrics) {
+            return { success: false, error: new Error(`无指标数据: ${name}`) };
+          }
+          return {
+            success: true,
+            data: {
+              skill: name,
+              metrics,
+              issues: analyzeIssues(name, metrics, successThreshold, p95Threshold),
+            },
+          };
+        }
+
+        // 全局分析
+        const allMetrics = engine.metrics.getAllMetrics();
+        const issues: Array<{ skill: string; problems: string[] }> = [];
+
+        for (const m of allMetrics) {
+          const problems = analyzeIssues(m.skillName, m, successThreshold, p95Threshold);
+          if (problems.length > 0) {
+            issues.push({ skill: m.skillName, problems });
+          }
+        }
+
+        return {
+          success: true,
+          data: {
+            totalSkills: allMetrics.length,
+            issueCount: issues.length,
+            issues,
+          },
+        };
+      },
+    }),
+  );
+
+  // ===== skill_test: 自动测试 Skill =====
+  registry.register(
+    defineSkill({
+      name: "skill_test",
+      description: `自动测试一个 Skill，可手动提供测试用例或让 LLM 生成。
+参数:
+  name(string): 要测试的 Skill 名称
+  cases?(array): 测试用例 [{input: {}, expected?: {success: boolean, data?: any}, description?: string}]
+  auto_generate?(boolean): 是否让 LLM 自动生成测试用例（需 LLM 支持）
+  count?(number): 自动生成的用例数量（默认 3）`,
+      handler: async (params) => {
+        const name = params.name as string;
+        if (!name) {
+          return { success: false, error: new Error("name 必填") };
+        }
+
+        const skill = registry.lookup(name);
+        if (!skill) {
+          return { success: false, error: new Error(`Skill 不存在: ${name}`) };
+        }
+
+        let cases = params.cases as Array<{
+          input: Record<string, unknown>;
+          expected?: { success: boolean; data?: unknown };
+          description?: string;
+        }> | undefined;
+
+        const autoGenerate = params.auto_generate as boolean;
+        const count = (params.count as number) ?? 3;
+
+        // 自动生成测试用例
+        if (autoGenerate && (!cases || cases.length === 0)) {
+          const provider = getProvider();
+          if (!provider) {
+            return { success: false, error: new Error("LLM 未配置，无法自动生成测试用例") };
+          }
+
+          const prompt = `为以下 Skill 生成 ${count} 个测试用例。
+
+Skill 名称: ${skill.name}
+Skill 描述: ${skill.description}
+
+返回 JSON 数组格式:
+[{"input": {...}, "expected": {"success": true/false, "data": ...}, "description": "测试描述"}]
+
+只输出 JSON 数组，不要其他内容。`;
+
+          try {
+            const response = await provider.chat([
+              { role: "user", content: prompt },
+            ]);
+            let jsonStr = (response.content ?? "").trim();
+            if (jsonStr.startsWith("```")) {
+              jsonStr = jsonStr.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+            }
+            cases = JSON.parse(jsonStr);
+          } catch (err) {
+            return { success: false, error: new Error(`生成测试用例失败: ${err instanceof Error ? err.message : String(err)}`) };
+          }
+        }
+
+        if (!cases || cases.length === 0) {
+          return { success: false, error: new Error("无测试用例") };
+        }
+
+        // 执行测试
+        const results: Array<{
+          description: string;
+          input: Record<string, unknown>;
+          passed: boolean;
+          actual?: unknown;
+          expected?: unknown;
+          error?: string;
+          durationMs: number;
+        }> = [];
+
+        for (const tc of cases) {
+          const start = Date.now();
+          try {
+            const actual = await engine.execute(name, tc.input);
+            const dur = Date.now() - start;
+            let passed = true;
+
+            if (tc.expected) {
+              if (tc.expected.success !== undefined && actual.success !== tc.expected.success) {
+                passed = false;
+              }
+              if (tc.expected.data !== undefined && JSON.stringify(actual.data) !== JSON.stringify(tc.expected.data)) {
+                passed = false;
+              }
+            }
+
+            results.push({
+              description: tc.description || JSON.stringify(tc.input),
+              input: tc.input,
+              passed,
+              actual: { success: actual.success, data: actual.data },
+              expected: tc.expected,
+              durationMs: dur,
+            });
+          } catch (err) {
+            const dur = Date.now() - start;
+            const passed = tc.expected?.success === false;
+            results.push({
+              description: tc.description || JSON.stringify(tc.input),
+              input: tc.input,
+              passed,
+              error: err instanceof Error ? err.message : String(err),
+              expected: tc.expected,
+              durationMs: dur,
+            });
+          }
+        }
+
+        const passCount = results.filter((r) => r.passed).length;
+        return {
+          success: true,
+          data: {
+            skill: name,
+            total: results.length,
+            passed: passCount,
+            failed: results.length - passCount,
+            passRate: passCount / results.length,
+            results,
+          },
+        };
+      },
+    }),
+  );
+
+  // ===== skill_list_all: 列出所有 Skill 完整信息 =====
+  registry.register(
+    defineSkill({
+      name: "skill_list_all",
+      description: "列出所有已注册 Skill 的完整信息，包含版本、能力声明和执行指标。",
+      handler: async () => {
+        const skills = registry.list().map((s) => {
+          const metrics = engine.metrics.getMetrics(s.name);
+          return {
+            name: s.name,
+            version: s.version,
+            description: s.description,
+            visible: s.visible,
+            autonomy: s.autonomy,
+            dependencies: s.dependencies,
+            capabilities: s.capabilities,
+            hasCompensate: !!s.compensate,
+            hasCircuitBreaker: !!s.circuitBreaker,
+            metrics: metrics
+              ? {
+                  calls: metrics.totalCalls,
+                  successRate: metrics.successRate,
+                  avgMs: Math.round(metrics.avgDurationMs),
+                }
+              : null,
+          };
+        });
+        return { success: true, data: { count: skills.length, skills } };
+      },
+    }),
+  );
+
+  console.log("   Meta skills registered (compose/template/unregister/info/generate/optimizer/test/list_all)");
+}
+
+// ===== 指标分析 =====
+
+function analyzeIssues(
+  _name: string,
+  metrics: { totalCalls: number; successRate: number; p95DurationMs?: number; errorDistribution?: Record<string, number> },
+  successThreshold: number,
+  p95Threshold: number,
+): string[] {
+  const problems: string[] = [];
+
+  if (metrics.totalCalls > 0 && metrics.successRate < successThreshold) {
+    problems.push(
+      `成功率 ${(metrics.successRate * 100).toFixed(1)}% 低于阈值 ${(successThreshold * 100).toFixed(0)}%`,
+    );
+  }
+
+  if (metrics.p95DurationMs && metrics.p95DurationMs > p95Threshold) {
+    problems.push(
+      `P95 延迟 ${metrics.p95DurationMs.toFixed(0)}ms 超过阈值 ${p95Threshold}ms，建议添加缓存或优化逻辑`,
+    );
+  }
+
+  if (metrics.errorDistribution) {
+    const topErrors = Object.entries(metrics.errorDistribution)
+      .sort(([, a], [, b]) => (b as number) - (a as number))
+      .slice(0, 3);
+    if (topErrors.length > 0) {
+      problems.push(
+        `频繁错误类型: ${topErrors.map(([type, count]) => `${type}(${count})`).join(", ")}`,
+      );
+    }
+  }
+
+  if (metrics.totalCalls > 100 && metrics.successRate < 0.5) {
+    problems.push("建议添加熔断器配置，防止级联故障");
+  }
+
+  return problems;
+}
+
+// ===== 辅助函数 =====
+
+function resolveParams(
+  paramTemplate: Record<string, unknown>,
+  results: Record<string, unknown>,
+  originalInput: Record<string, unknown>,
+): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(paramTemplate)) {
+    if (typeof value === "string" && value.startsWith("$")) {
+      if (value === "$input") {
+        resolved[key] = originalInput;
+      } else if (value.startsWith("$input.")) {
+        const field = value.slice(7);
+        resolved[key] = (originalInput as any)[field];
+      } else if (value.startsWith("$steps.")) {
+        const parts = value.slice(7).split(".");
+        let val: any = results;
+        for (const p of parts) val = val?.[p];
+        resolved[key] = val;
+      } else {
+        resolved[key] = value;
+      }
+    } else {
+      resolved[key] = value;
+    }
+  }
+
+  return resolved;
+}
+
+function createTransformSkill(name: string, description: string, config: Record<string, unknown>) {
+  const inputField = config.inputField as string;
+  const outputField = config.outputField as string;
+  const expression = config.expression as string;
+
+  return defineSkill({
+    name,
+    description: `[模板:transform] ${description}`,
+    handler: async (params) => {
+      const input = params[inputField];
+      // 安全执行简单表达式
+      let output: unknown;
+      try {
+        if (expression === "uppercase" && typeof input === "string") {
+          output = input.toUpperCase();
+        } else if (expression === "lowercase" && typeof input === "string") {
+          output = input.toLowerCase();
+        } else if (expression === "trim" && typeof input === "string") {
+          output = input.trim();
+        } else if (expression === "length") {
+          output = typeof input === "string" ? input.length : Array.isArray(input) ? input.length : 0;
+        } else if (expression === "json_parse" && typeof input === "string") {
+          output = JSON.parse(input);
+        } else if (expression === "json_stringify") {
+          output = JSON.stringify(input);
+        } else {
+          output = input; // passthrough
+        }
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+      }
+
+      return { success: true, data: { [outputField]: output } };
+    },
+  });
+}
+
+function createValidateSkill(name: string, description: string, config: Record<string, unknown>) {
+  const rules = config.rules as Array<{ field: string; condition: string; message: string }>;
+
+  return defineSkill({
+    name,
+    description: `[模板:validate] ${description}`,
+    handler: async (params) => {
+      const errors: string[] = [];
+
+      for (const rule of rules) {
+        const value = params[rule.field];
+        let valid = true;
+
+        switch (rule.condition) {
+          case "required":
+            valid = value !== undefined && value !== null && value !== "";
+            break;
+          case "is_string":
+            valid = typeof value === "string";
+            break;
+          case "is_number":
+            valid = typeof value === "number" && !isNaN(value);
+            break;
+          case "not_empty":
+            valid = Array.isArray(value) ? value.length > 0 : !!value;
+            break;
+          default:
+            valid = true;
+        }
+
+        if (!valid) errors.push(rule.message);
+      }
+
+      return {
+        success: errors.length === 0,
+        data: { valid: errors.length === 0, errors },
+        error: errors.length > 0 ? new Error(errors.join("; ")) : undefined,
+      };
+    },
+  });
+}
+
+function createAggregateSkill(
+  name: string,
+  description: string,
+  config: Record<string, unknown>,
+  engine: ExecutionEngine,
+) {
+  const skills = config.skills as string[];
+  const mergeStrategy = (config.mergeStrategy as string) ?? "merge";
+
+  return defineSkill({
+    name,
+    description: `[模板:aggregate] ${description}`,
+    handler: async (params) => {
+      const results = await Promise.all(
+        skills.map((s) => engine.execute(s, params)),
+      );
+
+      if (mergeStrategy === "concat") {
+        const combined = results.map((r) => r.data);
+        return { success: true, data: { results: combined } };
+      } else if (mergeStrategy === "pick_best") {
+        const successful = results.filter((r) => r.success);
+        return {
+          success: successful.length > 0,
+          data: successful[0]?.data ?? null,
+        };
+      } else {
+        // merge
+        let merged: Record<string, unknown> = {};
+        for (let i = 0; i < results.length; i++) {
+          if (results[i].data && typeof results[i].data === "object") {
+            merged = { ...merged, ...(results[i].data as Record<string, unknown>) };
+          } else {
+            merged[skills[i]] = results[i].data;
+          }
+        }
+        return { success: true, data: merged };
+      }
+    },
+  });
+}

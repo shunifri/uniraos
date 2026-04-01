@@ -1,0 +1,194 @@
+/**
+ * 部门仓库：CRUD + 树操作 + 资源分配
+ */
+import { randomUUID } from "crypto";
+import { getDb } from "./database.js";
+
+export interface Department {
+  id: string;
+  name: string;
+  parentId: string | null;
+  path: string;
+  level: number;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateDepartmentInput {
+  name: string;
+  parentId?: string;
+  description?: string;
+}
+
+// ===== CRUD =====
+
+export function createDepartment(input: CreateDepartmentInput): Department {
+  const db = getDb();
+  const id = `dept_${randomUUID().slice(0, 12)}`;
+
+  let parentPath = "";
+  let level = 0;
+
+  if (input.parentId) {
+    const parent = getDepartmentById(input.parentId);
+    if (!parent) throw new Error(`Parent department not found: ${input.parentId}`);
+    parentPath = parent.path;
+    level = parent.level + 1;
+  }
+
+  const path = parentPath ? `${parentPath}/${input.name}` : `/${input.name}`;
+
+  // 检查同级重名
+  const existing = db.prepare(
+    "SELECT 1 FROM departments WHERE parent_id IS ? AND name = ?"
+  ).get(input.parentId ?? null, input.name);
+  if (existing) throw new Error(`Department "${input.name}" already exists under this parent`);
+
+  db.prepare(`
+    INSERT INTO departments (id, name, parent_id, path, level, description)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, input.name, input.parentId ?? null, path, level, input.description ?? "");
+
+  return getDepartmentById(id)!;
+}
+
+export function getDepartmentById(id: string): Department | null {
+  const row = getDb().prepare("SELECT * FROM departments WHERE id = ?").get(id) as any;
+  return row ? mapDepartment(row) : null;
+}
+
+export function getDepartmentTree(): Department[] {
+  const rows = getDb().prepare("SELECT * FROM departments ORDER BY path").all() as any[];
+  return rows.map(mapDepartment);
+}
+
+export function getDepartmentChildren(parentId: string): Department[] {
+  const rows = getDb().prepare(
+    "SELECT * FROM departments WHERE parent_id = ? ORDER BY name"
+  ).all(parentId) as any[];
+  return rows.map(mapDepartment);
+}
+
+export function updateDepartment(id: string, fields: { name?: string; description?: string }): Department | null {
+  const db = getDb();
+  const dept = getDepartmentById(id);
+  if (!dept) return null;
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+
+  if (fields.name !== undefined && fields.name !== dept.name) {
+    // 更新自身及所有子部门的 path
+    const oldPath = dept.path;
+    const newPath = dept.parentId
+      ? `${getDepartmentById(dept.parentId)!.path}/${fields.name}`
+      : `/${fields.name}`;
+
+    sets.push("name = ?", "path = ?");
+    vals.push(fields.name, newPath);
+
+    // 更新所有子部门路径
+    db.prepare(`
+      UPDATE departments SET path = ? || SUBSTR(path, LENGTH(?) + 1), updated_at = unixepoch()
+      WHERE path LIKE ? || '/%'
+    `).run(newPath, oldPath, oldPath);
+  }
+
+  if (fields.description !== undefined) {
+    sets.push("description = ?");
+    vals.push(fields.description);
+  }
+
+  if (sets.length === 0) return dept;
+
+  sets.push("updated_at = unixepoch()");
+  vals.push(id);
+  db.prepare(`UPDATE departments SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+
+  return getDepartmentById(id);
+}
+
+export function deleteDepartment(id: string): void {
+  const db = getDb();
+
+  if (id === "dept_root") throw new Error("Cannot delete root department");
+
+  // 检查是否有子部门
+  const children = db.prepare("SELECT COUNT(*) as c FROM departments WHERE parent_id = ?").get(id) as any;
+  if (children.c > 0) throw new Error("Cannot delete department with children. Delete children first.");
+
+  // 检查是否有用户
+  const users = db.prepare("SELECT COUNT(*) as c FROM users WHERE department_id = ?").get(id) as any;
+  if (users.c > 0) throw new Error("Cannot delete department with users. Reassign users first.");
+
+  db.prepare("DELETE FROM departments WHERE id = ?").run(id);
+}
+
+// ===== 资源分配 =====
+
+export function assignResources(departmentId: string, resourceIds: string[]): void {
+  const db = getDb();
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO department_resources (department_id, resource_id) VALUES (?, ?)"
+  );
+  const run = db.transaction(() => {
+    for (const rid of resourceIds) {
+      stmt.run(departmentId, rid);
+    }
+  });
+  run();
+}
+
+export function removeResources(departmentId: string, resourceIds: string[]): void {
+  const db = getDb();
+  const stmt = db.prepare(
+    "DELETE FROM department_resources WHERE department_id = ? AND resource_id = ?"
+  );
+  const run = db.transaction(() => {
+    for (const rid of resourceIds) {
+      stmt.run(departmentId, rid);
+    }
+  });
+  run();
+}
+
+export function getDepartmentResources(departmentId: string): Array<{ id: string; name: string; type: string; description: string }> {
+  return getDb().prepare(`
+    SELECT r.id, r.name, r.type, r.description
+    FROM resources r
+    JOIN department_resources dr ON dr.resource_id = r.id
+    WHERE dr.department_id = ?
+    ORDER BY r.type, r.name
+  `).all(departmentId) as any[];
+}
+
+/** 获取部门的有效资源（含祖先继承） */
+export function getDepartmentEffectiveResources(departmentId: string): Array<{ id: string; name: string; type: string; description: string }> {
+  const dept = getDepartmentById(departmentId);
+  if (!dept) return [];
+
+  return getDb().prepare(`
+    SELECT DISTINCT r.id, r.name, r.type, r.description
+    FROM resources r
+    JOIN department_resources dr ON dr.resource_id = r.id
+    JOIN departments d ON d.id = dr.department_id
+    WHERE ? LIKE d.path || '%'
+    ORDER BY r.type, r.name
+  `).all(dept.path) as any[];
+}
+
+// ===== 内部 =====
+
+function mapDepartment(row: any): Department {
+  return {
+    id: row.id,
+    name: row.name,
+    parentId: row.parent_id,
+    path: row.path,
+    level: row.level,
+    description: row.description ?? "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
