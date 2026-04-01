@@ -1880,7 +1880,7 @@ app.get("/api/memory/stats", requireAuth, requirePermission("memory.read"), asyn
     const result = await engine.execute("memory_stats", {});
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(500).json({ success: false, error: result.error?.message || "Failed to get stats" });
     }
@@ -1957,7 +1957,7 @@ app.get("/api/memory/profile/:userId?", requireAuth, requirePermission("memory.r
     const result = await engine.execute("ltm_profile", { userId: targetUserId });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Profile generation failed" });
     }
@@ -1978,7 +1978,7 @@ app.get("/api/memory/versions/:key", requireAuth, requirePermission("memory.read
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Version history not available" });
     }
@@ -1999,7 +1999,7 @@ app.get("/api/memory/forgotten", requireAuth, requirePermission("memory.read"), 
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Forgotten log not available" });
     }
@@ -2029,7 +2029,7 @@ app.post("/api/memory/check-conflicts", requireAuth, requirePermission("memory.r
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Conflict detection failed" });
     }
@@ -2055,7 +2055,7 @@ app.post("/api/memory/extract-facts", requireAuth, requirePermission("memory.wri
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Fact extraction requires LLM provider" });
     }
@@ -2091,7 +2091,7 @@ app.post("/api/memory/store", requireAuth, requirePermission("memory.write"), as
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Store operation failed" });
     }
@@ -2138,7 +2138,7 @@ app.get("/api/memory/search", requireAuth, requirePermission("memory.read"), asy
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Search operation failed" });
     }
@@ -2165,7 +2165,7 @@ app.delete("/api/memory/:id", requireAuth, requirePermission("memory.write"), as
     });
 
     if (result.success) {
-      res.json({ success: true, ...result.data });
+      res.json({ success: true, ...(result.data as any) });
     } else {
       res.status(400).json({ success: false, error: result.error?.message || "Delete operation failed" });
     }

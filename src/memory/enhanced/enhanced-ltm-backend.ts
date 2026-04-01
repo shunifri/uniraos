@@ -172,7 +172,8 @@ export class EnhancedLTMBackend implements LTMBackend {
 
     // 重排序
     if (options?.rerank && this.llmProvider) {
-      results = await this.searchEnhancer.rerank(query, results as EnhancedLTMEntry[], this.llmProvider) as LTMEntry[];
+      const rerankResults = await this.searchEnhancer.rerank(query, results as EnhancedLTMEntry[], this.llmProvider);
+      results = rerankResults.map((r) => r.entry);
     }
 
     return results;

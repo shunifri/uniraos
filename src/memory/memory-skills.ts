@@ -700,22 +700,21 @@ export function createMemorySkills(
         if (value === undefined) return { success: false, error: new Error("value is required") };
 
         try {
-          const result = await (ltm as EnhancedLTMBackend).checkConflicts(key, value);
+          const conflicts = await (ltm as EnhancedLTMBackend).checkConflicts(key, value);
           return {
             success: true,
             data: {
               key,
-              hasConflicts: result.conflicts && result.conflicts.length > 0,
-              conflicts: (result.conflicts || [])
+              hasConflicts: conflicts && conflicts.length > 0,
+              conflicts: (conflicts || [])
                 .slice(0, topN ?? 10)
                 .map((c: any) => ({
                   existingId: c.existingId,
                   existingKey: c.existingKey,
-                  existingValue: c.existingValue,
                   description: c.description,
                   severity: c.severity,
                 })),
-              count: result.conflicts?.length ?? 0,
+              count: conflicts?.length ?? 0,
             },
           };
         } catch (err) {
@@ -822,11 +821,11 @@ export function createMemorySkills(
         try {
           if (isEnhancedBackend(ltm)) {
             // Enhanced 后端：调用 FactExtractor
-            const result = await (ltm as EnhancedLTMBackend).extractFacts(text, entityContext);
+            const facts = await (ltm as EnhancedLTMBackend).extractFacts(text, entityContext);
             const stored: string[] = [];
 
             // 存储提取的事实
-            for (const f of result.facts) {
+            for (const f of facts) {
               const id = await ltm.store(`fact:${f.key}`, f.fact, {
                 tags: [...(tags ?? []), "fact", "extracted", ...(f.tags ?? [])],
                 summary: f.fact.substring(0, 100),
@@ -838,15 +837,15 @@ export function createMemorySkills(
             return {
               success: true,
               data: {
-                facts: result.facts.map((f) => ({
+                facts: facts.map((f) => ({
                   key: f.key,
                   fact: f.fact,
                   confidence: f.confidence,
                   tags: f.tags,
                 })),
-                extracted: result.facts.length,
+                extracted: facts.length,
                 stored: stored.length,
-                filtered: result.filtered || 0,
+                filtered: 0,
               },
             };
           }
