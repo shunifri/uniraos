@@ -17,6 +17,7 @@ import type {
   ProtocolExecutor,
   TeamConfig,
 } from "../types.js";
+import { parseBidJson } from "./parse-helpers.js";
 
 export class ContractNetExecutor implements ProtocolExecutor {
   readonly protocol = "CONTRACT_NET" as Protocol;
@@ -154,8 +155,6 @@ export class ContractNetExecutor implements ProtocolExecutor {
   }
 
   private async collectBids(task: string, members: AgentProfile[]): Promise<Bid[]> {
-    const bids: Bid[] = [];
-
     const bidPromises = members.map(async (member) => {
       const response = await this.provider.chat([
         {
@@ -164,39 +163,28 @@ export class ContractNetExecutor implements ProtocolExecutor {
         },
         {
           role: "user",
-          content: `以下任务正在招标，请评估你是否适合处理。仅输出 JSON（不要 markdown）：
-{"confidence": 0.0到1.0的信心度, "approach": "你的处理方案简述", "estimatedCost": 预估token数, "estimatedTime": 预估毫秒数}
+          content: `以下任务正在招标，请评估你是否适合处理。输出 JSON（支持 markdown code block）：
+\`\`\`json
+{"confidence": 0.0到1.0的信心度, "approach": "你的处理方案简述", "estimatedSteps": 预估步骤数}
+\`\`\`
 
 任务: ${task}`,
         },
       ]);
 
-      try {
-        const content = response.content?.trim() ?? "{}";
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return {
-            agentRole: member.role,
-            confidence: Math.max(0, Math.min(1, parsed.confidence ?? 0)),
-            estimatedCost: parsed.estimatedCost ?? 1000,
-            estimatedTime: parsed.estimatedTime ?? 5000,
-            approach: parsed.approach ?? "",
-          } as Bid;
-        }
-      } catch {}
+      const content = response.content?.trim() ?? "";
+      const bidResult = parseBidJson(content);
 
       return {
         agentRole: member.role,
-        confidence: 0.5,
+        confidence: bidResult.confidence,
         estimatedCost: 1000,
-        estimatedTime: 5000,
-        approach: "默认方案",
+        estimatedTime: (bidResult.estimatedSteps ?? 5) * 1000,
+        approach: bidResult.approach,
       } as Bid;
     });
 
-    const results = await Promise.all(bidPromises);
-    return results;
+    return Promise.all(bidPromises);
   }
 
   private selectWinner(bids: Bid[]): Bid | null {

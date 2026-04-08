@@ -16,6 +16,7 @@ import type {
   ProtocolExecutor,
   TeamConfig,
 } from "../types.js";
+import { parseManagerDecisionJson } from "./parse-helpers.js";
 
 interface TaskAssignment {
   agentRole: string;
@@ -285,29 +286,56 @@ ${membersDesc}
 ${resultsSummary}
 
 ## 指令
-根据当前进展，做出决策。输出严格 JSON 格式（不要 markdown code block）：
+根据当前进展，做出决策。输出 JSON 格式（可用 markdown code block）：
 
 1. 如果需要分配新任务：
-{"type":"assign","assignments":[{"agentRole":"成员角色","task":"具体任务描述","priority":1}]}
+\`\`\`json
+{"decision":"assign","assignments":[{"agent":"成员角色","task":"具体任务描述"}]}
+\`\`\`
 
 2. 如果某个成员的结果需要修改：
-{"type":"revise","revision":{"agentRole":"成员角色","feedback":"修改意见"}}
+\`\`\`json
+{"decision":"revise","revision":"成员角色: 修改意见"}
+\`\`\`
 
 3. 如果所有结果已满意，合并最终答案：
-{"type":"complete","finalAnswer":"最终综合答案"}`;
+\`\`\`json
+{"decision":"complete","summary":"最终综合答案"}
+\`\`\``;
 
     const response = await this.provider.chat([
       { role: "system", content: managerProfile.personality },
       { role: "user", content: prompt },
     ]);
 
-    try {
-      const content = response.content?.trim() ?? "{}";
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]) as ManagerDecision;
+    const content = response.content?.trim() ?? "";
+    const parsed = parseManagerDecisionJson(content);
+
+    if (parsed) {
+      if (parsed.decision === "assign" && parsed.assignments) {
+        return {
+          type: "assign",
+          assignments: parsed.assignments.map((a) => ({
+            agentRole: a.agent,
+            task: a.task,
+            priority: 1,
+          })),
+        };
       }
-    } catch {}
+      if (parsed.decision === "revise" && parsed.revision) {
+        // revision format: "agentRole: feedback"
+        const colonIdx = parsed.revision.indexOf(":");
+        const agentRole = colonIdx >= 0 ? parsed.revision.slice(0, colonIdx).trim() : members[0]?.role ?? "";
+        const feedback = colonIdx >= 0 ? parsed.revision.slice(colonIdx + 1).trim() : parsed.revision;
+        return { type: "revise", revision: { agentRole, feedback } };
+      }
+      if (parsed.decision === "complete") {
+        return {
+          type: "complete",
+          finalAnswer: parsed.summary ?? Array.from(results.values()).join("\n\n---\n\n"),
+        };
+      }
+    }
 
     // fallback: 第一轮分配所有成员，否则合并
     if (round === 0) {

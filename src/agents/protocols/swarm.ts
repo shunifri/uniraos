@@ -16,6 +16,7 @@ import type {
   ProtocolExecutor,
   TeamConfig,
 } from "../types.js";
+import { parseHandoffJson } from "./parse-helpers.js";
 
 export class SwarmExecutor implements ProtocolExecutor {
   readonly protocol = "SWARM" as Protocol;
@@ -165,8 +166,11 @@ export class SwarmExecutor implements ProtocolExecutor {
     return `${message}
 
 ---
-[蜂群协议] 你是 ${current.role}。如果这个任务不在你的专长范围内，或者你认为其他成员能更好地处理，请在回复末尾添加移交标记：
-[HANDOFF:目标角色名] 移交说明
+[蜂群协议] 你是 ${current.role}。如果这个任务不在你的专长范围内，或者你认为其他成员能更好地处理，请在回复末尾用 JSON 代码块表示移交：
+\`\`\`json
+{"handoff": true, "target": "目标角色名", "reason": "移交原因"}
+\`\`\`
+也可以使用旧格式：[HANDOFF:目标角色名] 移交说明
 
 可移交的成员：
 ${others}
@@ -178,21 +182,23 @@ ${others}
     response: string,
     members: AgentProfile[],
   ): { target: AgentProfile; message: string } | null {
-    const handoffMatch = response.match(/\[HANDOFF:(.+?)\]\s*(.*)/s);
-    if (!handoffMatch) return null;
+    const handoffResult = parseHandoffJson(response);
+    if (!handoffResult) return null;
 
-    const targetRole = handoffMatch[1].trim();
-    const handoffMessage = handoffMatch[2].trim();
-
-    const target = members.find((m) => m.role === targetRole);
+    const target = members.find(
+      (m) => m.role === handoffResult.target || m.role.toLowerCase() === handoffResult.target.toLowerCase(),
+    );
     if (!target) return null;
 
     // 清除移交标记，保留正文
-    const cleanResponse = response.replace(/\[HANDOFF:.*$/s, "").trim();
+    const cleanResponse = response
+      .replace(/```json[\s\S]*?```/g, "")
+      .replace(/\[HANDOFF:.*$/s, "")
+      .trim();
 
     return {
       target,
-      message: handoffMessage || cleanResponse,
+      message: handoffResult.reason || cleanResponse,
     };
   }
 }

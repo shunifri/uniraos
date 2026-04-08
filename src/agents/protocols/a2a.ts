@@ -16,6 +16,7 @@ import type {
   ProtocolExecutor,
   TeamConfig,
 } from "../types.js";
+import { parseTransferJson } from "./parse-helpers.js";
 
 export class A2AExecutor implements ProtocolExecutor {
   readonly protocol = "A2A" as Protocol;
@@ -45,13 +46,12 @@ export class A2AExecutor implements ProtocolExecutor {
       const agent = agentFactory(currentProfile);
       agents.push(currentProfile.role);
 
+      const peers = config.members.filter((m) => m.role !== currentProfile.role);
       const result = await agent.run({
-        message: currentMessage,
+        message: this.buildA2APrompt(currentMessage, currentProfile, peers),
         context: {
           ...currentContext,
-          availablePeers: config.members
-            .filter((m) => m.role !== currentProfile.role)
-            .map((m) => ({ role: m.role, expertise: m.expertise })),
+          availablePeers: peers.map((m) => ({ role: m.role, expertise: m.expertise })),
         },
       });
 
@@ -121,14 +121,13 @@ export class A2AExecutor implements ProtocolExecutor {
         data: { level: "react", role: currentProfile.role, handoff: i },
       };
 
+      const streamPeers = config.members.filter((m) => m.role !== currentProfile.role);
       let response = "";
       for await (const event of agent.runStream({
-        message: currentMessage,
+        message: this.buildA2APrompt(currentMessage, currentProfile, streamPeers),
         context: {
           ...currentContext,
-          availablePeers: config.members
-            .filter((m) => m.role !== currentProfile.role)
-            .map((m) => ({ role: m.role, expertise: m.expertise })),
+          availablePeers: streamPeers.map((m) => ({ role: m.role, expertise: m.expertise })),
         },
       })) {
         yield event;
@@ -177,24 +176,52 @@ export class A2AExecutor implements ProtocolExecutor {
     return members[isNaN(idx) || idx < 0 || idx >= members.length ? 0 : idx];
   }
 
+  private buildA2APrompt(
+    message: string,
+    current: AgentProfile,
+    peers: AgentProfile[],
+  ): string {
+    if (peers.length === 0) return message;
+
+    const peersDesc = peers
+      .map((m) => `- ${m.role}: 擅长 ${m.expertise.join(", ")}`)
+      .join("\n");
+
+    return `${message}
+
+---
+[A2A 协议] 你是 ${current.role}。如果需要将任务移交给更合适的对等智能体，请在回复末尾用 JSON 代码块表示：
+\`\`\`json
+{"transfer": true, "target": "目标角色名", "reason": "移交原因"}
+\`\`\`
+也可以使用旧格式：[TRANSFER:目标角色名] 移交说明
+
+可移交的对等成员：
+${peersDesc}
+
+如果你能直接处理，请正常回答，不要添加移交标记。`;
+  }
+
   private parseTransfer(
     response: string,
     members: AgentProfile[],
     currentRole: string,
   ): { target: AgentProfile; reason: string; briefing: string } | null {
-    // 查找 [TRANSFER:角色名] 标记
-    const match = response.match(/\[TRANSFER:(.+?)\]\s*(.*)/s);
-    if (!match) return null;
+    const transferResult = parseTransferJson(response);
+    if (!transferResult) return null;
 
-    const targetRole = match[1].trim();
-    const rest = match[2].trim();
-
-    const target = members.find((m) => m.role === targetRole && m.role !== currentRole);
+    const target = members.find(
+      (m) =>
+        m.role !== currentRole &&
+        (m.role === transferResult.target || m.role.toLowerCase() === transferResult.target.toLowerCase()),
+    );
     if (!target) return null;
 
-    const reasonMatch = rest.match(/原因[:：]\s*(.*?)(?:\n|$)/);
-    const reason = reasonMatch?.[1] ?? rest.split("\n")[0];
-    const briefing = rest.replace(/原因[:：].*?(?:\n|$)/, "").trim() || response.replace(/\[TRANSFER:.*$/s, "").trim();
+    const reason = transferResult.reason ?? "";
+    const briefing = response
+      .replace(/```json[\s\S]*?```/g, "")
+      .replace(/\[TRANSFER:.*$/s, "")
+      .trim() || reason;
 
     return { target, reason, briefing };
   }
