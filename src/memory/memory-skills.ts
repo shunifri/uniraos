@@ -63,6 +63,13 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "存储到短期记忆。参数: key(string), value(any)",
+      paramSchema: {
+        properties: {
+          key: { type: "string", description: "Memory key" },
+          value: { type: "object", description: "Value to store (any type)" },
+        },
+        required: ["key", "value"],
+      },
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
         const { key, value } = params as { key: string; value: unknown };
@@ -77,6 +84,12 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "从短期记忆检索。参数: key(string) 或 query(string)搜索",
+      paramSchema: {
+        properties: {
+          key: { type: "string", description: "Exact key to retrieve" },
+          query: { type: "string", description: "Search query to find matching entries" },
+        },
+      },
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
         const { key, query } = params as { key?: string; query?: string };
@@ -98,6 +111,12 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "从短期记忆中删除。参数: key(string)",
+      paramSchema: {
+        properties: {
+          key: { type: "string", description: "Key to delete from short-term memory" },
+        },
+        required: ["key"],
+      },
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
         const { key } = params as { key: string };
@@ -113,6 +132,17 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "存储到长期记忆（持久化）。参数: key(string), value(any), tags?(string[]), summary?(string), relation?(string), expiresInSec?(number)",
+      paramSchema: {
+        properties: {
+          key: { type: "string", description: "Memory key" },
+          value: { type: "object", description: "Value to store (any type)" },
+          tags: { type: "array", description: "Tags for categorization", items: { type: "string" } },
+          summary: { type: "string", description: "Human-readable summary of the stored value" },
+          relation: { type: "string", description: "Relation type when updating an existing key (e.g. 'update', 'supersedes')" },
+          expiresInSec: { type: "number", description: "TTL in seconds after which the memory auto-expires" },
+        },
+        required: ["key", "value"],
+      },
       handler: async (params, context) => {
         const { stm, ltm } = getSession(sessionManager);
         const { key, value, tags, summary, relation, expiresInSec } = params as {
@@ -153,6 +183,18 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "搜索长期记忆。参数: query(string), tags?(string[]), limit?(number), semantic?(boolean), rerank?(boolean), filters?(object), includeForgotten?(boolean)",
+      paramSchema: {
+        properties: {
+          query: { type: "string", description: "Search query string" },
+          tags: { type: "array", description: "Filter by tags", items: { type: "string" } },
+          limit: { type: "number", description: "Maximum number of results to return" },
+          semantic: { type: "boolean", description: "Enable semantic (vector) search" },
+          rerank: { type: "boolean", description: "Apply re-ranking to improve result order" },
+          filters: { type: "object", description: "Additional filter criteria" },
+          includeForgotten: { type: "boolean", description: "Include soft-deleted (forgotten) entries in results" },
+        },
+        required: ["query"],
+      },
       handler: async (params, context) => {
         const { ltm } = getSession(sessionManager);
         const { query, tags, limit, semantic, rerank, filters, includeForgotten } = params as {
@@ -218,6 +260,14 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "删除长期记忆（支持软删除和硬删除）。参数: key(string) 或 id(string), reason?(string), hard?(boolean)",
+      paramSchema: {
+        properties: {
+          key: { type: "string", description: "Memory key to delete" },
+          id: { type: "string", description: "Memory entry ID to delete" },
+          reason: { type: "string", description: "Reason for deletion (used for soft-delete audit log)" },
+          hard: { type: "boolean", description: "If true, perform hard delete instead of soft delete" },
+        },
+      },
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
         const { key, id, reason, hard } = params as {
@@ -267,6 +317,12 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "列出长期记忆。参数: limit?(number), offset?(number)",
+      paramSchema: {
+        properties: {
+          limit: { type: "number", description: "Maximum number of entries to return" },
+          offset: { type: "number", description: "Number of entries to skip (for pagination)" },
+        },
+      },
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
         const { limit, offset } = params as { limit?: number; offset?: number };
@@ -431,6 +487,11 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "手动触发记忆归档：将冷记忆移到归档存储。参数: reason?(string)",
+      paramSchema: {
+        properties: {
+          reason: { type: "string", description: "Reason for archiving (default: 'manual')" },
+        },
+      },
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
         const reason = (params.reason as string) || "manual";
@@ -482,6 +543,13 @@ export function createMemorySkills(
       visible: true,
       autonomy: Autonomy.MANUAL,
       description: "从归档恢复记忆到活跃区。参数: archiveId(string), keys?(string[])",
+      paramSchema: {
+        properties: {
+          archiveId: { type: "string", description: "Archive ID to restore from" },
+          keys: { type: "array", description: "Specific keys to restore (restores all if omitted)", items: { type: "string" } },
+        },
+        required: ["archiveId"],
+      },
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
         const { archiveId, keys } = params as { archiveId: string; keys?: string[] };

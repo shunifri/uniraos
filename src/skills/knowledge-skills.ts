@@ -883,6 +883,18 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
       description:
         "将文件或文本导入知识库（同名文档自动更新）。参数: content?(string), path?(string, workspace路径), name?(string, 文档名), tags?(string[]), shared?(boolean, 是否共享), owner?(string, 所属用户, 默认 default), chunkSize?(number, 默认500), chunkOverlap?(number, 默认50)",
       timeout: 120000,
+      paramSchema: {
+        properties: {
+          content: { type: "string", description: "Text content to ingest directly" },
+          path: { type: "string", description: "File path in workspace to ingest" },
+          name: { type: "string", description: "Document name (defaults to filename if path is given)" },
+          tags: { type: "array", description: "Tags for categorization", items: { type: "string" } },
+          shared: { type: "boolean", description: "Whether to share this document with other users" },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+          chunkSize: { type: "number", description: "Maximum tokens per chunk (default: 500)" },
+          chunkOverlap: { type: "number", description: "Token overlap between chunks (default: 50)" },
+        },
+      },
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
@@ -994,6 +1006,18 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
       description:
         "在知识库中检索。参数: query(string), limit?(number, 默认5), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true)",
       timeout: 30000,
+      paramSchema: {
+        properties: {
+          query: { type: "string", description: "Search query" },
+          limit: { type: "number", description: "Maximum number of results (default: 5)" },
+          threshold: { type: "number", description: "Relative score threshold 0-1 (default: 0.4)" },
+          tags: { type: "array", description: "Filter results by tags", items: { type: "string" } },
+          docIds: { type: "array", description: "Limit search to specific document IDs", items: { type: "string" } },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+          includeShared: { type: "boolean", description: "Include shared knowledge from other users (default: true)" },
+        },
+        required: ["query"],
+      },
       handler: async (params) => {
         const query = params.query as string;
         if (!query) return { success: false, error: new Error("query 参数必填") };
@@ -1046,6 +1070,15 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "kb_list",
       description: "列出知识库中的文档。参数: query?(string), tags?(string[]), owner?(string, 默认 default), sharedOnly?(boolean), limit?(number, 默认100)",
+      paramSchema: {
+        properties: {
+          query: { type: "string", description: "Filter documents by name or source" },
+          tags: { type: "array", description: "Filter by tags", items: { type: "string" } },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+          sharedOnly: { type: "boolean", description: "If true, return only shared documents" },
+          limit: { type: "number", description: "Maximum number of documents to return (default: 100)" },
+        },
+      },
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
@@ -1065,6 +1098,13 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "kb_delete",
       description: "从知识库中删除文档。参数: docId(string), owner?(string, 默认 default)",
+      paramSchema: {
+        properties: {
+          docId: { type: "string", description: "Document ID to delete" },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+        required: ["docId"],
+      },
       handler: async (params) => {
         const docId = params.docId as string;
         if (!docId) return { success: false, error: new Error("docId 参数必填") };

@@ -33,6 +33,15 @@ export function createMetaSkills(
     - { skill: "skill名", params: {参数映射}, outputKey?: "结果存储键" }
     - 参数映射中可用 $input 引用原始输入，$steps.stepKey 引用前序步骤结果
   mode?("sequential"|"parallel"): 执行模式，默认 sequential`,
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Name for the new composed skill" },
+          description: { type: "string", description: "Description of the composed skill" },
+          steps: { type: "array", description: "Array of steps: [{skill, params?, outputKey?}]", items: { type: "object" } },
+          mode: { type: "string", description: "Execution mode: 'sequential' (default) or 'parallel'", enum: ["sequential", "parallel"] },
+        },
+        required: ["name", "steps"],
+      },
       handler: async (params) => {
         const name = params.name as string;
         const description = params.description as string;
@@ -130,6 +139,15 @@ export function createMetaSkills(
     transform: { inputField: string, outputField: string, expression: string }
     validate: { rules: [{field: string, condition: string, message: string}] }
     aggregate: { skills: string[], mergeStrategy: "concat"|"merge"|"pick_best" }`,
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Name for the new skill" },
+          description: { type: "string", description: "Description of the new skill" },
+          template: { type: "string", description: "Template type to use", enum: ["transform", "validate", "aggregate"] },
+          config: { type: "object", description: "Template configuration object" },
+        },
+        required: ["name", "template"],
+      },
       handler: async (params) => {
         const name = params.name as string;
         const description = params.description as string;
@@ -200,6 +218,12 @@ export function createMetaSkills(
     defineSkill({
       name: "skill_info",
       description: "获取指定 Skill 的详细信息和执行指标。参数: name(string)",
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Name of the skill to get information about" },
+        },
+        required: ["name"],
+      },
       handler: async (params) => {
         const name = params.name as string;
         const skill = registry.lookup(name);
@@ -241,6 +265,15 @@ export function createMetaSkills(
   description(string): Skill 功能描述（自然语言）
   examples?(array): 输入输出示例 [{input: {}, output: {}}]
   capabilities?(string[]): 所需权限能力声明`,
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Name for the new skill" },
+          description: { type: "string", description: "Natural language description of what the skill should do" },
+          examples: { type: "array", description: "Input/output examples [{input: {}, output: {}}]", items: { type: "object" } },
+          capabilities: { type: "array", description: "Required capability declarations", items: { type: "string" } },
+        },
+        required: ["name", "description"],
+      },
       handler: async (params) => {
         const provider = getProvider();
         if (!provider) {
@@ -354,6 +387,13 @@ Skill 描述: ${description}${exampleText}
   name?(string): 指定 Skill 名称，不指定则分析全局
   threshold_success_rate?(number): 成功率阈值（默认 0.9）
   threshold_p95_ms?(number): P95 延迟阈值（默认 5000ms）`,
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Skill name to analyze (analyzes all skills if omitted)" },
+          threshold_success_rate: { type: "number", description: "Success rate threshold (default: 0.9)" },
+          threshold_p95_ms: { type: "number", description: "P95 latency threshold in milliseconds (default: 5000)" },
+        },
+      },
       handler: async (params) => {
         const name = params.name as string | undefined;
         const successThreshold = (params.threshold_success_rate as number) ?? 0.9;
@@ -407,6 +447,15 @@ Skill 描述: ${description}${exampleText}
   cases?(array): 测试用例 [{input: {}, expected?: {success: boolean, data?: any}, description?: string}]
   auto_generate?(boolean): 是否让 LLM 自动生成测试用例（需 LLM 支持）
   count?(number): 自动生成的用例数量（默认 3）`,
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "Name of the skill to test" },
+          cases: { type: "array", description: "Test cases [{input: {}, expected?: {success, data?}, description?}]", items: { type: "object" } },
+          auto_generate: { type: "boolean", description: "Whether to auto-generate test cases using LLM" },
+          count: { type: "number", description: "Number of auto-generated test cases (default: 3)" },
+        },
+        required: ["name"],
+      },
       handler: async (params) => {
         const name = params.name as string;
         if (!name) {

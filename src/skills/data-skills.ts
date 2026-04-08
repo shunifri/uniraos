@@ -70,6 +70,13 @@ function createFileSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "file_read",
       description: "读取文件内容。参数: path(string, 相对于 workspace), encoding?(string, 默认 utf-8)",
+      paramSchema: {
+        properties: {
+          path: { type: "string", description: "File path relative to workspace" },
+          encoding: { type: "string", description: "File encoding (default: utf-8)" },
+        },
+        required: ["path"],
+      },
       handler: async (params) => {
         const path = ensureSafePath(params.path as string);
         if (!existsSync(path)) {
@@ -94,6 +101,14 @@ function createFileSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "file_write",
       description: "写入文件内容（覆盖）。参数: path(string, 相对于 workspace), content(string), encoding?(string)。注意：文档/PPT 请使用 .md 格式，禁止 .pptx/.docx/.pdf。",
+      paramSchema: {
+        properties: {
+          path: { type: "string", description: "File path relative to workspace" },
+          content: { type: "string", description: "Content to write" },
+          encoding: { type: "string", description: "File encoding (default: utf-8)" },
+        },
+        required: ["path", "content"],
+      },
       handler: async (params) => {
         // 强制拦截二进制文档格式
         const forced = forceMarkdownExt(params.path as string, params.content as string);
@@ -115,6 +130,13 @@ function createFileSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "file_append",
       description: "追加内容到文件末尾。参数: path(string), content(string)",
+      paramSchema: {
+        properties: {
+          path: { type: "string", description: "File path relative to workspace" },
+          content: { type: "string", description: "Content to append" },
+        },
+        required: ["path", "content"],
+      },
       handler: async (params) => {
         const path = ensureSafePath(params.path as string);
         mkdirSync(dirname(path), { recursive: true });
@@ -129,6 +151,12 @@ function createFileSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "file_delete",
       description: "删除文件。参数: path(string, 相对于 workspace)",
+      paramSchema: {
+        properties: {
+          path: { type: "string", description: "File path relative to workspace" },
+        },
+        required: ["path"],
+      },
       handler: async (params) => {
         const path = ensureSafePath(params.path as string);
         if (!existsSync(path)) {
@@ -144,6 +172,12 @@ function createFileSkills(registry: SkillRegistry): void {
     defineSkill({
       name: "file_list",
       description: "列出目录下的文件和子目录。参数: path?(string, 默认根目录), recursive?(boolean, 默认 false)",
+      paramSchema: {
+        properties: {
+          path: { type: "string", description: "Directory path relative to workspace (default: root)" },
+          recursive: { type: "boolean", description: "Whether to list recursively (default: false)" },
+        },
+      },
       handler: async (params) => {
         const basePath = ensureSafePath((params.path as string) ?? ".");
         if (!existsSync(basePath)) {
@@ -747,6 +781,16 @@ function createHttpSkills(registry: SkillRegistry): void {
       description:
         "发起 HTTP 请求。参数: url(string), method?(string, 默认 GET), headers?(object), body?(string|object), timeout?(number, ms, 默认 30000)",
       timeout: 60000,
+      paramSchema: {
+        properties: {
+          url: { type: "string", description: "Target URL (must be a public address)" },
+          method: { type: "string", description: "HTTP method (default: GET)", enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] },
+          headers: { type: "object", description: "Request headers as key-value pairs" },
+          body: { type: "string", description: "Request body (string or JSON-encoded object)" },
+          timeout: { type: "number", description: "Request timeout in milliseconds (default: 30000)" },
+        },
+        required: ["url"],
+      },
       handler: async (params) => {
         const url = params.url as string;
         if (!url) {
@@ -854,6 +898,14 @@ function createShellSkills(registry: SkillRegistry): void {
       description:
         "在安全沙箱中执行 shell 命令。参数: command(string), cwd?(string, 相对于 workspace), timeout?(number, ms, 默认 10000)。仅允许安全命令。",
       timeout: 30000,
+      paramSchema: {
+        properties: {
+          command: { type: "string", description: "Shell command to execute (only safe commands allowed)" },
+          cwd: { type: "string", description: "Working directory relative to workspace (default: workspace root)" },
+          timeout: { type: "number", description: "Execution timeout in milliseconds (default: 10000)" },
+        },
+        required: ["command"],
+      },
       handler: async (params) => {
         const { execSync } = await import("child_process");
 

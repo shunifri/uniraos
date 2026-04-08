@@ -123,6 +123,14 @@ function createSQLiteSkills(registry: SkillRegistry): void {
       name: "db_query",
       description:
         "执行只读 SQL 查询。参数: sql(string), params?(array, 绑定参数), db?(string, 数据库文件路径，相对于 workspace，默认 data.db)",
+      paramSchema: {
+        properties: {
+          sql: { type: "string", description: "Read-only SQL query to execute (SELECT only)" },
+          params: { type: "array", description: "Bind parameters for the SQL query", items: { type: "string" } },
+          db: { type: "string", description: "Database file path relative to workspace (default: data.db)" },
+        },
+        required: ["sql"],
+      },
       handler: async (params) => {
         const sql = params.sql as string;
         if (!sql) {
@@ -159,6 +167,14 @@ function createSQLiteSkills(registry: SkillRegistry): void {
       name: "db_execute",
       description:
         "执行 SQL 写操作（INSERT/UPDATE/DELETE/CREATE 等）。参数: sql(string), params?(array), db?(string, 默认 data.db)",
+      paramSchema: {
+        properties: {
+          sql: { type: "string", description: "SQL write statement to execute (INSERT/UPDATE/DELETE/CREATE etc.)" },
+          params: { type: "array", description: "Bind parameters for the SQL statement", items: { type: "string" } },
+          db: { type: "string", description: "Database file path relative to workspace (default: data.db)" },
+        },
+        required: ["sql"],
+      },
       handler: async (params) => {
         const sql = params.sql as string;
         if (!sql) {
@@ -236,6 +252,12 @@ function createSQLiteSkills(registry: SkillRegistry): void {
       name: "db_schema",
       description:
         "查看数据库的表结构信息。参数: db?(string, 默认 data.db), table?(string, 指定表名则只返回该表)",
+      paramSchema: {
+        properties: {
+          db: { type: "string", description: "Database file path relative to workspace (default: data.db)" },
+          table: { type: "string", description: "Optional table name to get schema for a specific table only" },
+        },
+      },
       handler: async (params) => {
         const dbPath = (params.db as string) ?? "data.db";
         const tableName = params.table as string | undefined;
@@ -353,6 +375,14 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
         description:
           "执行 MySQL 查询。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
         timeout: 30000,
+        paramSchema: {
+          properties: {
+            sql: { type: "string", description: "SQL query to execute" },
+            params: { type: "array", description: "Bind parameters for the SQL query", items: { type: "string" } },
+            connection: { type: "object", description: "MySQL connection config: {host, user, password, database, port?}" },
+          },
+          required: ["sql", "connection"],
+        },
         handler: async (params) => {
           const sql = params.sql as string;
           const conn = params.connection as { host: string; user: string; password: string; database: string; port?: number };
@@ -384,6 +414,14 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
         description:
           "执行 MySQL 写操作。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
         timeout: 30000,
+        paramSchema: {
+          properties: {
+            sql: { type: "string", description: "SQL write statement to execute" },
+            params: { type: "array", description: "Bind parameters for the SQL statement", items: { type: "string" } },
+            connection: { type: "object", description: "MySQL connection config: {host, user, password, database, port?}" },
+          },
+          required: ["sql", "connection"],
+        },
         handler: async (params) => {
           const sql = params.sql as string;
           const conn = params.connection as { host: string; user: string; password: string; database: string; port?: number };
