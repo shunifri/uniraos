@@ -21,6 +21,7 @@ import { EnhancedLTMBackend } from "./enhanced/enhanced-ltm-backend.js";
 import * as VersionChainModule from "./enhanced/version-chain.js";
 import { ForgettingManager } from "./enhanced/forgetting-manager.js";
 import { getCurrentUserId } from "../user/request-context.js";
+import { RecallContextSkill } from "./recall-context.js";
 
 /** 可选的引擎引用，用于记忆 Skill 间的递归调用 */
 type EngineRef = {
@@ -395,49 +396,17 @@ export function createMemorySkills(
       visible: false,
       autonomy: Autonomy.AUTO_PRE,
       description: "自动在 Skill 执行前注入相关记忆到上下文",
-      handler: async (params, context) => {
+      handler: async (params, _context) => {
         const { stm, ltm } = getSession(sessionManager);
-        const target = params.target as string;
-        if (!target) return { success: true, data: { skipped: true } };
+        const skillName = (params.target as string) || (params.skillName as string) || "";
+        if (!skillName) return { success: true, data: { skipped: true } };
 
-        // 递归自指：通过 engine 调用 ltm_search
-        let memories: Array<{ key: string; value: unknown; summary?: string }> = [];
-
-        if (engineRef && canRecurse(context, "ltm_search")) {
-          try {
-            const result = await engineRef.execute("ltm_search", { query: target, limit: 3 });
-            if (result?.data?.results) {
-              memories = result.data.results;
-            }
-          } catch {
-            // 回退到直接调用
-            const directResults = await ltm.search(target, { limit: 3 });
-            memories = directResults.map((m) => ({ key: m.key, value: m.value, summary: m.summary }));
-          }
-        } else {
-          const directResults = await ltm.search(target, { limit: 3 });
-          memories = directResults.map((m) => ({ key: m.key, value: m.value, summary: m.summary }));
-        }
-
-        if (memories.length > 0) {
-          // 递归自指：通过 engine 调用 stm_store 注入
-          if (engineRef && canRecurse(context, "stm_store")) {
-            try {
-              await engineRef.execute("stm_store", {
-                key: `_recall:${target}`,
-                value: memories,
-              });
-            } catch {
-              stm.set(`_recall:${target}`, memories, "recall_context");
-            }
-          } else {
-            stm.set(`_recall:${target}`, memories, "recall_context");
-          }
-        }
+        const recallSkill = new RecallContextSkill(stm, ltm);
+        const { memories, cached } = await recallSkill.recall(skillName, params as Record<string, unknown>);
 
         return {
           success: true,
-          data: { target, recalled: memories.length, recursive: !!engineRef },
+          data: { target: skillName, recalled: memories.length, cached },
         };
       },
     }),
