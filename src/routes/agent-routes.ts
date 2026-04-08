@@ -194,6 +194,15 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
               summary = r.data.message;
             } else if (r.data?.results && Array.isArray(r.data.results)) {
               summary = `获取到 ${r.data.results.length} 条结果`;
+            } else if (typeof r.data === "string") {
+              summary = r.data.slice(0, 300);
+            } else if (r.data && typeof r.data === "object") {
+              // 发送精简的结果数据给前端
+              const dataStr = JSON.stringify(r.data);
+              summary = r.data.message || r.data.text || r.data.content ||
+                        (dataStr.length <= 500 ? dataStr : dataStr.slice(0, 300) + "...");
+              // 传递完整数据供展开查看
+              extra = { ...(extra ?? {}), resultData: r.data };
             } else {
               summary = "完成";
             }
@@ -204,7 +213,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
             skillName: eventData.skillName ?? pendingToolName,
             status: r?.success ? "done" : "error",
             isError: !r?.success,
-            extra,
+            extra: { ...(extra ?? {}), result: r },
           });
         } else if (eventName === "agent_done" || eventName === "done") {
           if (currentAssistantText) {

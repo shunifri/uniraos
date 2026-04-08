@@ -261,9 +261,18 @@ export class AgentLoop {
         );
       }
 
-      // 短消息（问候/闲聊）跳过知识库搜索，避免无关文档卡片
-      const isShortGreeting = userMessage.length <= 10 && /^[\u4e00-\u9fff\w\s!！?？,.，。~～]+$/.test(userMessage);
-      if (hasKbSearch && !isShortGreeting) {
+      // 判断是否为不需要知识库的消息（问候/闲聊/纯计算/代码类）
+      const skipKbSearch = (() => {
+        const msg = userMessage.trim();
+        // 短消息（问候/闲聊）
+        if (msg.length <= 10) return true;
+        // 纯数学表达式
+        if (/^[\d\s+\-*/().=×÷%^]+[等于多少是什么几]*.{0,5}$/.test(msg)) return true;
+        // 明确的计算请求
+        if (/^(计算|算一下|求|多少)/.test(msg) && /\d/.test(msg)) return true;
+        return false;
+      })();
+      if (hasKbSearch && !skipKbSearch) {
         promises.push(
           Promise.race([
             this.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.15 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
@@ -393,6 +402,8 @@ export class AgentLoop {
             const userResult: ExecutionResult = {
               success: true,
               data: { userResponse },
+              trace: [],
+              traceId: `confirm-${confirmData.confirmId}`,
             };
             steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result: userResult }, timestamp: Date.now() });
             yield { event: "tool_result", data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
@@ -456,6 +467,8 @@ export class AgentLoop {
             const userResult: ExecutionResult = {
               success: true,
               data: { userResponse },
+              trace: [],
+              traceId: `confirm-${confirmData.confirmId}`,
             };
             steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result: userResult }, timestamp: Date.now() });
             yield { event: "tool_result", data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };

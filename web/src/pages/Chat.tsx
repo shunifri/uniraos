@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Flex, Typography, Tag, Button, List, Spin, Badge, Drawer, Input, message, Segmented } from "antd";
+import { Flex, Typography, Tag, Button, List, Spin, Badge, Drawer, Input, message, Segmented, Collapse } from "antd";
 import { Bubble, Sender, Think, CodeHighlighter, Attachments } from "@ant-design/x";
 import type { Attachment } from "@ant-design/x/es/attachments";
 import type { AttachmentsRef } from "@ant-design/x/es/attachments";
@@ -149,6 +149,7 @@ interface ChatMsg {
   fileDownload?: FileDownloadData;
   kbReferences?: KbReference[];
   webReferences?: WebReference[];
+  resultData?: Record<string, unknown>;
 }
 
 interface Conversation {
@@ -735,7 +736,7 @@ export default function ChatPage() {
                 else summary = t("done");
               } else { summary = r.error?.message || r.error || t("failed"); }
 
-              const toolMsg: ChatMsg = { role: "tool", content: summary, skillName: data.skillName, isError: !r.success, status: r.success ? "done" : "error", chartOptions, fileDownload };
+              const toolMsg: ChatMsg = { role: "tool", content: summary, skillName: data.skillName, isError: !r.success, status: r.success ? "done" : "error", chartOptions, fileDownload, resultData: (r.data && typeof r.data === 'object' && !chartOptions && !fileDownload) ? r.data as Record<string, unknown> : undefined };
               setMessages((prev) => {
                 const next = [...prev];
                 const idx = next.findLastIndex((m) => m.role === "tool" && m.skillName === data.skillName && m.status === "running");
@@ -985,6 +986,19 @@ export default function ChatPage() {
                     <Tag color={msg.isError ? "error" : msg.status === "running" ? "processing" : "success"} style={{ fontSize: 11, margin: 0 }}>{msg.skillName}</Tag>
                     <Text type={msg.isError ? "danger" : "secondary"} style={{ fontSize: 12 }}>{msg.content}</Text>
                   </Flex>
+                  {msg.resultData && !msg.chartOptions && !msg.fileDownload && (
+                    <div style={{ padding: "4px 16px 4px 40px" }}>
+                      <Collapse size="small" ghost items={[{
+                        key: "detail",
+                        label: <Text type="secondary" style={{ fontSize: 11 }}>查看详情</Text>,
+                        children: (
+                          <pre style={{ fontSize: 11, maxHeight: 200, overflow: "auto", background: "#f5f5f5", padding: 8, borderRadius: 4, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                            {JSON.stringify(msg.resultData, null, 2)}
+                          </pre>
+                        ),
+                      }]} />
+                    </div>
+                  )}
                   {msg.chartOptions && msg.chartOptions.length > 0 && (
                     <div style={{ padding: "8px 16px" }}>
                       {msg.chartOptions.map((opt, ci) => (

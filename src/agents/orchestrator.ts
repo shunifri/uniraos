@@ -309,7 +309,18 @@ export class Orchestrator {
         );
       }
 
-      if (hasKbSearch) {
+      // 判断是否为不需要知识库的消息（问候/闲聊/纯计算/代码类）
+      const skipKbSearch = (() => {
+        const msg = userMessage.trim();
+        // 短消息（问候/闲聊）
+        if (msg.length <= 10) return true;
+        // 纯数学表达式
+        if (/^[\d\s+\-*/().=×÷%^]+[等于多少是什么几]*.{0,5}$/.test(msg)) return true;
+        // 明确的计算请求
+        if (/^(计算|算一下|求|多少)/.test(msg) && /\d/.test(msg)) return true;
+        return false;
+      })();
+      if (hasKbSearch && !skipKbSearch) {
         promises.push(
           Promise.race([
             this.deps.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.35 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
