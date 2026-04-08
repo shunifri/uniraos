@@ -7,6 +7,7 @@
 import { defineSkill } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import { runInSandbox } from "../engine/worker-sandbox.js";
 import Database from "better-sqlite3";
 import { join } from "path";
 
@@ -81,7 +82,7 @@ export class SkillMarketplace {
     const skill = this.registry.lookup(name);
     if (!skill) return null;
 
-    // 尝试序列化 handler（仅限通过 new Function 创建的 Skill）
+    // 序列化 handler 代码字符串（导入后通过 Worker 沙箱重新执行，无需 new Function）
     const handlerCode = skill.handler.toString();
 
     const pkg: SkillPackage = {
@@ -130,9 +131,27 @@ export class SkillMarketplace {
     }
 
     try {
-      // 从函数代码恢复 handler
-      // 注意：只能导入通过 new Function 创建的简单 Skill
-      const handler = new Function("return " + pkg.handlerCode)() as SkillDefinition["handler"];
+      // 从函数代码恢复 handler — 通过 Worker 沙箱执行，避免 new Function() 安全风险
+      const handlerCode = pkg.handlerCode;
+      const handler: SkillDefinition["handler"] = async (params) => {
+        try {
+          const sandboxResult = await runInSandbox(handlerCode, params as Record<string, unknown>);
+          if (!sandboxResult.success) {
+            return { success: false, error: new Error(sandboxResult.error ?? "Sandbox execution failed") };
+          }
+          const result = sandboxResult.data as { success: boolean; data?: unknown; error?: unknown };
+          if (typeof result !== "object" || result === null) {
+            return { success: false, error: new Error("Skill 返回无效结果") };
+          }
+          return {
+            success: result.success,
+            data: result.data,
+            error: result.error instanceof Error ? result.error : result.error ? new Error(String(result.error)) : undefined,
+          };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      };
 
       const skill = defineSkill({
         name: pkg.name,
