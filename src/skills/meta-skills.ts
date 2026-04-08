@@ -11,6 +11,7 @@ import { defineSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
+import { runInSandbox } from "../engine/worker-sandbox.js";
 
 export function createMetaSkills(
   registry: SkillRegistry,
@@ -332,30 +333,36 @@ Skill 描述: ${description}${exampleText}
             }
           }
 
-          // 创建函数
-          const handler = new Function("params", "context", code) as (
-            params: Record<string, unknown>,
-            context: unknown,
-          ) => Promise<{ success: boolean; data?: unknown; error?: Error }>;
-
-          // 测试执行（用示例或空参数）
+          // 测试执行（用示例或空参数）— 通过 Worker 沙箱运行
           const testParams = examples.length > 0 ? examples[0].input : {};
-          const testResult = await handler(testParams, {});
+          const testSandboxResult = await runInSandbox(code, testParams);
+          if (!testSandboxResult.success) {
+            return { success: false, error: new Error(`生成的 Skill 测试失败: ${testSandboxResult.error}`) };
+          }
+          const testResult = testSandboxResult.data;
           if (typeof testResult !== "object" || testResult === null) {
             return { success: false, error: new Error("生成的 Skill 未返回有效结果对象") };
           }
 
-          // 注册
+          // 注册 — 每次调用都通过 Worker 沙箱执行
           const skill = defineSkill({
             name,
             description: `[AI生成] ${description}`,
             capabilities,
-            handler: async (p, ctx) => {
-              try {
-                return await handler(p, ctx);
-              } catch (err) {
-                return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+            handler: async (p) => {
+              const sandboxResult = await runInSandbox(code, p);
+              if (!sandboxResult.success) {
+                return { success: false, error: new Error(sandboxResult.error ?? "Sandbox execution failed") };
               }
+              const result = sandboxResult.data as { success: boolean; data?: unknown; error?: unknown };
+              if (typeof result !== "object" || result === null) {
+                return { success: false, error: new Error("Skill 返回无效结果") };
+              }
+              return {
+                success: result.success,
+                data: result.data,
+                error: result.error instanceof Error ? result.error : result.error ? new Error(String(result.error)) : undefined,
+              };
             },
           });
 
