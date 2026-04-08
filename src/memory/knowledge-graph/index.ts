@@ -2,3 +2,5 @@ export * from "./types.js";
 export { GraphStore } from "./graph-store.js";
 export { extractSubgraph, findShortestPath } from "./bfs-extractor.js";
 export type { BFSOptions } from "./bfs-extractor.js";
+export { extractRelationships, extractTagRelationships } from "./relationship-extractor.js";
+export type { ExtractedRelation } from "./relationship-extractor.js";
