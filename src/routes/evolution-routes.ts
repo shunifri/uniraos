@@ -224,6 +224,68 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // ===== Approval Workflow API Endpoints =====
+
+  // GET /api/evolution/approvals — List pending approvals
+  router.get("/evolution/approvals", (req, res) => {
+    const pending = evolutionController.getPendingApprovals();
+    res.json({ approvals: pending });
+  });
+
+  // POST /api/evolution/approvals/:id/approve
+  router.post("/evolution/approvals/:id/approve", async (req, res) => {
+    const approval = evolutionController.approve(req.params.id);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found or already processed" });
+      return;
+    }
+    try {
+      const { runInSandbox } = await import("../engine/worker-sandbox.js");
+      const code = approval.code;
+      const skill = defineSkill({
+        name: approval.name,
+        description: `[已审批] ${approval.description}`,
+        capabilities: approval.capabilities,
+        handler: async (params) => {
+          try { return await runInSandbox(code, params); }
+          catch (err) { return { success: false, error: err instanceof Error ? err : new Error(String(err)) }; }
+        },
+      });
+      registry.register(skill);
+      evolutionController.recordGeneration(approval.name, approval.generatedBy);
+      res.json({ approved: true, skillName: approval.name });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? (err as Error).message : String(err) });
+    }
+  });
+
+  // POST /api/evolution/approvals/:id/reject
+  router.post("/evolution/approvals/:id/reject", (req, res) => {
+    const reason = req.body?.reason ?? "Rejected by admin";
+    const success = evolutionController.reject(req.params.id, reason);
+    if (!success) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    res.json({ rejected: true, reason });
+  });
+
+  // GET /api/evolution/engine/status
+  router.get("/evolution/engine/status", (req, res) => {
+    res.json(evolutionEngine.getStatus());
+  });
+
+  // POST /api/evolution/engine/cycle — Manual trigger
+  router.post("/evolution/engine/cycle", async (req, res) => {
+    const result = await evolutionEngine.runCycle();
+    res.json({ actions: result.actions.length, executed: result.executed.length, details: result });
+  });
+
+  // GET /api/evolution/engine/actions
+  router.get("/evolution/engine/actions", (req, res) => {
+    res.json({ pending: evolutionEngine.getPendingActions(), executed: evolutionEngine.getExecutedActions() });
+  });
+
   // ===== Federation API endpoints =====
 
   router.post("/federation/:action", express.json(), async (req, res) => {
