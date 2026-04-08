@@ -22,6 +22,7 @@ import * as VersionChainModule from "./enhanced/version-chain.js";
 import { ForgettingManager } from "./enhanced/forgetting-manager.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { RecallContextSkill } from "./recall-context.js";
+import { MemoryGarbageCollector } from "./gc-collect.js";
 
 /** 可选的引擎引用，用于记忆 Skill 间的递归调用 */
 type EngineRef = {
@@ -1047,6 +1048,36 @@ export function createMemorySkills(
         }
 
         return { success: false, error: new Error("key or id is required") };
+      },
+    }),
+
+    // ===== 垃圾回收 Skill（Guardian 级，不对模型可见） =====
+    defineSkill({
+      name: "gc_collect",
+      visible: false,
+      autonomy: Autonomy.GUARDIAN,
+      description: "运行内存垃圾回收：清理过期 STM 条目，归档冷 LTM 条目。",
+      paramSchema: {
+        properties: {
+          stmMaxAgeMs: { type: "number", description: "STM entry max age in ms (default: 3600000)" },
+          ltmColdDays: { type: "number", description: "LTM cold threshold in days (default: 30)" },
+          ltmMinAccessCount: { type: "number", description: "LTM min access count to stay active (default: 2)" },
+        },
+      },
+      handler: async (params) => {
+        const { stm, ltm } = getSession(sessionManager);
+        const { stmMaxAgeMs, ltmColdDays, ltmMinAccessCount } = params as {
+          stmMaxAgeMs?: number;
+          ltmColdDays?: number;
+          ltmMinAccessCount?: number;
+        };
+        const gcCollector = new MemoryGarbageCollector(stm, ltm as any, {
+          ...(stmMaxAgeMs !== undefined && { stmMaxAgeMs }),
+          ...(ltmColdDays !== undefined && { ltmColdDays }),
+          ...(ltmMinAccessCount !== undefined && { ltmMinAccessCount }),
+        });
+        const report = await gcCollector.collect();
+        return { success: true, data: report };
       },
     }),
   ];
