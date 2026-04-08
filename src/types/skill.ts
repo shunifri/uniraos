@@ -2,6 +2,8 @@
  * RAOS Core Types - Skill Definition
  */
 
+import type { ParamSchema } from "./param-schema.js";
+
 /** Skill 的调用方式 */
 export enum Autonomy {
   /** 需要模型显式调用 */
@@ -120,6 +122,8 @@ export interface SkillDefinition {
   capabilities?: string[];
   /** 错误传播策略 */
   errorPropagation?: ErrorPropagation;
+  /** 参数 Schema（JSON Schema 格式），用于 Tool Bridge 生成精确的 LLM 工具定义 */
+  paramSchema?: ParamSchema;
 }
 
 /** 调用追踪条目 */
