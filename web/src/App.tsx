@@ -16,6 +16,8 @@ import KnowledgePage from "@/pages/Knowledge";
 import AdminPage from "@/pages/Admin";
 import FilesPage from "@/pages/Files";
 import EvolutionPage from "@/pages/Evolution";
+import GenealogyPage from "@/pages/Genealogy";
+import FederationPage from "@/pages/Federation";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -74,6 +76,8 @@ export default function App() {
               <Route path="knowledge" element={<KnowledgePage />} />
               <Route path="files" element={<FilesPage />} />
               <Route path="evolution" element={<EvolutionPage />} />
+              <Route path="genealogy" element={<GenealogyPage />} />
+              <Route path="federation" element={<FederationPage />} />
               <Route path="admin" element={<AdminPage />} />
             </Route>
           </Routes>

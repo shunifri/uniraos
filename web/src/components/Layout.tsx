@@ -25,6 +25,7 @@ import {
   UserOutlined,
   GlobalOutlined,
   RocketOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -91,6 +92,16 @@ const Layout: React.FC = () => {
             key: 'evolution',
             icon: <RocketOutlined />,
             label: 'Evolution',
+          },
+          {
+            key: 'genealogy',
+            icon: <ApartmentOutlined />,
+            label: 'Genealogy',
+          },
+          {
+            key: 'federation',
+            icon: <GlobalOutlined />,
+            label: 'Federation',
           },
         ]
       : []),
