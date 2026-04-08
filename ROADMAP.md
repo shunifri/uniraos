@@ -59,6 +59,25 @@
 
 ---
 
+## v2.0 核心夯实 + 进化闭环 (已完成)
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| ParamSchema 类型系统 | ✅ | 26 个 Skill 支持精确参数 schema，Tool Bridge 自动生成类型化工具定义 |
+| 协议结构化解析 | ✅ | JSON + legacy 三策略容错解析，替代脆弱正则 |
+| Worker 沙箱安全 | ✅ | skill_from_description + marketplace 全部通过 Worker 隔离执行 |
+| 元记忆系统 | ✅ | recall_context (AUTO_PRE) + gc_collect (GUARDIAN) + 自动 STM→LTM 合并 |
+| WAL 压缩 | ✅ | compact() 移除已完成条目，控制文件大小 |
+| Server 拆分 | ✅ | 3970→650 行，10 个路由模块 |
+| 运行时参数校验 | ✅ | required/type/enum 校验 |
+| 进化执行器 | ✅ | Optimize/Generate/Canary/Adopt/Retire 5 个执行器 |
+| 审批工作流 | ✅ | 6 个 API 端点 + Evolution Dashboard UI |
+| 指标驱动触发 | ✅ | 指标恶化自动触发进化循环 |
+| 资源预算 | ✅ | 进化税机制，能量单位 + 自动再生 |
+| 前端页面 | ✅ | Evolution + Genealogy + Federation 三个新页面 |
+
+---
+
 ## Phase 1: 核心稳固 (v0.2 — 预计 2~3 周)
 
 ### 1.1 状态持久化
@@ -423,9 +442,13 @@ v0.7 ✅ ── SAGA + 熔断器 + 进化控制 + Prompt 管理
  │
 v0.8 ✅ ── 多步规划 + Skill 市场 + 生命周期管理
  │
-v1.0 ── Skill 自我繁殖 + 自进化（大部分完成）
+v1.0 ✅ ── Skill 自我繁殖 + 自进化（已完成）
  │
-v2.0 ── 多智能体生态系统（基础框架已完成）
+v2.0 ✅ ── 核心夯实 + 进化闭环（已完成）
+  ├─ ParamSchema 类型系统 + 协议结构化解析
+  ├─ 进化执行器（Optimize/Generate/Canary/Adopt/Retire）
+  ├─ 审批工作流 + 指标驱动触发 + 资源预算
+  └─ Evolution/Genealogy/Federation 前端页面
 ```
 
-**预估总工期**：v0.1→v1.0 约 6~9 个月（单人），v2.0 需要团队协作。
+**预估总工期**：v0.1→v1.0 约 6~9 个月（单人），v2.0 核心夯实阶段已完成。

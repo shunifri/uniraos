@@ -336,6 +336,22 @@ export class EvolutionEngine {
       }
     }
 
+    // 5. 自动评估活跃的 canary 部署
+    const lifecycleAll = this.lifecycleManager.getAll();
+    for (const info of lifecycleAll) {
+      if (info.state === "canary") {
+        const canaryAction: EvolutionAction = {
+          type: "canary",
+          skillName: info.name,
+          payload: { action: "evaluate" },
+          priority: 90, // High priority
+          requiresApproval: false,
+        };
+        const canaryResult = await this.executeAction(canaryAction);
+        executed.push({ action: canaryAction, result: canaryResult });
+      }
+    }
+
     this.lastCycleAt = Date.now();
     this.emit({
       type: "evolution:cycle_end",
