@@ -32,6 +32,7 @@ import {
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { apiFetch, pageImageUrl } from "@/api";
+import ConfirmCard from "@/components/ConfirmCard";
 
 const { Text } = Typography;
 
@@ -139,7 +140,7 @@ function HighlightedPageImage({ docId, page, bboxes }: {
 // ---- Types ----
 interface ChatMsg {
   id?: number; // DB id，用于分页
-  role: "user" | "assistant" | "tool" | "system" | "thinking" | "strategy";
+  role: "user" | "assistant" | "tool" | "system" | "thinking" | "strategy" | "user_confirm";
   content: string;
   skillName?: string;
   isError?: boolean;
@@ -275,6 +276,8 @@ export default function ChatPage() {
   const shouldScrollRef = useRef(true);
   // md 文件预览内容缓存
   const [mdPreviews, setMdPreviews] = useState<Record<string, string>>({});
+  // 已确认的 user_confirm 卡片 ID 集合
+  const [confirmedCards, setConfirmedCards] = useState<Set<string>>(new Set());
   // 动态 PPTX 主题列表（内置 + 自定义）
   const [pptxThemes, setPptxThemes] = useState<Array<{ name: string; label: string; custom: boolean; sourceFile?: string; preview: { bg: string; title: string; accent: string } }>>([]);
   const pptxThemesFetched = useRef(false);
@@ -746,6 +749,12 @@ export default function ChatPage() {
               if (data.hitMax) {
                 setMessages((prev) => [...prev, { role: "system", content: t("hit_max_iterations") }]);
               }
+            } else if (eventType === "user_confirm") {
+              const confirmData = data;
+              setMessages(prev => [...prev, {
+                role: "user_confirm" as any,
+                content: JSON.stringify(confirmData),
+              }]);
             } else if (eventType === "error") {
               setMessages((prev) => [...prev, { role: "assistant", content: data.error, isError: true }]);
             }
@@ -1257,6 +1266,49 @@ export default function ChatPage() {
                     </div>
                   )}
                 </div>
+              );
+            }
+            if (msg.role === "user_confirm") {
+              const data = JSON.parse(msg.content);
+              const isDisabled = confirmedCards.has(data.confirmId);
+              return (
+                <ConfirmCard
+                  key={msg.id ?? `m${i}`}
+                  confirmId={data.confirmId}
+                  type={data.type}
+                  title={data.title}
+                  description={data.description}
+                  options={data.options}
+                  multiSelect={data.multiSelect}
+                  fields={data.fields}
+                  confirmText={data.confirmText}
+                  cancelText={data.cancelText}
+                  disabled={isDisabled}
+                  onConfirm={async (confirmId, response) => {
+                    try {
+                      await apiFetch("/api/agent/chat/confirm", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ confirmId, response }),
+                      });
+                      setConfirmedCards(prev => new Set(prev).add(confirmId));
+                    } catch (err) {
+                      console.error("Confirm failed:", err);
+                    }
+                  }}
+                  onCancel={async (confirmId) => {
+                    try {
+                      await apiFetch("/api/agent/chat/confirm", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ confirmId, cancelled: true }),
+                      });
+                      setConfirmedCards(prev => new Set(prev).add(confirmId));
+                    } catch (err) {
+                      console.error("Cancel failed:", err);
+                    }
+                  }}
+                />
               );
             }
             if (msg.role === "system") {
