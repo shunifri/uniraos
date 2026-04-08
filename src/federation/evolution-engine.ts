@@ -13,7 +13,7 @@ import type { SkillRegistry } from "../registry/index.js";
 import type { MetricsCollector } from "../engine/metrics.js";
 import type { EvolutionController } from "../engine/evolution-controller.js";
 import type { SkillLifecycleManager } from "../engine/skill-lifecycle.js";
-import { OptimizeActionExecutor, GenerateActionExecutor, CanaryActionExecutor } from "./executors/index.js";
+import { OptimizeActionExecutor, GenerateActionExecutor, CanaryActionExecutor, AdoptActionExecutor } from "./executors/index.js";
 import type { LLMProvider } from "../llm/types.js";
 import type {
   EvolutionStrategy,
@@ -238,6 +238,7 @@ export class EvolutionEngine {
 
     // 注册内置执行器
     this.addExecutor(new RetireActionExecutor());
+    this.addExecutor(new AdoptActionExecutor());
 
     if (opts.llmProvider) {
       this.addExecutor(new OptimizeActionExecutor(opts.llmProvider, opts.lifecycleManager));
@@ -274,6 +275,15 @@ export class EvolutionEngine {
     if (this.cycleTimer) {
       clearInterval(this.cycleTimer);
       this.cycleTimer = null;
+    }
+  }
+
+  /** 响应式检测：指标恶化时立即触发进化循环 */
+  checkAndTrigger(): void {
+    const degraded = this.metrics.checkDegradation?.(0.3);
+    if (degraded && degraded.length > 0) {
+      // Trigger immediate cycle
+      this.runCycle().catch(() => {});
     }
   }
 

@@ -132,6 +132,29 @@ export class MetricsCollector {
     };
   }
 
+  /** 检查是否有 Skill 指标急剧恶化 */
+  checkDegradation(threshold: number = 0.3): Array<{ skillName: string; successRate: number; recentDrop: number }> {
+    const degraded: Array<{ skillName: string; successRate: number; recentDrop: number }> = [];
+
+    for (const [skillName, records] of this.records) {
+      if (records.length < 20) continue;
+
+      // Compare recent 10 calls vs previous 10
+      const recent = records.slice(-10);
+      const previous = records.slice(-20, -10);
+
+      const recentRate = recent.filter(r => r.success).length / recent.length;
+      const previousRate = previous.filter(r => r.success).length / previous.length;
+
+      const drop = previousRate - recentRate;
+      if (drop > threshold) {
+        degraded.push({ skillName, successRate: recentRate, recentDrop: drop });
+      }
+    }
+
+    return degraded;
+  }
+
   /** 清空所有指标 */
   reset(): void {
     this.records.clear();
