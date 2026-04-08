@@ -126,6 +126,11 @@ export class ExecutionEngine {
 
     const skill = this.registry.get(skillName);
 
+    // 参数校验（如果 Skill 定义了 paramSchema）
+    if (skill.paramSchema) {
+      this.validateParams(skillName, params, skill.paramSchema);
+    }
+
     // 熔断器检查
     this.circuitBreakers.check(skillName, skill.circuitBreaker);
 
@@ -401,6 +406,38 @@ export class ExecutionEngine {
     context: ExecutionContext,
   ): Promise<SkillResult> {
     return skill.handler(params, context);
+  }
+
+  private validateParams(
+    skillName: string,
+    params: Record<string, unknown>,
+    schema: import("../types/param-schema.js").ParamSchema,
+  ): void {
+    if (schema.required) {
+      for (const field of schema.required) {
+        if (params[field] === undefined || params[field] === null) {
+          throw new Error(`Skill "${skillName}" 缺少必需参数: ${field}`);
+        }
+      }
+    }
+
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      const value = params[key];
+      if (value === undefined || value === null) continue;
+
+      const expectedType = prop.type;
+      const actualType = Array.isArray(value) ? "array" : typeof value;
+
+      if (expectedType === "array" && !Array.isArray(value)) {
+        throw new Error(`Skill "${skillName}" 参数 "${key}" 应为 array，实际为 ${actualType}`);
+      } else if (expectedType !== "array" && expectedType !== "object" && actualType !== expectedType) {
+        throw new Error(`Skill "${skillName}" 参数 "${key}" 应为 ${expectedType}，实际为 ${actualType}`);
+      }
+
+      if (prop.enum && !prop.enum.includes(String(value))) {
+        throw new Error(`Skill "${skillName}" 参数 "${key}" 值 "${value}" 不在允许范围: ${prop.enum.join(", ")}`);
+      }
+    }
   }
 
   private sleep(ms: number): Promise<void> {
