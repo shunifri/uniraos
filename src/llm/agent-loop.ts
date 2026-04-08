@@ -15,6 +15,9 @@ import type {
 } from "./types.js";
 import { skillsToTools } from "./tool-bridge.js";
 import { requestContext, getCurrentUserId } from "../user/request-context.js";
+import type { FactExtractor } from "../memory/enhanced/fact-extractor.js";
+import type { ConflictDetector } from "../memory/enhanced/conflict-detector.js";
+import type { LTMBackend } from "../memory/ltm-backend.js";
 
 /** Agent 循环配置 */
 export interface AgentLoopConfig {
@@ -164,6 +167,10 @@ export class AgentLoop {
   private toolSchemas = new Map<string, ToolDefinition>();
   /** 对话历史（跨 run 保持） */
   private conversationHistory: Message[] = [];
+  /** 增强记忆模块（可选） */
+  private factExtractor?: FactExtractor;
+  private conflictDetector?: ConflictDetector;
+  private ltmBackend?: LTMBackend;
 
   constructor(
     registry: SkillRegistry,
@@ -192,6 +199,17 @@ export class AgentLoop {
       const custom = this.toolSchemas.get(td.function.name);
       return custom ?? td;
     });
+  }
+
+  /** 注入增强记忆模块（可选，用于结构化事实提取和冲突检测） */
+  setEnhancedMemory(
+    factExtractor: FactExtractor,
+    conflictDetector?: ConflictDetector,
+    ltmBackend?: LTMBackend,
+  ): void {
+    this.factExtractor = factExtractor;
+    this.conflictDetector = conflictDetector;
+    this.ltmBackend = ltmBackend;
   }
 
   /** 清空对话历史 */
@@ -625,6 +643,47 @@ export class AgentLoop {
       }
     } catch {
       // 提取失败不影响主流程
+    }
+
+    // Enhanced: 使用 FactExtractor 提取结构化事实
+    if (this.factExtractor) {
+      try {
+        const conversationText = `User: ${userMessage}\nAssistant: ${assistantResponse}`;
+        const facts = await this.factExtractor.extract(conversationText, this.provider);
+        for (const fact of facts) {
+          // 冲突检测
+          if (this.conflictDetector && this.ltmBackend) {
+            const conflicts = await this.conflictDetector.detectForKey(
+              fact.key,
+              fact.fact,
+              this.ltmBackend,
+              this.provider,
+            );
+            if (conflicts.length > 0 && conflicts[0].severity === "high") {
+              continue; // 跳过高冲突事实
+            }
+          }
+          // 存储结构化事实到 LTM
+          try {
+            const result = await this.engine.execute("ltm_store", {
+              key: `fact:${fact.key}`,
+              value: fact.fact,
+              tags: [...(fact.tags ?? []), "fact", "extracted"],
+              summary: fact.fact.substring(0, 100),
+            });
+            memorySteps.push({
+              type: "auto_memory",
+              content: `Enhanced fact stored: ${fact.key} = ${fact.fact}`,
+              toolResult: { skillName: "ltm_store", result },
+              timestamp: Date.now(),
+            });
+          } catch {
+            // 单条存储失败不影响其他
+          }
+        }
+      } catch {
+        // Enhanced extraction is best-effort
+      }
     }
 
     return memorySteps;
