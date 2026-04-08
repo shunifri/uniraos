@@ -19,6 +19,7 @@ import { createDocumentSkills } from "./skills/document-skills.js";
 import { createChartSkills } from "./skills/chart-skills.js";
 import { createProtocolSkills } from "./skills/protocol-skills.js";
 import { createKnowledgeSkills } from "./skills/knowledge-skills.js";
+import { createGraphSkills } from "./skills/graph-skills.js";
 import { createApiGenSkills } from "./skills/api-gen-skills.js";
 import { createMetaSkills } from "./skills/meta-skills.js";
 import { createPlanningSkill } from "./skills/planning-skill.js";
@@ -420,6 +421,12 @@ createProtocolSkills(registry);
 
 // 注册知识库 Skills (kb_ingest/kb_search/kb_list/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)
 createKnowledgeSkills(registry);
+
+// 注册知识图谱 Skills (graph_query/graph_path/graph_communities)
+for (const skill of createGraphSkills(sessionManager)) {
+  registry.register(skill);
+}
+console.log(`   Graph skills registered (query + path + communities)`);
 
 // 注册 API 文档自动生成 Skills (api_import/api_auth_config/api_list/api_delete/api_test)
 createApiGenSkills(registry);

@@ -26,6 +26,7 @@ import {
   GlobalOutlined,
   RocketOutlined,
   ApartmentOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -102,6 +103,11 @@ const Layout: React.FC = () => {
             key: 'federation',
             icon: <GlobalOutlined />,
             label: 'Federation',
+          },
+          {
+            key: 'graph',
+            icon: <NodeIndexOutlined />,
+            label: 'Knowledge Graph',
           },
         ]
       : []),
