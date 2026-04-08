@@ -1,0 +1,293 @@
+import { Router } from "express";
+import { requireAuth, requireAdmin } from "../db/auth-middleware.js";
+import { createSession, destroySession } from "../db/auth.js";
+import * as userRepo from "../db/user-repository.js";
+import * as deptRepo from "../db/department-repository.js";
+import * as resRepo from "../db/resource-repository.js";
+import type { RouteDependencies } from "./index.js";
+
+export function createAuthRoutes(deps: RouteDependencies): Router {
+  const { sessionManager, syncSkillsToResources } = deps;
+  const router = Router();
+
+  // ===== Auth Routes =====
+
+  router.post("/auth/login", (req, res) => {
+    const { username, password } = req.body as { username: string; password: string };
+    if (!username || !password) {
+      res.status(400).json({ success: false, error: "username and password are required" });
+      return;
+    }
+
+    const user = userRepo.authenticate(username, password);
+    if (!user) {
+      res.status(401).json({ success: false, error: "Invalid credentials" });
+      return;
+    }
+
+    const session = createSession(user.id);
+    const details = userRepo.getUserWithDetails(user.id);
+
+    res.json({
+      success: true,
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: details,
+    });
+  });
+
+  router.post("/auth/logout", requireAuth, (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+      destroySession(authHeader.slice(7));
+    }
+    res.json({ success: true });
+  });
+
+  router.get("/auth/me", requireAuth, (req, res) => {
+    const details = userRepo.getUserWithDetails(req.user!.id);
+    if (!details) {
+      res.status(404).json({ success: false, error: "User not found" });
+      return;
+    }
+    res.json({ success: true, user: details });
+  });
+
+  // ===== User management API (admin) =====
+
+  router.get("/users", requireAuth, requireAdmin, (req, res) => {
+    const userId = req.query.id as string | undefined;
+    if (userId) {
+      const details = userRepo.getUserWithDetails(userId);
+      if (!details) {
+        res.status(404).json({ success: false, error: "User not found" });
+        return;
+      }
+      res.json({ success: true, user: details });
+      return;
+    }
+    const users = userRepo.listUsers();
+    res.json({ success: true, users });
+  });
+
+  router.post("/users", requireAuth, requireAdmin, (req, res) => {
+    const { username, password, displayName, departmentId } = req.body;
+    if (!username || !password) {
+      res.status(400).json({ success: false, error: "username and password are required" });
+      return;
+    }
+    try {
+      const user = userRepo.createUser({ username, password, displayName, departmentId });
+      res.json({ success: true, user });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.put("/users/:id", requireAuth, requireAdmin, (req, res) => {
+    const { displayName, avatar, status, departmentId } = req.body;
+    const id = req.params.id as string;
+    const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId });
+    if (!user) {
+      res.status(404).json({ success: false, error: "User not found" });
+      return;
+    }
+    res.json({ success: true, user });
+  });
+
+  router.delete("/users/:id", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    if (id === req.user!.id) {
+      res.status(400).json({ success: false, error: "Cannot delete yourself" });
+      return;
+    }
+    const deleted = userRepo.deleteUser(id);
+    res.json({ success: true, deleted });
+  });
+
+  router.post("/users/:id/roles", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
+    if (!roleId || !action) {
+      res.status(400).json({ success: false, error: "roleId and action (assign/remove) are required" });
+      return;
+    }
+    if (action === "assign") {
+      userRepo.assignRole(id, roleId);
+    } else {
+      userRepo.removeRole(id, roleId);
+    }
+    const roles = userRepo.getUserRoles(id);
+    res.json({ success: true, roles });
+  });
+
+  router.post("/users/:id/password", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { password } = req.body as { password: string };
+    if (!password) {
+      res.status(400).json({ success: false, error: "password is required" });
+      return;
+    }
+    const changed = userRepo.changePassword(id, password);
+    res.json({ success: true, changed });
+  });
+
+  // ===== Department management API (admin) =====
+
+  router.get("/departments", requireAuth, requireAdmin, (_req, res) => {
+    const departments = deptRepo.getDepartmentTree();
+    res.json({ success: true, departments });
+  });
+
+  router.post("/departments", requireAuth, requireAdmin, (req, res) => {
+    const { name, parentId, description } = req.body;
+    if (!name) {
+      res.status(400).json({ success: false, error: "name is required" });
+      return;
+    }
+    try {
+      const dept = deptRepo.createDepartment({ name, parentId, description });
+      res.json({ success: true, department: dept });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.put("/departments/:id", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { name, description } = req.body;
+    const dept = deptRepo.updateDepartment(id, { name, description });
+    if (!dept) {
+      res.status(404).json({ success: false, error: "Department not found" });
+      return;
+    }
+    res.json({ success: true, department: dept });
+  });
+
+  router.delete("/departments/:id", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    try {
+      deptRepo.deleteDepartment(id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { resourceIds } = req.body as { resourceIds: string[] };
+    if (!resourceIds || !Array.isArray(resourceIds)) {
+      res.status(400).json({ success: false, error: "resourceIds array is required" });
+      return;
+    }
+    deptRepo.assignResources(id, resourceIds);
+    const resources = deptRepo.getDepartmentResources(id);
+    res.json({ success: true, resources });
+  });
+
+  router.delete("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { resourceIds } = req.body as { resourceIds: string[] };
+    if (!resourceIds || !Array.isArray(resourceIds)) {
+      res.status(400).json({ success: false, error: "resourceIds array is required" });
+      return;
+    }
+    deptRepo.removeResources(id, resourceIds);
+    const resources = deptRepo.getDepartmentResources(id);
+    res.json({ success: true, resources });
+  });
+
+  router.get("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const effective = req.query.effective === "true";
+    const resources = effective
+      ? deptRepo.getDepartmentEffectiveResources(id)
+      : deptRepo.getDepartmentResources(id);
+    res.json({ success: true, resources });
+  });
+
+  // ===== Resource management API (admin) =====
+
+  router.get("/resources", requireAuth, requireAdmin, (req, res) => {
+    const type = req.query.type as string | undefined;
+    const resources = resRepo.listResources(type);
+    res.json({ success: true, resources });
+  });
+
+  router.post("/resources/sync", requireAuth, requireAdmin, (_req, res) => {
+    syncSkillsToResources();
+    const resources = resRepo.listResources("skill");
+    res.json({ success: true, resources });
+  });
+
+  // ===== Role permission management API (admin) =====
+
+  router.get("/roles", requireAuth, requireAdmin, (_req, res) => {
+    const roles = userRepo.listRoles();
+    res.json({ success: true, roles });
+  });
+
+  router.get("/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const permissions = resRepo.getPermissionsByRole(id);
+    res.json({ success: true, permissions });
+  });
+
+  router.post("/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
+    if (!permissionIds || !action) {
+      res.status(400).json({ success: false, error: "permissionIds and action (assign/remove) are required" });
+      return;
+    }
+    if (action === "assign") {
+      resRepo.assignPermissionsToRole(id, permissionIds);
+    } else {
+      resRepo.removePermissionsFromRole(id, permissionIds);
+    }
+    const permissions = resRepo.getPermissionsByRole(id);
+    res.json({ success: true, permissions });
+  });
+
+  router.get("/permissions", requireAuth, requireAdmin, (_req, res) => {
+    const permissions = resRepo.listPermissions();
+    res.json({ success: true, permissions });
+  });
+
+  router.post("/roles", requireAuth, requireAdmin, (req, res) => {
+    const { name, description } = req.body as { name: string; description?: string };
+    if (!name) {
+      res.status(400).json({ success: false, error: "name is required" });
+      return;
+    }
+    try {
+      const role = userRepo.createRole({ name, description });
+      res.json({ success: true, role });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/roles/:id", requireAuth, requireAdmin, (req, res) => {
+    const id = req.params.id as string;
+    try {
+      const ok = userRepo.deleteRole(id);
+      if (!ok) {
+        res.status(404).json({ success: false, error: "Role not found" });
+        return;
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ===== User Session APIs =====
+
+  router.get("/user/sessions", requireAuth, (_req, res) => {
+    res.json({ sessions: sessionManager.listSessions() });
+  });
+
+  return router;
+}
