@@ -116,10 +116,63 @@ export class EvolutionController {
   private pendingApprovals: PendingApproval[] = [];
   private redLines: RedLineConstraint[] = [];
   private violations: RedLineViolation[] = [];
+  private budget = {
+    totalBudget: 100,        // Total energy units
+    used: 0,                 // Used so far
+    costPerGenerate: 10,     // Cost to generate a new skill
+    costPerOptimize: 5,      // Cost to optimize existing
+    costPerAdopt: 3,         // Cost to adopt from federation
+    regenRate: 1,            // Units regenerated per hour
+    lastRegenAt: Date.now(),
+  };
 
   constructor(config?: Partial<EvolutionConfig>) {
     this.config = { ...DEFAULT_EVOLUTION_CONFIG, ...config };
     this.initBuiltInRedLines();
+  }
+
+  /** Check if budget allows an action */
+  hasBudget(actionType: string): boolean {
+    this.regenerate();
+    const cost = this.getActionCost(actionType);
+    return (this.budget.totalBudget - this.budget.used) >= cost;
+  }
+
+  /** Consume budget for an action */
+  consumeBudget(actionType: string): void {
+    this.regenerate();
+    const cost = this.getActionCost(actionType);
+    this.budget.used += cost;
+  }
+
+  /** Get current budget status */
+  getBudgetStatus(): { total: number; used: number; remaining: number; regenRate: number } {
+    this.regenerate();
+    return {
+      total: this.budget.totalBudget,
+      used: this.budget.used,
+      remaining: this.budget.totalBudget - this.budget.used,
+      regenRate: this.budget.regenRate,
+    };
+  }
+
+  private regenerate(): void {
+    const now = Date.now();
+    const hoursPassed = (now - this.budget.lastRegenAt) / 3600000;
+    const regen = Math.floor(hoursPassed * this.budget.regenRate);
+    if (regen > 0) {
+      this.budget.used = Math.max(0, this.budget.used - regen);
+      this.budget.lastRegenAt = now;
+    }
+  }
+
+  private getActionCost(actionType: string): number {
+    switch (actionType) {
+      case "generate": return this.budget.costPerGenerate;
+      case "optimize": return this.budget.costPerOptimize;
+      case "adopt": return this.budget.costPerAdopt;
+      default: return 0;
+    }
   }
 
   /** Initialize built-in red line constraints */
@@ -398,6 +451,11 @@ export class EvolutionController {
 
   /** 检查是否允许生成新 Skill */
   canGenerate(name: string, generatedBy: string, capabilities: string[]): { allowed: boolean; reason?: string } {
+    // Budget check
+    if (!this.hasBudget("generate")) {
+      return { allowed: false, reason: "Insufficient evolution budget for generate action" };
+    }
+
     // Red line checks first
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
     const ctx: RedLineContext = {

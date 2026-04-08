@@ -23,7 +23,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   // ===== Evolution Control APIs =====
 
   router.get("/evolution/config", requireAuth, requireAdmin, (_req, res) => {
-    res.json({ success: true, config: evolutionController.getConfig() });
+    res.json({ success: true, config: evolutionController.getConfig(), budget: evolutionController.getBudgetStatus() });
   });
 
   router.post("/evolution/config", requireAuth, requireAdmin, (req, res) => {
