@@ -23,6 +23,7 @@ import { createGraphSkills } from "./skills/graph-skills.js";
 import { createApiGenSkills } from "./skills/api-gen-skills.js";
 import { createMetaSkills } from "./skills/meta-skills.js";
 import { createPlanningSkill } from "./skills/planning-skill.js";
+import { createUserConfirmSkill } from "./skills/user-confirm-skill.js";
 import { SkillMarketplace } from "./skills/skill-marketplace.js";
 import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
 import { PluginLoader } from "./plugin/plugin-loader.js";
@@ -94,6 +95,9 @@ const pluginLoader = new PluginLoader(registry, {
   continueOnError: true,
 });
 
+let currentProvider: LLMProvider | null = null;
+let currentMultimodalProvider: MultimodalProvider | null = null;
+
 // 联邦/迁移/进化 组件 — 从 ConfigManager 读取配置
 const fedCfg = configManager.getFederation();
 const evoCfg = configManager.getEvolution();
@@ -124,8 +128,6 @@ const evolutionEngine = new EvolutionEngine({
 });
 // 连接联邦推荐到进化引擎
 evolutionEngine.getFederatedRecommendations = () => federationManager.getRecommendations();
-let currentProvider: LLMProvider | null = null;
-let currentMultimodalProvider: MultimodalProvider | null = null;
 
 // 启动 session 清理（每小时清理 24 小时不活跃的 session）
 sessionManager.startCleanup();
@@ -490,6 +492,10 @@ console.log("   Prompt management skills registered");
 // 注册多步规划 Skill
 createPlanningSkill(registry, engine, () => currentProvider);
 
+// 注册用户交互确认 Skill
+registry.register(createUserConfirmSkill());
+console.log("   User confirm skill registered");
+
 // 加载插件目录中的 Skill
 pluginLoader.on((event) => {
   if (event.type === "loaded") console.log(`   Plugin loaded: ${event.plugin.name}@${event.plugin.version}`);
@@ -616,7 +622,7 @@ app.use((req, res, next) => {
   }
 });
 
-const PORT = process.env.PORT ?? 3000;
+const PORT = process.env.PORT ?? 9001;
 
 // 启动时自动 WAL 恢复
 const walRecoveryPlan = wal.recover();

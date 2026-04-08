@@ -14,6 +14,7 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import { skillsToTools } from "./tool-bridge.js";
+import { confirmQueue } from "../skills/user-confirm-skill.js";
 import { requestContext, getCurrentUserId } from "../user/request-context.js";
 import type { FactExtractor } from "../memory/enhanced/fact-extractor.js";
 import type { ConflictDetector } from "../memory/enhanced/conflict-detector.js";
@@ -146,7 +147,7 @@ export interface AgentResult {
 
 /** 流式事件 */
 export interface StreamEvent {
-  event: "thinking" | "text_delta" | "tool_call" | "tool_start" | "tool_result" | "done" | "error";
+  event: "thinking" | "text_delta" | "tool_call" | "tool_start" | "tool_result" | "user_confirm" | "done" | "error";
   data: Record<string, unknown>;
 }
 
@@ -260,7 +261,9 @@ export class AgentLoop {
         );
       }
 
-      if (hasKbSearch) {
+      // 短消息（问候/闲聊）跳过知识库搜索，避免无关文档卡片
+      const isShortGreeting = userMessage.length <= 10 && /^[\u4e00-\u9fff\w\s!！?？,.，。~～]+$/.test(userMessage);
+      if (hasKbSearch && !isShortGreeting) {
         promises.push(
           Promise.race([
             this.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.15 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
@@ -371,6 +374,32 @@ export class AgentLoop {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
           }
 
+          // Check for user_confirm pause/resume
+          if (result.success && (result as any).data?.__userConfirm) {
+            const confirmData = (result as any).data;
+            yield { event: "user_confirm", data: confirmData };
+
+            // Wait for user response via confirmQueue (with timeout)
+            const CONFIRM_TIMEOUT_MS = 300000; // 5 minutes
+            const userResponse = await new Promise<unknown>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                confirmQueue.delete(confirmData.confirmId);
+                reject(new Error("用户确认超时"));
+              }, CONFIRM_TIMEOUT_MS);
+              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+            }).catch((err) => ({ cancelled: true, message: err.message }));
+
+            // Replace the tool result with the user's response
+            const userResult: ExecutionResult = {
+              success: true,
+              data: { userResponse },
+            };
+            steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result: userResult }, timestamp: Date.now() });
+            yield { event: "tool_result", data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
+            messages.push({ role: "tool", content: this.truncateToolResult(userResult), toolCallId: toolCall.id });
+            continue;
+          }
+
           steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result }, timestamp: Date.now() });
           yield { event: "tool_result", data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
 
@@ -407,6 +436,31 @@ export class AgentLoop {
             result = await this.engine.execute(toolCall.name, params);
           } catch (err) {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
+          }
+
+          // Check for user_confirm pause/resume
+          if (result.success && (result as any).data?.__userConfirm) {
+            const confirmData = (result as any).data;
+            yield { event: "user_confirm", data: confirmData };
+
+            // Wait for user response via confirmQueue (with timeout)
+            const CONFIRM_TIMEOUT_MS = 300000; // 5 minutes
+            const userResponse = await new Promise<unknown>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                confirmQueue.delete(confirmData.confirmId);
+                reject(new Error("用户确认超时"));
+              }, CONFIRM_TIMEOUT_MS);
+              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+            }).catch((err) => ({ cancelled: true, message: err.message }));
+
+            const userResult: ExecutionResult = {
+              success: true,
+              data: { userResponse },
+            };
+            steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result: userResult }, timestamp: Date.now() });
+            yield { event: "tool_result", data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
+            messages.push({ role: "tool", content: this.truncateToolResult(userResult), toolCallId: toolCall.id });
+            continue;
           }
 
           steps.push({ type: "tool_result", toolResult: { skillName: toolCall.name, result }, timestamp: Date.now() });
@@ -510,6 +564,14 @@ export class AgentLoop {
           result = {
             success: false,
             error: err instanceof Error ? err.message : String(err),
+          };
+        }
+
+        // Non-streaming: user_confirm cannot pause — return a failure so AI knows it needs streaming
+        if (result.success && (result as any).data?.__userConfirm) {
+          result = {
+            success: false,
+            error: "user_confirm requires streaming mode (SSE). Please use the streaming chat endpoint.",
           };
         }
 

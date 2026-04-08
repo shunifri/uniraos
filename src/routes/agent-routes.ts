@@ -4,6 +4,7 @@ import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { getDb } from "../db/database.js";
 import { parseDocument } from "../services/doc-parser.js";
 import type { RouteDependencies } from "./index.js";
+import { confirmQueue } from "../skills/user-confirm-skill.js";
 
 export function createAgentRoutes(deps: RouteDependencies): Router {
   const {
@@ -288,6 +289,28 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     if (!closed) {
       res.end();
     }
+  });
+
+  // POST /api/agent/chat/confirm — resolve a pending user_confirm
+  router.post("/agent/chat/confirm", requireAuth, (req, res) => {
+    const { confirmId, response, cancelled } = req.body;
+    if (!confirmId) {
+      res.status(400).json({ error: "confirmId required" });
+      return;
+    }
+    const pending = confirmQueue.get(confirmId);
+    if (!pending) {
+      res.status(404).json({ error: "Confirmation not found or expired" });
+      return;
+    }
+    clearTimeout(pending.timeout);
+    confirmQueue.delete(confirmId);
+    if (cancelled) {
+      pending.resolve({ cancelled: true, message: "用户取消了操作" });
+    } else {
+      pending.resolve(response);
+    }
+    res.json({ success: true });
   });
 
   // Strategy analysis API
