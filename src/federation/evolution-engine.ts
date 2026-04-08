@@ -13,6 +13,8 @@ import type { SkillRegistry } from "../registry/index.js";
 import type { MetricsCollector } from "../engine/metrics.js";
 import type { EvolutionController } from "../engine/evolution-controller.js";
 import type { SkillLifecycleManager } from "../engine/skill-lifecycle.js";
+import { OptimizeActionExecutor, GenerateActionExecutor, CanaryActionExecutor } from "./executors/index.js";
+import type { LLMProvider } from "../llm/types.js";
 import type {
   EvolutionStrategy,
   EvolutionContext,
@@ -221,6 +223,7 @@ export class EvolutionEngine {
     evolutionController: EvolutionController;
     lifecycleManager: SkillLifecycleManager;
     config?: Partial<EvolutionEngineConfig>;
+    llmProvider?: LLMProvider;
   }) {
     this.registry = opts.registry;
     this.metrics = opts.metrics;
@@ -235,6 +238,12 @@ export class EvolutionEngine {
 
     // 注册内置执行器
     this.addExecutor(new RetireActionExecutor());
+
+    if (opts.llmProvider) {
+      this.addExecutor(new OptimizeActionExecutor(opts.llmProvider, opts.lifecycleManager));
+      this.addExecutor(new GenerateActionExecutor(opts.llmProvider, opts.evolutionController));
+    }
+    this.addExecutor(new CanaryActionExecutor(opts.lifecycleManager));
   }
 
   /** 注册进化策略 */

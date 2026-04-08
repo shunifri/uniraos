@@ -119,6 +119,7 @@ const evolutionEngine = new EvolutionEngine({
     maxActionsPerCycle: evoCfg.maxActionsPerCycle,
     skipApprovalRequired: evoCfg.skipApprovalRequired,
   },
+  llmProvider: currentProvider ?? undefined,
 });
 // 连接联邦推荐到进化引擎
 evolutionEngine.getFederatedRecommendations = () => federationManager.getRecommendations();
