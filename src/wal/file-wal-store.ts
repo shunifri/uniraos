@@ -57,12 +57,18 @@ export class FileWALStore implements WALStore {
     writeFileSync(this.filePath, "", "utf-8");
   }
 
-  /** 压缩：将当前状态重写为干净文件 */
-  compact(): void {
-    const lines = [...this.entries.values()]
+  /** 压缩：只保留未完成的条目，移除已完成/已失败的条目 */
+  compact(): { removedEntries: number; remainingEntries: number } {
+    const allEntries = [...this.entries.values()];
+    const incompleteEntries = allEntries.filter((e) => e.status === "pending");
+    const removedEntries = allEntries.length - incompleteEntries.length;
+
+    const lines = incompleteEntries
       .map((e) => JSON.stringify({ op: "append", entry: e }))
       .join("\n");
-    writeFileSync(this.filePath, lines + "\n", "utf-8");
+    writeFileSync(this.filePath, lines.length > 0 ? lines + "\n" : "", "utf-8");
+
+    return { removedEntries, remainingEntries: incompleteEntries.length };
   }
 
   private appendLine(data: unknown): void {

@@ -169,10 +169,17 @@ export class WALManager {
     this.store.clear();
   }
 
-  /** 压缩 WAL（委托给支持压缩的存储后端） */
-  compact(): void {
+  /** 压缩 WAL：移除已完成/已失败的条目，只保留未完成的条目 */
+  compact(): { removedEntries: number; remainingEntries: number } {
     if ("compact" in this.store && typeof (this.store as any).compact === "function") {
-      (this.store as any).compact();
+      return (this.store as any).compact();
     }
+    // 对于不支持压缩的存储后端（如 InMemoryWALStore），返回空结果
+    const all = this.store.getAll();
+    const incomplete = this.store.getIncomplete();
+    return {
+      removedEntries: all.length - incomplete.length,
+      remainingEntries: incomplete.length,
+    };
   }
 }
