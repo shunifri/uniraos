@@ -6,3 +6,4 @@ export { extractRelationships, extractTagRelationships } from "./relationship-ex
 export type { ExtractedRelation } from "./relationship-extractor.js";
 export { detectCommunities } from "./community-detection.js";
 export { identifyGodNodes, scoreSurprise } from "./scoring.js";
+export { KnowledgeGraphManager } from "./manager.js";

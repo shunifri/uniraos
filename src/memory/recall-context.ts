@@ -4,6 +4,7 @@
  * 避免重复搜索（TTL 缓存），支持最大条目数限制。
  */
 import type { ShortTermMemory } from "./stm.js";
+import type { KnowledgeGraphManager } from "./knowledge-graph/index.js";
 
 export interface LTMSearchable {
   search(query: string, options?: { limit?: number }): Promise<Array<{ key: string; value: unknown; tags: string[] }>>;
@@ -38,12 +39,14 @@ export class RecallContextSkill {
   private recallTtlMs: number;
   /** 按缓存键存储上次 recall 结果，防止在同一 TTL 窗口内重复搜索 */
   private cache = new Map<string, CacheEntry>();
+  private graphManager?: KnowledgeGraphManager;
 
-  constructor(stm: ShortTermMemory, ltm: LTMSearchable, config?: RecallContextConfig) {
+  constructor(stm: ShortTermMemory, ltm: LTMSearchable, config?: RecallContextConfig, graphManager?: KnowledgeGraphManager) {
     this.stm = stm;
     this.ltm = ltm;
     this.maxRecallEntries = config?.maxRecallEntries ?? DEFAULT_MAX_RECALL_ENTRIES;
     this.recallTtlMs = config?.recallTtlMs ?? DEFAULT_RECALL_TTL_MS;
+    this.graphManager = graphManager;
   }
 
   /**
@@ -66,6 +69,22 @@ export class RecallContextSkill {
     // 搜索 LTM
     const raw = await this.ltm.search(query, { limit: this.maxRecallEntries });
     const memories = raw.slice(0, this.maxRecallEntries);
+
+    // 图遍历增强：发现关联知识
+    if (this.graphManager && this.graphManager.getStore().nodeCount > 0) {
+      try {
+        const subgraph = this.graphManager.querySubgraph(query, { maxNodes: 3, maxDepth: 2 });
+        for (const node of subgraph.nodes) {
+          if (!memories.some(m => m.key === node.label)) {
+            memories.push({
+              key: node.label,
+              value: node.properties.value ?? node.label,
+              tags: node.tags,
+            });
+          }
+        }
+      } catch { /* graph query failure is non-fatal */ }
+    }
 
     // 逐条注入 STM（key 格式：recall:<ltm_key>）
     for (const mem of memories) {

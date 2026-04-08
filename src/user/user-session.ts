@@ -13,6 +13,7 @@ import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { AgentLoopConfig } from "../llm/agent-loop.js";
+import { KnowledgeGraphManager } from "../memory/knowledge-graph/index.js";
 
 export interface UserSession {
   userId: string;
@@ -20,6 +21,7 @@ export interface UserSession {
   ltm: LTMBackend;
   agentLoop: AgentLoop | null;
   lastActiveAt: number;
+  graphManager: KnowledgeGraphManager | null;
 }
 
 export class UserSessionManager {
@@ -65,6 +67,7 @@ export class UserSessionManager {
       ltm: this.createLTMBackend(userId),
       agentLoop: null,
       lastActiveAt: Date.now(),
+      graphManager: new KnowledgeGraphManager(join(this.baseLtmPath, userId, "graph", "graph.json")),
     };
 
     this.sessions.set(userId, session);

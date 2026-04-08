@@ -164,6 +164,16 @@ export function createMemorySkills(
 
         const id = await ltm.store(key, value, storeOptions);
 
+        // 知识图谱：自动创建节点和关系
+        try {
+          const session = getSession(sessionManager);
+          if ((session as any).graphManager) {
+            (session as any).graphManager.onFactStored({
+              id, key, value, tags: tags ?? [], relation,
+            }).catch(() => {});
+          }
+        } catch { /* graph integration is best-effort */ }
+
         // 递归自指：通过 engine 调用 stm_store 同步到短期记忆
         if (engineRef && canRecurse(context, "stm_store")) {
           try {
