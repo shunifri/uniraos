@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import crypto from "crypto";
 import type { GraphNode, GraphEdge, GraphData, NodeType, EdgeType } from "./types.js";
@@ -149,21 +149,26 @@ export class GraphStore {
       try {
         const raw = readFileSync(this.storePath, "utf-8");
         this.data = JSON.parse(raw);
-      } catch {
+      } catch (err) {
+        console.warn(`[GraphStore] Failed to load ${this.storePath}: ${err instanceof Error ? err.message : String(err)}. Starting with empty graph.`);
         this.data = { version: 1, nodes: {}, edges: {}, adjacency: {} };
       }
     }
   }
 
   save(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
-    }
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
     const dir = dirname(this.storePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.storePath, JSON.stringify(this.data, null, 2));
+    const tmp = this.storePath + ".tmp";
+    writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+    renameSync(tmp, this.storePath);
     this.dirty = false;
+  }
+
+  dispose(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    if (this.dirty) this.save();
   }
 
   private scheduleSave(): void {

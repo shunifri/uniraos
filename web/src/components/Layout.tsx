@@ -166,10 +166,12 @@ const Layout: React.FC = () => {
         style={{
           display: 'flex',
           alignItems: 'center',
-          padding: '0 24px',
+          padding: "0 24px",
           gap: 16,
-          background: antToken.colorBgContainer,
-          borderBottom: `1px solid ${antToken.colorBorderSecondary}`,
+          background: "rgba(255, 255, 255, 0.85)",
+          backdropFilter: "blur(12px)",
+          borderBottom: "1px solid rgba(255, 255, 255, 0.3)",
+          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.06)",
         }}
       >
         <div
@@ -187,7 +189,7 @@ const Layout: React.FC = () => {
             strong
             style={{ fontSize: 20, margin: 0, whiteSpace: 'nowrap' }}
           >
-            RAOS
+            <span className="text-gradient" style={{ fontWeight: 700 }}>RAOS</span>
           </Text>
           <Tag color="blue">v2.0</Tag>
         </div>
@@ -232,7 +234,14 @@ const Layout: React.FC = () => {
         </Space>
       </Header>
 
-      <Content style={{ padding: 24 }}>
+      <Content
+        style={{
+          padding: 24,
+          height: "calc(100vh - 64px)",
+          overflow: "auto",
+          background: "#f8f9fd",
+        }}
+      >
         <Outlet />
       </Content>
     </AntLayout>

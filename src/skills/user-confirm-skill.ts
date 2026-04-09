@@ -49,7 +49,7 @@ export function createUserConfirmSkill() {
       },
       required: ["type", "title"],
     },
-    timeout: 300000,
+    timeout: 120000,
     handler: async (params) => {
       const confirmId = crypto.randomUUID().slice(0, 12);
       return {

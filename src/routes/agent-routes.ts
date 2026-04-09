@@ -56,11 +56,13 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   // Agent streaming chat (SSE)
   router.post("/agent/chat/stream", requireAuth, requirePermission("chat.stream"), async (req, res) => {
     const userId = req.user!.id;
-    const { message, mode, conversationId } = req.body as {
+    const { message, mode, conversationId, deepThink } = req.body as {
       message: string;
       mode?: "auto" | "simple" | "react" | "legacy";
       conversationId?: string;
+      deepThink?: boolean;
     };
+    console.log(`   [Chat] user=${userId}, deepThink=${!!deepThink}, msgLen=${message?.length ?? 0}`);
     if (!message) {
       res.status(400).json({ success: false, error: "message is required" });
       return;
@@ -76,7 +78,12 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     res.write(`event: connected\ndata: {}\n\n`);
 
     let closed = false;
-    res.on("close", () => { closed = true; });
+    res.on("close", () => {
+      closed = true;
+      // TODO: Clean up any pending user_confirm for this session.
+      // Currently we cannot easily map confirmIds to sessions without additional tracking.
+      // confirmQueue entries will self-clean via their 2-minute timeout safety net.
+    });
 
     const write = (eventName: string, data: unknown) => {
       if (closed) return;
@@ -160,6 +167,22 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
     try {
       const processEvent = (eventName: string, eventData: any) => {
+        // 拦截 user_confirm：当 tool_result 包含 __userConfirm 时，改为发送 user_confirm 事件
+        if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
+          write("user_confirm", eventData.result.data);
+          saveMsg("tool", "等待用户确认...", {
+            skillName: eventData.skillName ?? pendingToolName,
+            status: "done",
+            isError: false,
+          });
+          return;
+        }
+        // user_confirm 事件直接透传（来自 AgentLoop 路径）
+        if (eventName === "user_confirm") {
+          write("user_confirm", eventData);
+          return;
+        }
+
         write(eventName, eventData);
 
         if (eventName === "strategy_selected") {
@@ -215,6 +238,24 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
             isError: !r?.success,
             extra: { ...(extra ?? {}), result: r },
           });
+
+          // kb_search 结果 → 提取为知识库引用卡片
+          const toolName = eventData.skillName ?? pendingToolName;
+          if (toolName === "kb_search" && r?.success && r.data?.results && Array.isArray(r.data.results) && r.data.results.length > 0) {
+            const refs = r.data.results.map((item: any, i: number) => ({
+              index: i + 1,
+              docId: item.docId,
+              docName: item.docName,
+              chunkIndex: item.chunkIndex,
+              content: item.content,
+              score: item.score,
+              pageNumber: item.pageNumber ?? null,
+              bboxes: item.bboxes ?? null,
+            }));
+            write("kb_references", { references: refs });
+            kbRefsSent = true;
+            kbRefsForSave = refs;
+          }
         } else if (eventName === "agent_done" || eventName === "done") {
           if (currentAssistantText) {
             const extraObj: Record<string, unknown> = {};
@@ -235,48 +276,20 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
       };
 
       if (mode === "legacy" || mode === "react") {
+        // 直接 AgentLoop 模式
         const loop = getAgentLoop(userId);
         if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        for await (const event of loop.runStream(enrichedMessage)) {
+        const loopChatOptions = deepThink ? { deepThink: true } : undefined;
+        for await (const event of loop.runStream(enrichedMessage, loopChatOptions)) {
           if (closed) break;
           processEvent(event.event, event.data);
         }
       } else {
+        // 默认 Orchestrator 模式（始终使用 react 策略，不走 simple）
         const orchestrator = getOrchestrator();
         if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
+        for await (const event of orchestrator.runStream({ message: enrichedMessage, userId, context: { deepThink } })) {
           if (closed) break;
-          if (!kbRefsSent && (event.event === "strategy_selected" || event.event === "text_delta")) {
-            const refs = orchestrator.getLastKbReferences();
-            console.log(`[KB-REF] event=${event.event}, refs.length=${refs.length}`);
-            if (refs.length > 0) {
-              write("kb_references", { references: refs });
-              kbRefsSent = true;
-              kbRefsForSave = refs;
-            }
-          }
-          if (event.event === "tool_result") {
-            const ed = event.data as any;
-            orchestrator.collectWebReferences(ed.skillName ?? "", ed.result);
-          }
-          if (event.event === "agent_done" || event.event === "done") {
-            const allWebRefs = orchestrator.getLastWebReferences();
-            if (allWebRefs.length > 0) {
-              const text = currentAssistantText || "";
-              const filtered = allWebRefs.filter((wr) => {
-                if (text.includes(wr.url)) return true;
-                try {
-                  const domain = new URL(wr.url).hostname;
-                  return text.includes(domain);
-                } catch { return false; }
-              });
-              const webRefs = filtered.map((wr, i) => ({ ...wr, index: i + 1 }));
-              if (webRefs.length > 0) {
-                write("web_references", { references: webRefs });
-                webRefsForSave = webRefs;
-              }
-            }
-          }
           processEvent(event.event, event.data);
         }
       }

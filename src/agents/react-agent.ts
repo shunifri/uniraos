@@ -4,7 +4,7 @@
  * 封装现有 AgentLoop，支持自定义 Profile、Skill 过滤。
  * 具备自省与自主工具调用能力。
  */
-import type { Message, ToolDefinition } from "../llm/types.js";
+import type { ChatOptions, Message, ToolDefinition } from "../llm/types.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
 import type {
   Agent,
@@ -39,6 +39,7 @@ export class ReactAgent implements Agent {
     const steps: AgentStep[] = [];
     const tools = this.getFilteredTools();
     const messages = this.buildMessages(input);
+    const chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
 
     let iterations = 0;
     let hitMax = false;
@@ -46,7 +47,7 @@ export class ReactAgent implements Agent {
     while (iterations < this.maxIterations) {
       iterations++;
 
-      const response = await this.deps.provider.chat(messages, tools);
+      const response = await this.deps.provider.chat(messages, tools, chatOptions);
 
       if (response.content) {
         steps.push({
@@ -91,6 +92,10 @@ export class ReactAgent implements Agent {
           result = { success: false, error: err instanceof Error ? err.message : String(err) };
         }
 
+        if (result.success && (result.data as any)?.__userConfirm) {
+          result = { success: false, error: "user_confirm requires streaming mode (SSE)" };
+        }
+
         steps.push({
           agentRole: this.profile.role,
           type: "tool_result",
@@ -126,6 +131,7 @@ export class ReactAgent implements Agent {
   async *runStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
     const tools = this.getFilteredTools();
     const messages = this.buildMessages(input);
+    const chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
 
     yield {
       event: "agent_start",
@@ -148,7 +154,7 @@ export class ReactAgent implements Agent {
         let textContent = "";
         const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
-        for await (const chunk of this.deps.provider.chatStream(messages, tools)) {
+        for await (const chunk of this.deps.provider.chatStream(messages, tools, chatOptions)) {
           if (chunk.type === "text_delta" && chunk.text) {
             textContent += chunk.text;
             yield { event: "text_delta", agentRole: this.profile.role, data: { text: chunk.text } };
@@ -185,12 +191,26 @@ export class ReactAgent implements Agent {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
           }
 
-          yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
-          messages.push({ role: "tool", content: JSON.stringify(result, null, 2), toolCallId: toolCall.id });
+          // 检测 user_confirm：暂停等待用户确认
+          if (result.success && (result.data as any)?.__userConfirm) {
+            const confirmData = result.data as any;
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
+            // 等待用户确认（通过 confirmQueue）
+            const { confirmQueue } = await import("../skills/user-confirm-skill.js");
+            const userResponse = await new Promise<unknown>((resolve, reject) => {
+              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 120000);
+              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+            }).catch((err: any) => ({ cancelled: true, message: err.message }));
+            // 将用户回复作为 tool result
+            messages.push({ role: "tool", content: JSON.stringify({ userResponse, confirmed: true }), toolCallId: toolCall.id });
+          } else {
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
+            messages.push({ role: "tool", content: JSON.stringify(result, null, 2), toolCallId: toolCall.id });
+          }
         }
       } else {
         // 非流式 fallback
-        const response = await this.deps.provider.chat(messages, tools);
+        const response = await this.deps.provider.chat(messages, tools, chatOptions);
 
         if (response.content) {
           yield { event: "text_delta", agentRole: this.profile.role, data: { text: response.content } };
@@ -218,8 +238,20 @@ export class ReactAgent implements Agent {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
           }
 
-          yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
-          messages.push({ role: "tool", content: JSON.stringify(result, null, 2), toolCallId: toolCall.id });
+          // 检测 user_confirm
+          if (result.success && (result.data as any)?.__userConfirm) {
+            const confirmData = result.data as any;
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
+            const { confirmQueue } = await import("../skills/user-confirm-skill.js");
+            const userResponse = await new Promise<unknown>((resolve, reject) => {
+              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 120000);
+              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+            }).catch((err: any) => ({ cancelled: true, message: err.message }));
+            messages.push({ role: "tool", content: JSON.stringify({ userResponse, confirmed: true }), toolCallId: toolCall.id });
+          } else {
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
+            messages.push({ role: "tool", content: JSON.stringify(result, null, 2), toolCallId: toolCall.id });
+          }
         }
       }
     }
