@@ -37,7 +37,7 @@ import { getCurrentUserId } from "../user/request-context.js";
 
 // ===== 知识库核心 =====
 
-class KnowledgeBase {
+export class KnowledgeBase {
   private db: Database.Database;
   private embeddingProvider: EmbeddingProvider;
   private vectorCache: Map<number, number[]> = new Map();
@@ -402,17 +402,10 @@ class KnowledgeBase {
 
     return results.map((r) => {
       let bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null = null;
-      let timeRange: { start: number; end: number } | null = null;
       try {
         const raw = r.data.bboxData ?? r.data.bbox_data;
         if (raw && typeof raw === "string" && raw !== "[]") {
           bboxes = JSON.parse(raw);
-        }
-      } catch { /* ignore */ }
-      try {
-        const rawTime = r.data.timeRange ?? r.data.time_range;
-        if (rawTime && typeof rawTime === "string") {
-          timeRange = JSON.parse(rawTime);
         }
       } catch { /* ignore */ }
       return {
@@ -425,10 +418,6 @@ class KnowledgeBase {
         shared: r.data.shared === 1,
         pageNumber: r.data.pageNumber ?? r.data.page_number ?? null,
         bboxes,
-        mediaType: r.data.contentType ?? r.data.content_type ?? "text",
-        frameUrl: r.data.frameUrl ?? r.data.frame_url ?? null,
-        timeRange,
-        asrText: r.data.asrText ?? r.data.asr_text ?? null,
       };
     });
   }
@@ -480,7 +469,7 @@ class KnowledgeBase {
     query: string,
     limit: number,
     docIds?: string[],
-  ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; similarity: number; shared: number; page_number: number | null; bbox_data: string; content_type: string; frame_url: string | null; time_range: string | null; asr_text: string | null }>> {
+  ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; similarity: number; shared: number; page_number: number | null; bbox_data: string }>> {
     if (this.embeddingProvider.name === "local" && this.vectorCache.size === 0) {
       // local provider 没有预训练语义，跳过全表扫描
       return [];
@@ -532,8 +521,7 @@ class KnowledgeBase {
     const placeholders = ids.map(() => "?").join(",");
 
     let sql = `
-      SELECT c.id, c.doc_id as docId, d.name as docName, c.chunk_index as chunkIndex, c.content, 
-             d.shared, c.page_number, c.bbox_data, c.content_type, c.frame_url, c.time_range, c.asr_text
+      SELECT c.id, c.doc_id as docId, d.name as docName, c.chunk_index as chunkIndex, c.content, d.shared, c.page_number, c.bbox_data
       FROM kb_chunks c
       JOIN kb_documents d ON c.doc_id = d.doc_id
       WHERE c.id IN (${placeholders})
@@ -745,6 +733,11 @@ class KnowledgeBase {
   setEmbeddingProvider(provider: EmbeddingProvider): void {
     this.embeddingProvider = provider;
     this.vectorCacheDirty = true;
+  }
+
+  /** 获取 embedding provider */
+  getEmbeddingProvider(): EmbeddingProvider {
+    return this.embeddingProvider;
   }
 
   // ===== Document Mind 相关方法 =====
@@ -1234,16 +1227,46 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           }
 
           // 将文档同步到知识图谱（非致命）
-          if (sessionManager && result.docId && result.chunkCount > 0) {
+          if (sessionManager && result.docId) {
             try {
               const session = sessionManager.getOrCreate(owner);
-              if ((session as any).graphManager) {
-                await (session as any).graphManager.onFactStored({
+              const graphManager = (session as any).graphManager;
+              if (graphManager) {
+                // 1. 同步文档节点
+                await graphManager.onFactStored({
                   id: `kb_doc_${result.docId}`,
                   key: `kb:${docName}`,
                   value: `Knowledge base document: ${docName}`,
                   tags: ['kb_document', (docName!.split('.').pop() || 'doc')],
                 });
+
+                // 2. 同步版面数据（Document Mind）
+                const layouts = kb.getLayouts(result.docId);
+                if (layouts.length > 0) {
+                  for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
+                    await graphManager.onFactStored({
+                      id: `kb_layout_${layout.id || layout.uniqueId}`,
+                      key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
+                      value: (layout.content || layout.text || '').slice(0, 200),
+                      tags: ['kb_layout', layout.type, layout.subType, ...(params.tags || [])].filter(Boolean),
+                      relation: `kb:${docName}`,
+                    });
+                  }
+                }
+
+                // 3. 同步音视频切片数据
+                const segments = kb.getSegments(result.docId);
+                if (segments.length > 0) {
+                  for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
+                    await graphManager.onFactStored({
+                      id: `kb_seg_${result.docId}_${segment.index}`,
+                      key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
+                      value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
+                      tags: ['kb_segment', params.media_type || 'video', ...(params.tags || [])].filter(Boolean),
+                      relation: `kb:${docName}`,
+                    });
+                  }
+                }
               }
             } catch { /* 图谱同步失败不影响入库结果 */ }
           }

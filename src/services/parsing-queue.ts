@@ -11,9 +11,9 @@
 
 import { EventEmitter } from "events";
 import type { DocMindParser, DocMindLayout, DocMindSegment, ProgressCallback } from "./docmind-parser.js";
-import type { KnowledgeBase } from "../skills/knowledge-skills.js";
 import { downloadFile, detectMediaType } from "./docmind-parser.js";
-import { mkdirSync, existsSync } from "fs";
+import type { KnowledgeBase } from "../skills/knowledge-skills.js";
+import { mkdirSync, existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 
 /** 解析任务 */
@@ -176,7 +176,7 @@ export class ParsingQueue extends EventEmitter {
     
     try {
       // 读取文件内容
-      const content = await Bun.file(filePath).text();
+      const content = readFileSync(filePath, 'utf-8');
       
       // 直接入库
       await kb.ingest(docName, content, {
@@ -398,9 +398,10 @@ export class ParsingQueue extends EventEmitter {
     const chunks = this.layoutsToChunks(layouts);
     
     // 向量化并入库
+    const embeddingProvider = kb.getEmbeddingProvider();
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const vector = await kb.embed(chunk.content);
+      const [vector] = await embeddingProvider.embed([chunk.content]);
       
       // 这里需要访问私有方法，可能需要调整 KnowledgeBase 类
       // 简化处理：直接插入
@@ -446,7 +447,7 @@ export class ParsingQueue extends EventEmitter {
       // 合并可搜索文本
       const searchableText = this.combineSegmentText(segment);
       
-      const vector = await kb.embed(searchableText);
+      const [vector] = await kb.getEmbeddingProvider().embed([searchableText]);
       
       // 获取关键帧路径
       const frameUrl = this.getFramePath(task, segment.index);
