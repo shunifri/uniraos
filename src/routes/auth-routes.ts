@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
 import { requireAuth, requireAdmin } from "../db/auth-middleware.js";
 import { createSession, destroySession } from "../db/auth.js";
 import * as userRepo from "../db/user-repository.js";
@@ -36,6 +37,57 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     });
   });
 
+  // POST /api/auth/anonymous — 匿名登录（通过手机号标识）
+  router.post("/auth/anonymous", (req, res) => {
+    try {
+      const { phone } = req.body as { phone?: string };
+
+      // 手机号必填且格式验证（中国大陆11位手机号）
+      if (!phone || !/^1[3-9]\d{9}$/.test(phone)) {
+        res.status(400).json({ success: false, error: "请输入有效的手机号码" });
+        return;
+      }
+
+      // 检查手机号是否已注册过匿名用户
+      let user = userRepo.getUserByPhone(phone);
+
+      if (user) {
+        // 已有用户，直接创建新 session
+        const session = createSession(user.id);
+        const details = userRepo.getUserWithDetails(user.id);
+        res.json({
+          success: true,
+          token: session.token,
+          expiresAt: session.expiresAt,
+          user: details,
+        });
+        return;
+      }
+
+      // 创建新匿名用户
+      const anonUsername = `guest_${phone.slice(-4)}_${randomUUID().slice(0, 4)}`;
+      user = userRepo.createUser({
+        username: anonUsername,
+        password: randomUUID(), // 随机密码，匿名用户不需要密码登录
+        displayName: `游客${phone.slice(-4)}`,
+        phone,
+        roleIds: ["role_viewer"],
+      });
+
+      const session = createSession(user.id);
+      const details = userRepo.getUserWithDetails(user.id);
+
+      res.json({
+        success: true,
+        token: session.token,
+        expiresAt: session.expiresAt,
+        user: details,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post("/auth/logout", requireAuth, (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
@@ -67,32 +119,39 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       return;
     }
     const users = userRepo.listUsers();
-    res.json({ success: true, users });
+    // Enrich each user with roles for the list view
+    const enriched = users.map((u) => {
+      const roles = userRepo.getUserRoles(u.id);
+      return { ...u, roles };
+    });
+    res.json({ success: true, users: enriched });
   });
 
   router.post("/users", requireAuth, requireAdmin, (req, res) => {
-    const { username, password, displayName, departmentId } = req.body;
+    const { username, password, displayName, departmentId, phone, email, roleIds } = req.body;
     if (!username || !password) {
       res.status(400).json({ success: false, error: "username and password are required" });
       return;
     }
     try {
-      const user = userRepo.createUser({ username, password, displayName, departmentId });
-      res.json({ success: true, user });
+      const user = userRepo.createUser({ username, password, displayName, departmentId, phone, email, roleIds });
+      const details = userRepo.getUserWithDetails(user.id);
+      res.json({ success: true, user: details });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
   router.put("/users/:id", requireAuth, requireAdmin, (req, res) => {
-    const { displayName, avatar, status, departmentId } = req.body;
+    const { displayName, avatar, status, departmentId, phone, email, roleIds } = req.body;
     const id = req.params.id as string;
-    const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId });
+    const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId, phone, email, roleIds });
     if (!user) {
       res.status(404).json({ success: false, error: "User not found" });
       return;
     }
-    res.json({ success: true, user });
+    const details = userRepo.getUserWithDetails(id);
+    res.json({ success: true, user: details });
   });
 
   router.delete("/users/:id", requireAuth, requireAdmin, (req, res) => {

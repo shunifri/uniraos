@@ -32,6 +32,8 @@ import { createEvolutionRoutes } from "./evolution-routes.js";
 import { createKnowledgeRoutes } from "./knowledge-routes.js";
 import { createFileRoutes } from "./file-routes.js";
 import { createGraphRoutes } from "./graph-routes.js";
+import { createShareRoutes } from "./share-routes.js";
+import type { ShareRepository } from "../db/share-repository.js";
 
 export interface RouteDependencies {
   registry: SkillRegistry;
@@ -66,6 +68,7 @@ export interface RouteDependencies {
   rebuildAllAgentLoops: () => void;
   rebuildOrchestrator: () => void;
   syncSkillsToResources: () => void;
+  shareRepository?: ShareRepository;
 }
 
 export function mountRoutes(app: Express, deps: RouteDependencies): void {
@@ -78,4 +81,7 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
   app.use("/api", createKnowledgeRoutes(deps));
   app.use("/api", createFileRoutes(deps));
   app.use("/api", createGraphRoutes(deps));
+  if (deps.shareRepository) {
+    app.use("/api", createShareRoutes({ ...deps, shareRepository: deps.shareRepository }));
+  }
 }

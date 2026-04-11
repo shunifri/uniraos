@@ -119,6 +119,8 @@ export interface StrategyDecision {
   teamConfig?: TeamConfig;
   /** 是否检测到话题变化 */
   topicChange?: boolean;
+  /** AI 判断是否需要深度思考 */
+  needsDeepThink?: boolean;
 }
 
 export interface TeamConfig {

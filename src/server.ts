@@ -51,6 +51,7 @@ import {
   createFederationSkills,
 } from "./federation/index.js";
 import { mountRoutes } from "./routes/index.js";
+import { ShareRepository } from "./db/share-repository.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,8 +60,9 @@ const app = express();
 app.use(express.json({ limit: "50mb" }));
 
 // 初始化数据库
-initDatabase();
+const dbInstance = initDatabase();
 userRepo.ensureAdminExists();
+const shareRepository = new ShareRepository(dbInstance);
 
 // 定时清理过期 session（每小时）
 setInterval(() => cleanExpiredSessions(), 60 * 60 * 1000);
@@ -185,12 +187,15 @@ function getAgentConfig() {
   };
 }
 
-/** 获取或创建指定用户的 AgentLoop */
+/** 获取或创建指定用户的 AgentLoop（按角色权限过滤可用 Skill） */
 function getAgentLoop(userId: string): AgentLoop | null {
   if (!currentProvider) return null;
   const session = sessionManager.getOrCreate(userId);
   if (!session.agentLoop) {
     session.agentLoop = new AgentLoop(registry, engine, currentProvider, getAgentConfig());
+    // 注入用户权限，实现 role-based skill 过滤
+    const permissions = userRepo.getUserPermissions(userId);
+    session.agentLoop.setUserPermissions(permissions);
   }
   return session.agentLoop;
 }
@@ -422,7 +427,7 @@ createChartSkills(registry);
 createProtocolSkills(registry);
 
 // 注册知识库 Skills (kb_ingest/kb_search/kb_list/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)
-createKnowledgeSkills(registry);
+createKnowledgeSkills(registry, sessionManager);
 
 // 注册知识图谱 Skills (graph_query/graph_path/graph_communities)
 for (const skill of createGraphSkills(sessionManager)) {
@@ -496,6 +501,13 @@ createPlanningSkill(registry, engine, () => currentProvider);
 registry.register(createUserConfirmSkill());
 console.log("   User confirm skill registered");
 
+// 标记所有已注册的内置 Skill 为系统 Skill
+for (const skill of registry.list()) {
+  if (!skill.owner) {
+    (skill as any).isSystem = true;
+  }
+}
+
 // 加载插件目录中的 Skill
 pluginLoader.on((event) => {
   if (event.type === "loaded") console.log(`   Plugin loaded: ${event.plugin.name}@${event.plugin.version}`);
@@ -558,6 +570,47 @@ function syncSkillsToResources() {
 }
 syncSkillsToResources();
 
+// 在 skill 资源同步后，确保角色的 skill 权限被正确分配
+import { getDb } from "./db/database.js";
+(() => {
+  const db = getDb();
+  // role_user 允许的 skill 列表（安全的基础 skill）
+  const userAllowedSkills = [
+    'user_confirm', 'kb_search', 'kb_ingest', 'kb_list', 'kb_delete', 'kb_share',
+    'stm_store', 'stm_retrieve', 'stm_forget', 'ltm_store', 'ltm_search', 'ltm_delete', 'ltm_list',
+    'chart_recommend', 'chart_generate', 'chart_multi',
+    'doc_read', 'doc_read_csv', 'web_search', 'web_fetch',
+    'graph_query', 'graph_path', 'graph_communities', 'plan_and_execute',
+    'file_read', 'file_list', 'db_query', 'db_schema',
+  ];
+  // role_viewer (anonymous) 允许的 skill 列表（最小集）
+  const anonAllowedSkills = [
+    'user_confirm', 'kb_search', 'kb_list',
+    'chart_recommend', 'chart_generate',
+    'web_search', 'web_fetch', 'doc_read',
+  ];
+
+  const insertPerm = db.prepare(`
+    INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+    SELECT ?, id FROM permissions WHERE name = ?
+  `);
+
+  for (const skill of userAllowedSkills) {
+    insertPerm.run('role_user', `skill:${skill}.execute`);
+  }
+  for (const skill of anonAllowedSkills) {
+    insertPerm.run('role_viewer', `skill:${skill}.execute`);
+  }
+
+  // admin 角色：分配所有 skill 权限（确保新 skill 也被覆盖）
+  db.exec(`
+    INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+    SELECT 'role_admin', id FROM permissions WHERE name LIKE 'skill:%'
+  `);
+
+  console.log(`   Role skill permissions assigned (user: ${userAllowedSkills.length}, anonymous: ${anonAllowedSkills.length})`);
+})();
+
 // ===== Mount all API routes =====
 mountRoutes(app, {
   registry,
@@ -590,6 +643,7 @@ mountRoutes(app, {
   rebuildAllAgentLoops,
   rebuildOrchestrator,
   syncSkillsToResources,
+  shareRepository,
 });
 
 // 静态文件 - UI
@@ -661,4 +715,22 @@ app.listen(PORT, () => {
   const evoConfig = configManager.getEvolution();
   evolutionEngine.start();
   console.log(`   Evolution engine: started (auto=${evoConfig.autoExecute})\n`);
+
+  // Auto-sync LTM to knowledge graph on startup (after a short delay)
+  setTimeout(async () => {
+    try {
+      const defaultSession = sessionManager.getOrCreate("default");
+      if (defaultSession.graphManager && defaultSession.ltm) {
+        const entries = await defaultSession.ltm.list();
+        if (entries.length > 0) {
+          const result = await defaultSession.graphManager.syncFromLTM(
+            entries.map((e: any) => ({ id: e.id, key: e.key, value: e.value, tags: e.tags ?? [] }))
+          );
+          console.log(`   Graph auto-sync: ${result.added} nodes added from LTM`);
+        }
+      }
+    } catch (err) {
+      console.log(`   Graph auto-sync skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, 5000);
 });

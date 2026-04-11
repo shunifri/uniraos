@@ -4,7 +4,7 @@
  * AI 调用此 Skill 时会暂停对话，在前端显示交互卡片（单选/多选/表单/审批）。
  * 用户操作后，结果作为 tool result 注入回对话。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import { Autonomy } from "../types/index.js";
 
 // 全局确认队列：confirmId → { resolve, reject, timeout }
@@ -15,7 +15,7 @@ export const confirmQueue = new Map<string, {
 }>();
 
 export function createUserConfirmSkill() {
-  return defineSkill({
+  return defineSystemSkill({
     name: "user_confirm",
     visible: true,
     autonomy: Autonomy.MANUAL,
@@ -49,7 +49,7 @@ export function createUserConfirmSkill() {
       },
       required: ["type", "title"],
     },
-    timeout: 120000,
+    timeout: 600000, // 10 分钟等待用户
     handler: async (params) => {
       const confirmId = crypto.randomUUID().slice(0, 12);
       return {

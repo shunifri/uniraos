@@ -2,15 +2,20 @@ import { Router } from "express";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
+import { getUserPermissions } from "../db/user-repository.js";
 import type { RouteDependencies } from "./index.js";
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
   const { registry, engine, wal, taskManager, pluginLoader, syncSkillsToResources } = deps;
   const router = Router();
 
-  // List all Skills
-  router.get("/skills", requireAuth, requirePermission("skills.read"), (_req, res) => {
-    const skills = registry.list().map((s) => ({
+  // List all Skills (filtered by user permissions for non-admin)
+  router.get("/skills", requireAuth, requirePermission("skills.read"), (req, res) => {
+    const userId = req.user!.id;
+    const permissions = getUserPermissions(userId);
+    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
+    const allSkills = isAdmin ? registry.list() : registry.listByPermissions(permissions);
+    const skills = allSkills.map((s) => ({
       name: s.name,
       visible: s.visible,
       autonomy: s.autonomy,
@@ -18,13 +23,18 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       timeout: s.timeout,
       retry: s.retry,
       description: s.description,
+      paramSchema: s.paramSchema ?? null,
     }));
     res.json(skills);
   });
 
-  // List visible Skills
-  router.get("/skills/visible", requireAuth, requirePermission("skills.read"), (_req, res) => {
-    const skills = registry.listVisible().map((s) => ({
+  // List visible Skills (filtered by user permissions)
+  router.get("/skills/visible", requireAuth, requirePermission("skills.read"), (req, res) => {
+    const userId = req.user!.id;
+    const permissions = getUserPermissions(userId);
+    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
+    const allSkills = isAdmin ? registry.listVisible() : registry.listVisibleByPermissions(permissions);
+    const skills = allSkills.map((s) => ({
       name: s.name,
       autonomy: s.autonomy,
       dependencies: s.dependencies,
@@ -33,12 +43,21 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     res.json(skills);
   });
 
-  // Execute Skill
+  // Execute Skill (with per-skill permission check)
   router.post("/execute", requireAuth, requirePermission("skills.execute"), async (req, res) => {
     const { skillName, params } = req.body as {
       skillName: string;
       params?: Record<string, unknown>;
     };
+
+    // 检查用户是否有该 skill 的执行权限
+    const userId = req.user!.id;
+    const permissions = getUserPermissions(userId);
+    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
+    if (!isAdmin && !permissions.includes(`skill:${skillName}.execute`)) {
+      res.status(403).json({ success: false, error: `无权执行技能: ${skillName}` });
+      return;
+    }
 
     try {
       const result = await engine.execute(skillName, params ?? {});

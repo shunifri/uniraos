@@ -4,14 +4,14 @@
  * 提供网页抓取、搜索引擎查询、URL 内容提取等能力，
  * 让智能体能够从互联网获取信息。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 // ===== 网页抓取 =====
 
 function createWebFetchSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "web_fetch",
       description:
         "抓取网页内容并提取纯文本。参数: url(string), selector?(string, CSS 选择器提取特定部分), maxLength?(number, 最大返回字符数, 默认 50000)",
@@ -75,7 +75,7 @@ function createWebFetchSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "web_search",
       description:
         "通过搜索引擎检索信息。参数: query(string, 搜索关键词), count?(number, 结果数量, 默认 5), engine?('google'|'bing'|'duckduckgo', 默认 duckduckgo)",
@@ -106,7 +106,7 @@ function createWebFetchSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "web_extract_links",
       description:
         "从网页中提取所有链接。参数: url(string), filter?(string, 正则过滤链接)",
@@ -140,7 +140,7 @@ function createWebFetchSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "web_screenshot",
       description:
         "获取网页的文本快照（标题、元描述、主要内容摘要）。参数: url(string)",
@@ -343,7 +343,7 @@ async function searchBaidu(query: string, count: number): Promise<Array<{ title:
 
 function createBrowserSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "web_browse",
       description:
         "使用真实浏览器内核打开 URL 并提取渲染后的页面内容。适用于需要 JavaScript 渲染的网站（SPA、动态页面等）。参数: url(string 必填), waitFor?(string CSS选择器 等待特定元素出现), waitMs?(number 额外等待毫秒数 默认3000), extractSelector?(string CSS选择器 提取特定区域), screenshot?(boolean 是否截图 默认false)",

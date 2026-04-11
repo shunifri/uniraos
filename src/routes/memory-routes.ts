@@ -14,7 +14,8 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   router.get("/memory/ltm", requireAuth, requirePermission("memory.read"), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const stats = await ltm.stats();
-    res.json({ entries: await ltm.list(), ...stats });
+    // 返回全部条目（画像图谱等需要完整数据）
+    res.json({ entries: await ltm.list({ limit: 10000 }), ...stats });
   });
 
   router.get("/memory/archives", requireAuth, requirePermission("memory.read"), async (req, res) => {
@@ -97,7 +98,8 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   // ===== Enhanced LTM APIs =====
 
   // User memory profile
-  router.get("/memory/profile/:userId?", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  // Express 5: optional params use two routes instead of :param?
+  const profileHandler = async (req: any, res: any) => {
     const targetUserId = req.params.userId || req.user!.id;
 
     try {
@@ -106,12 +108,14 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Profile generation failed" });
+        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
       }
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
     }
-  });
+  };
+  router.get("/memory/profile/:userId", requireAuth, requirePermission("memory.read"), profileHandler);
+  router.get("/memory/profile", requireAuth, requirePermission("memory.read"), profileHandler);
 
   // Version history
   router.get("/memory/versions/:key", requireAuth, requirePermission("memory.read"), async (req, res) => {
@@ -127,7 +131,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Version history not available" });
+        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
       }
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
@@ -148,7 +152,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Forgotten log not available" });
+        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
       }
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
@@ -178,7 +182,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Conflict detection failed" });
+        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
       }
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });

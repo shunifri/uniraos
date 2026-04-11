@@ -7,15 +7,49 @@ export interface BFSOptions {
   maxNodes?: number;   // default 50
 }
 
-/** Match query terms against node labels and tags, return scored nodes */
+/** 中文→英文 tag 映射，用于跨语言检索 */
+const ZH_TAG_MAP: Record<string, string[]> = {
+  "健康": ["health", "fitness", "medical"],
+  "家庭": ["family", "son", "children", "parenting"],
+  "偏好": ["preference", "hobby", "interest"],
+  "技术": ["technical", "skill", "programming", "technology"],
+  "项目": ["project", "work"],
+  "职业": ["career", "work", "job"],
+  "学习": ["learning", "education"],
+  "个人": ["personal", "identity", "personal_info"],
+};
+
+/** Match query terms against node labels, tags, and value content */
 function scoreNodes(store: GraphStore, queryTerms: string[]): Array<{ node: GraphNode; score: number }> {
   const scored: Array<{ node: GraphNode; score: number }> = [];
+
+  // 展开中文查询词为英文 tag
+  const expandedTerms = [...queryTerms];
+  for (const term of queryTerms) {
+    for (const [zh, enTags] of Object.entries(ZH_TAG_MAP)) {
+      if (term.includes(zh) || zh.includes(term)) {
+        expandedTerms.push(...enTags);
+      }
+    }
+  }
+
   for (const node of store.getAllNodes()) {
     let score = 0;
     const labelLower = node.label.toLowerCase();
-    for (const term of queryTerms) {
-      if (labelLower.includes(term)) score += 2;
-      if (node.tags.some(t => t.toLowerCase().includes(term))) score += 1;
+
+    // 构建 value 文本用于匹配
+    const valueStr = node.properties?.value
+      ? (typeof node.properties.value === "string" ? node.properties.value : JSON.stringify(node.properties.value))
+      : "";
+    const valueLower = valueStr.toLowerCase();
+
+    for (const term of expandedTerms) {
+      // label 匹配（权重最高）
+      if (labelLower.includes(term)) score += 3;
+      // tag 匹配
+      if (node.tags.some(t => t.toLowerCase().includes(term))) score += 2;
+      // value 内容匹配
+      if (valueLower.includes(term)) score += 1;
     }
     if (score > 0) scored.push({ node, score });
   }

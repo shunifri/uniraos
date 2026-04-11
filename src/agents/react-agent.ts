@@ -6,6 +6,8 @@
  */
 import type { ChatOptions, Message, ToolDefinition } from "../llm/types.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
+import { getCurrentUserId } from "../user/request-context.js";
+import type { SkillAccessService } from "../engine/skill-access-service.js";
 import type {
   Agent,
   AgentDeps,
@@ -22,16 +24,18 @@ export class ReactAgent implements Agent {
   readonly profile: AgentProfile;
   private deps: AgentDeps;
   private maxIterations: number;
+  private skillAccessService: SkillAccessService;
 
   constructor(
     profile: AgentProfile,
     deps: AgentDeps,
-    opts?: { maxIterations?: number },
+    opts?: { maxIterations?: number; skillAccessService?: SkillAccessService },
   ) {
     this.name = `react:${profile.role}`;
     this.profile = profile;
     this.deps = deps;
     this.maxIterations = opts?.maxIterations ?? 15;
+    this.skillAccessService = opts?.skillAccessService ?? new (require("../engine/skill-access-service.js").SkillAccessService)(deps.registry);
   }
 
   async run(input: AgentInput): Promise<AgentOutput> {
@@ -131,7 +135,8 @@ export class ReactAgent implements Agent {
   async *runStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
     const tools = this.getFilteredTools();
     const messages = this.buildMessages(input);
-    const chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
+    // deepThink 只在第一轮迭代使用，后续迭代不再触发深度思考
+    let chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
 
     yield {
       event: "agent_start",
@@ -154,8 +159,22 @@ export class ReactAgent implements Agent {
         let textContent = "";
         const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
+        let thinkBuf = "";
         for await (const chunk of this.deps.provider.chatStream(messages, tools, chatOptions)) {
           if (chunk.type === "text_delta" && chunk.text) {
+            // reasoning_content → thinking 事件
+            if ((chunk as any).reasoning) {
+              thinkBuf += chunk.text;
+              if (thinkBuf.length > 100) {
+                yield { event: "thinking" as any, agentRole: this.profile.role, data: { content: thinkBuf } };
+                thinkBuf = "";
+              }
+              continue;
+            }
+            if (thinkBuf) {
+              yield { event: "thinking" as any, agentRole: this.profile.role, data: { content: thinkBuf } };
+              thinkBuf = "";
+            }
             textContent += chunk.text;
             yield { event: "text_delta", agentRole: this.profile.role, data: { text: chunk.text } };
           } else if (chunk.type === "tool_call_complete") {
@@ -168,6 +187,11 @@ export class ReactAgent implements Agent {
             yield { event: "tool_call", agentRole: this.profile.role, data: { toolCall: tc } };
           }
         }
+        // Flush remaining think buffer
+        if (thinkBuf) {
+          yield { event: "thinking" as any, agentRole: this.profile.role, data: { content: thinkBuf } };
+          thinkBuf = "";
+        }
 
         if (toolCalls.length === 0) {
           messages.push({ role: "assistant", content: textContent });
@@ -176,6 +200,8 @@ export class ReactAgent implements Agent {
         }
 
         messages.push({ role: "assistant", content: textContent, toolCalls });
+        // 第一轮之后关闭 deepThink，后续迭代不再触发深度思考
+        chatOptions = undefined;
 
         for (const toolCall of toolCalls) {
           yield { event: "tool_start", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id } };
@@ -198,7 +224,7 @@ export class ReactAgent implements Agent {
             // 等待用户确认（通过 confirmQueue）
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 120000);
+              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
             }).catch((err: any) => ({ cancelled: true, message: err.message }));
             // 将用户回复作为 tool result
@@ -244,7 +270,7 @@ export class ReactAgent implements Agent {
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 120000);
+              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
             }).catch((err: any) => ({ cancelled: true, message: err.message }));
             messages.push({ role: "tool", content: JSON.stringify({ userResponse, confirmed: true }), toolCallId: toolCall.id });
@@ -261,12 +287,24 @@ export class ReactAgent implements Agent {
   }
 
   private getFilteredTools(): ToolDefinition[] {
-    const allSkills = this.deps.registry.listVisible();
-    const filtered =
-      this.profile.allowedSkills.length > 0
-        ? allSkills.filter((s) => this.profile.allowedSkills.includes(s.name))
-        : allSkills;
-    return skillsToTools(filtered);
+    try {
+      const userId = getCurrentUserId();
+      if (!userId || userId === "default") {
+        // 未登录用户，返回所有可见 Skill
+        return skillsToTools(this.deps.registry.listVisible());
+      }
+
+      // 使用 SkillAccessService 获取可用 Skill（带缓存）
+      const accessResult = this.skillAccessService.getAccessibleSkills(userId, {
+        visibleOnly: true,
+        allowedSkills: this.profile.allowedSkills.length > 0 ? this.profile.allowedSkills : undefined,
+      });
+
+      return skillsToTools(accessResult.skills);
+    } catch {
+      // DB 不可用或无用户上下文，返回所有可见 Skill
+      return skillsToTools(this.deps.registry.listVisible());
+    }
   }
 
   private buildMessages(input: AgentInput): Message[] {

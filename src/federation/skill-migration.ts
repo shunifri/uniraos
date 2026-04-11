@@ -124,7 +124,11 @@ export class SkillMigrationManager {
     }
 
     // 安全检查
-    const forbidden = ["require(", "import(", "process.exit", "child_process", "eval(", "__proto__"];
+    const forbidden = [
+      "require(", "import(", "process.exit", "child_process", "eval(",
+      "__proto__", "constructor[", "globalThis", "Object.defineProperty",
+      "Object.getOwnPropertyDescriptor", "Reflect.", "Proxy",
+    ];
     for (const f of forbidden) {
       if (pkg.skill.handlerCode.includes(f)) {
         const result: MigrationResult = { ...baseResult, success: false, action: "rejected", reason: `Handler contains forbidden operation: ${f}` };
@@ -148,7 +152,7 @@ export class SkillMigrationManager {
         timeout: pkg.skill.timeout,
         retry: pkg.skill.retry,
         capabilities: pkg.skill.capabilities,
-        dependencies: [],
+        dependencies: pkg.skill.dependencies ?? [],
         handler,
       });
 

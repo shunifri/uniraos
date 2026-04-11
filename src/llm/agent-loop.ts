@@ -8,6 +8,7 @@ import type { ExecutionResult } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type {
+  ChatOptions,
   LLMProvider,
   Message,
   ToolCall,
@@ -59,6 +60,10 @@ const MEMORY_AWARE_PROMPT = `你是 RAOS (Recursive Agent Operating System) 的�
 
 存储时用有语义的 key 和 tags，例如：
 - "我叫张三" → ltm_store(key="user_name", value="张三", tags=["personal","identity"])
+- "我儿子11岁" → ltm_store(key="family_son_age", value="11岁", tags=["family","son","age"])
+- "我喜欢游泳" → ltm_store(key="hobby_swimming", value="喜欢游泳", tags=["preference","hobby","fitness"])
+- "我在用 React" → ltm_store(key="tech_react", value="使用React框架", tags=["technical","skill","programming"])
+- "我在开发一个管理系统" → ltm_store(key="project_current", value="管理系统开发", tags=["project","work"])
 
 ### 存储短期记忆 (stm_store)
 - 当前对话的临时上下文、中间结果、待办
@@ -80,6 +85,32 @@ const MEMORY_AWARE_PROMPT = `你是 RAOS (Recursive Agent Operating System) 的�
 ### 引用方式
 - 回答时自然融合知识库内容，不要说"根据知识库"
 - 如果知识库有明确答案，自信地回答，不需要额外搜索验证
+
+## 用户交互确认（极其重要！必须遵守！）
+当你需要用户做**任何选择或确认**时，**必须**调用 user_confirm Skill，**绝对禁止**用纯文字提问。
+
+### 核心规则：回复末尾不能有问号的选择题
+- ❌ "需要我为你制定学习计划吗？" — 禁止！
+- ❌ "你想要A还是B？" — 禁止！
+- ❌ "还是想了解其他语言的更多信息？" — 禁止！
+- ✅ 任何需要用户回应的问题，都必须调用 user_confirm
+
+### selection 优先，逐步询问（极其重要！）
+- **每次只问一个问题**，用 selection 卡片，用户点击即选即回复
+- 需要收集多个信息时，**分多轮调用 user_confirm(type="selection")**，每轮一个问题
+- 例如了解用户背景：
+  - 第1轮: user_confirm(type="selection", title="你的编程经验？", options=[{id:"beginner",label:"完全零基础"}, {id:"some",label:"学过一点"}, ...])
+  - 用户选择后 → 第2轮: user_confirm(type="selection", title="学习目标？", options=[...])
+  - 用户选择后 → 第3轮: 根据收集到的信息给出推荐
+- **禁止用 form 来做多个 select/radio 字段** — 那种体验不如逐步选择卡片
+- form 仅限**需要自由文本输入**的场景（填写姓名、邮箱、地址等无法穷举的信息）
+
+### 回复结束前的自检（每次回复都必须执行！）
+在生成回复文本**之后、发送之前**，检查你的回复：
+- 如果回复末尾包含问号"？"或征求意见 → **停！不要发送！改为调用 user_confirm**
+- 如果回复末尾是"你想...吗？""需要我...吗？""要不要...？" → 必须改为 user_confirm(type="selection")
+- 正确做法：先输出陈述性内容（推荐理由等），然后调用 user_confirm 给出选项
+- 例如：输出"基于你的背景，我推荐 JavaScript。" → 然后调用 user_confirm(type="selection", title="接下来你想？", options=[{id:"plan",label:"制定学习计划"},{id:"resources",label:"推荐学习资源"},{id:"no",label:"暂时不需要了"}])
 
 ## 任务执行
 根据用户需求选择合适的 Skill 完成任务。如果需要多步操作，依次调用多个 Skill。
@@ -166,6 +197,8 @@ export class AgentLoop {
   private config: AgentLoopConfig;
   private toolDefs: ToolDefinition[];
   private toolSchemas = new Map<string, ToolDefinition>();
+  /** 用户权限列表（用于按权限过滤 Skill） */
+  private userPermissions: string[] | null = null;
   /** 对话历史（跨 run 保持） */
   private conversationHistory: Message[] = [];
   /** 增强记忆模块（可选） */
@@ -190,13 +223,22 @@ export class AgentLoop {
     this.toolDefs = skillsToTools(registry.list());
   }
 
+  /** 设置用户权限列表，用于按角色过滤可用 Skill */
+  setUserPermissions(permissions: string[]): void {
+    this.userPermissions = permissions;
+    this.refreshTools();
+  }
+
   registerToolSchema(toolDef: ToolDefinition): void {
     this.toolSchemas.set(toolDef.function.name, toolDef);
     this.refreshTools();
   }
 
   refreshTools(): void {
-    this.toolDefs = skillsToTools(this.registry.list()).map((td) => {
+    const skills = this.userPermissions
+      ? this.registry.listVisibleByPermissions(this.userPermissions)
+      : this.registry.list();
+    this.toolDefs = skillsToTools(skills).map((td) => {
       const custom = this.toolSchemas.get(td.function.name);
       return custom ?? td;
     });
@@ -244,68 +286,50 @@ export class AgentLoop {
     let context = `\n\n## 当前时间\n${now.toLocaleString("zh-CN")}（${timeGreeting}）`;
 
     try {
-      // 检查 ltm_search 是否已注册
-      const skills = this.registry.list();
-      const hasLtmSearch = skills.some((s) => s.name === "ltm_search");
-      const hasKbSearch = skills.some((s) => s.name === "kb_search");
+      // 使用知识图谱 BFS 检索相关记忆（优先），回退到 LTM 关键词搜索
+      const hasGraphQuery = this.registry.list().some((s) => s.name === "graph_query");
+      const hasLtmSearch = this.registry.list().some((s) => s.name === "ltm_search");
 
-      // 并行检索 LTM 和知识库
-      const promises: Promise<{ type: string; data: any } | null>[] = [];
+      let memoryFound = false;
 
-      if (hasLtmSearch) {
-        promises.push(
-          Promise.race([
-            this.engine.execute("ltm_search", { query: userMessage, limit: 5 }).then((r) => r.success ? { type: "ltm", data: r.data } : null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
-          ]).catch(() => null)
-        );
-      }
-
-      // 判断是否为不需要知识库的消息（问候/闲聊/纯计算/代码类）
-      const skipKbSearch = (() => {
-        const msg = userMessage.trim();
-        // 短消息（问候/闲聊）
-        if (msg.length <= 10) return true;
-        // 纯数学表达式
-        if (/^[\d\s+\-*/().=×÷%^]+[等于多少是什么几]*.{0,5}$/.test(msg)) return true;
-        // 明确的计算请求
-        if (/^(计算|算一下|求|多少)/.test(msg) && /\d/.test(msg)) return true;
-        return false;
-      })();
-      if (hasKbSearch && !skipKbSearch) {
-        promises.push(
-          Promise.race([
-            this.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.15 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-          ]).catch(() => null)
-        );
-      }
-
-      const results = await Promise.all(promises);
-
-      for (const res of results) {
-        if (!res || !res.data || typeof res.data !== "object") continue;
-
-        if (res.type === "ltm") {
-          const data = res.data as { results?: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> };
-          if (data.results && data.results.length > 0) {
-            const memoryLines = data.results.map(
-              (m) => `- [${m.key}] ${m.summary || JSON.stringify(m.value)}${m.tags?.length ? ` (tags: ${m.tags.join(", ")})` : ""}`
+      // 优先：知识图谱 BFS 检索（拓扑关联，效率更高）
+      if (hasGraphQuery) {
+        try {
+          const graphResult = await Promise.race([
+            this.engine.execute("graph_query", { query: userMessage, maxDepth: 2, maxNodes: 5 }),
+            new Promise<any>((resolve) => setTimeout(() => resolve(null), 3000)),
+          ]);
+          if (graphResult?.success && graphResult.data?.nodes?.length > 0) {
+            const nodes = graphResult.data.nodes as Array<{ label: string; tags: string[]; properties: Record<string, unknown> }>;
+            const memoryLines = nodes.map(
+              (n) => `- [${n.label}] ${n.properties?.value ? String(n.properties.value).slice(0, 300) : ""}${n.tags?.length ? ` (tags: ${n.tags.join(", ")})` : ""}`
             );
             context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n${memoryLines.join("\n")}`;
+            memoryFound = true;
           }
-        }
-
-        if (res.type === "kb") {
-          const data = res.data as { results?: Array<{ docName: string; content: string; score: number; matchType: string }> };
-          if (data.results && data.results.length > 0) {
-            const kbLines = data.results.map(
-              (r) => `- [${r.docName}] ${r.content?.slice(0, 300)}${r.content?.length > 300 ? "..." : ""}`
-            );
-            context += `\n\n## 相关知识（来自用户知识库，优先使用这些内容回答，不要再去 web_search）\n${kbLines.join("\n")}`;
-          }
-        }
+        } catch { /* 图谱查询失败静默降级 */ }
       }
+
+      // 降级：LTM 关键词/语义搜索
+      if (!memoryFound && hasLtmSearch) {
+        try {
+          const ltmResult = await Promise.race([
+            this.engine.execute("ltm_search", { query: userMessage, limit: 5 }),
+            new Promise<any>((resolve) => setTimeout(() => resolve(null), 3000)),
+          ]);
+          if (ltmResult?.success) {
+            const data = ltmResult.data as { results?: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> };
+            if (data.results && data.results.length > 0) {
+              const memoryLines = data.results.map(
+                (m) => `- [${m.key}] ${m.summary || JSON.stringify(m.value)}${m.tags?.length ? ` (tags: ${m.tags.join(", ")})` : ""}`
+              );
+              context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n${memoryLines.join("\n")}`;
+            }
+          }
+        } catch { /* LTM 查询失败静默 */ }
+      }
+
+      // KB 搜索由 AI 通过 tool-use 自主调用 kb_search，不再预注入
     } catch {
       // 静默失败
     }
@@ -313,7 +337,7 @@ export class AgentLoop {
   }
 
   /** 流式 Agent 循环事件类型 */
-  async *runStream(userMessage: string): AsyncGenerator<StreamEvent> {
+  async *runStream(userMessage: string, chatOptions?: ChatOptions): AsyncGenerator<StreamEvent> {
     this.refreshTools();
 
     // 自动检索相关记忆，注入系统提示
@@ -340,11 +364,53 @@ export class AgentLoop {
         let textContent = "";
         const toolCalls: ToolCall[] = [];
         const toolCallBuffers = new Map<string, { id: string; name: string; args: string }>();
+        let insideThinkTag = false; // 跟踪是否在 <think> 标签内
+        let thinkBuffer = ""; // 累积思考内容
 
-        for await (const chunk of this.provider.chatStream(messages, this.toolDefs)) {
+        for await (const chunk of this.provider.chatStream(messages, this.toolDefs, chatOptions)) {
           if (chunk.type === "text_delta" && chunk.text) {
-            textContent += chunk.text;
-            yield { event: "text_delta", data: { text: chunk.text } };
+            // 1. reasoning_content（DeepSeek thinking mode via reasoning flag）
+            if ((chunk as any).reasoning) {
+              thinkBuffer += chunk.text;
+              // 每积累一定量就发送一次，避免最后才发
+              if (thinkBuffer.length > 100) {
+                yield { event: "thinking", data: { content: thinkBuffer } };
+                thinkBuffer = "";
+              }
+              continue; // 不输出到正文
+            }
+
+            // 2. 过滤 <think>...</think> 标签内容
+            let text = chunk.text;
+            if (text.includes("<think>")) {
+              insideThinkTag = true;
+              text = text.replace(/<think>/g, "");
+            }
+            if (text.includes("</think>")) {
+              insideThinkTag = false;
+              text = text.replace(/<\/think>/g, "");
+              if (thinkBuffer) {
+                yield { event: "thinking", data: { content: thinkBuffer } };
+                thinkBuffer = "";
+              }
+              if (text.trim()) {
+                textContent += text;
+                yield { event: "text_delta", data: { text } };
+              }
+              continue;
+            }
+            if (insideThinkTag) {
+              thinkBuffer += text;
+              continue;
+            }
+
+            // 3. 正常文本 — 如果有残余的 thinkBuffer，先发送
+            if (thinkBuffer) {
+              yield { event: "thinking", data: { content: thinkBuffer } };
+              thinkBuffer = "";
+            }
+            textContent += text;
+            yield { event: "text_delta", data: { text } };
           } else if (chunk.type === "tool_call_complete") {
             const tc: ToolCall = {
               id: chunk.toolCallId!,
@@ -420,7 +486,7 @@ export class AgentLoop {
         }
       } else {
         // 非流式 fallback
-        const response = await this.provider.chat(messages, this.toolDefs);
+        const response = await this.provider.chat(messages, this.toolDefs, chatOptions);
 
         if (response.content) {
           steps.push({ type: "llm_response", content: response.content, timestamp: Date.now() });
@@ -510,7 +576,7 @@ export class AgentLoop {
   }
 
   /** 执行 Agent 循环 */
-  async run(userMessage: string): Promise<AgentResult> {
+  async run(userMessage: string, chatOptions?: ChatOptions): Promise<AgentResult> {
     this.refreshTools();
 
     // 自动检索相关记忆，注入系统提示
@@ -533,7 +599,7 @@ export class AgentLoop {
     while (iterations < this.config.maxIterations) {
       iterations++;
 
-      const response = await this.provider.chat(messages, this.toolDefs);
+      const response = await this.provider.chat(messages, this.toolDefs, chatOptions);
 
       if (response.content) {
         steps.push({

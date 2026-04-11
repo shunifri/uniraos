@@ -2,6 +2,7 @@
  * Claude (Anthropic) Provider
  */
 import type {
+  ChatOptions,
   LLMProvider,
   LLMProviderConfig,
   LLMResponse,
@@ -63,6 +64,7 @@ export class ClaudeProvider implements LLMProvider {
   async chat(
     messages: Message[],
     tools?: ToolDefinition[],
+    _options?: ChatOptions,
   ): Promise<LLMResponse> {
     const body = this.buildRequestBody(messages, tools);
 
@@ -88,6 +90,7 @@ export class ClaudeProvider implements LLMProvider {
   async *chatStream(
     messages: Message[],
     tools?: ToolDefinition[],
+    _options?: ChatOptions,
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools, true);
 

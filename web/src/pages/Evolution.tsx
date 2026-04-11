@@ -335,6 +335,7 @@ export default function EvolutionPage() {
       {/* Section 1: Engine Status */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <RocketOutlined />
@@ -436,6 +437,7 @@ export default function EvolutionPage() {
       {/* Section 2: Approval Queue */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <span>Approval Queue</span>
@@ -463,6 +465,7 @@ export default function EvolutionPage() {
       {/* Section 3: Actions */}
       <Card
         size="small"
+        className="glass-card"
         title="Actions"
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadActions}>
@@ -534,6 +537,7 @@ export default function EvolutionPage() {
       {/* Section 4: Emergence Patterns */}
       <Card
         size="small"
+        className="glass-card"
         title="Emergence Patterns"
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadEmergence}>

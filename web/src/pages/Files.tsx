@@ -44,7 +44,9 @@ import {
   SyncOutlined,
   ClockCircleOutlined,
   EyeOutlined,
+  ShareAltOutlined,
 } from "@ant-design/icons";
+import ShareDialog from "@/components/ShareDialog";
 import { XMarkdown } from "@ant-design/x-markdown";
 import { useI18nStore } from "@/i18n";
 import { api, apiFetch, pageImageUrl } from "@/api";
@@ -59,6 +61,8 @@ interface TreeNode {
   size?: number;
   modifiedAt?: number;
   ext?: string;
+  isShared?: boolean;
+  owner?: string;
 }
 
 interface FileItem {
@@ -68,6 +72,17 @@ interface FileItem {
   size: number;
   modifiedAt: number;
   ext: string;
+}
+
+interface SharedFileItem {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  owner: string;
+  ownerName?: string;
+  sharedAt: number;
+  permission: string;
 }
 
 interface KbDocInfo {
@@ -159,17 +174,23 @@ export default function FilesPage() {
 
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [sharedFiles, setSharedFiles] = useState<SharedFileItem[]>([]);
   const [currentPath, setCurrentPath] = useState("");
   const [selectedFolder, setSelectedFolder] = useState<string>("");
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const [loadingTree, setLoadingTree] = useState(false);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [loadingShared, setLoadingShared] = useState(false);
   const [kbDocs, setKbDocs] = useState<Record<string, KbDocInfo>>({});
   const [organizing, setOrganizing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 共享文件相关
+  const [isSharedFolder, setIsSharedFolder] = useState(false);
+  const [shareFile, setShareFile] = useState<FileItem | null>(null);
 
   // 文档查看器
   const [viewDoc, setViewDoc] = useState<{ name: string; docId: string; content: string } | null>(null);
@@ -202,18 +223,31 @@ export default function FilesPage() {
     } catch {}
   }, []);
 
+  const loadSharedFiles = useCallback(async () => {
+    setLoadingShared(true);
+    try {
+      const data = await api.get<any>("/api/files/shared");
+      if (data.success) {
+        setSharedFiles(data.files || []);
+      }
+    } catch {}
+    setLoadingShared(false);
+  }, []);
+
   const refreshAll = useCallback(() => {
     loadTree();
     loadFiles(currentPath);
     loadKbStatus();
-  }, [loadTree, loadFiles, loadKbStatus, currentPath]);
+    loadSharedFiles();
+  }, [loadTree, loadFiles, loadKbStatus, loadSharedFiles, currentPath]);
 
   useEffect(() => {
     loadTree();
     loadFiles("");
     loadKbStatus();
+    loadSharedFiles();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [loadTree, loadFiles, loadKbStatus]);
+  }, [loadTree, loadFiles, loadKbStatus, loadSharedFiles]);
 
   // 有解析/向量化进行中时轮询
   useEffect(() => {
@@ -227,6 +261,7 @@ export default function FilesPage() {
   }, [kbDocs, loadKbStatus, loadFiles, currentPath]);
 
   const navigateTo = (path: string) => {
+    setIsSharedFolder(false);
     setCurrentPath(path);
     setSelectedFolder(path);
     loadFiles(path);
@@ -242,9 +277,23 @@ export default function FilesPage() {
     }
   };
 
+  const navigateToShared = () => {
+    setIsSharedFolder(true);
+    setCurrentPath("__SHARED__");
+    setSelectedFolder("__SHARED__");
+    loadSharedFiles();
+  };
+
   const handleTreeSelect = (keys: any) => {
     if (keys.length === 0) return;
     const key = keys[0] as string;
+    
+    // 处理共享文件夹
+    if (key === "__SHARED__") {
+      navigateToShared();
+      return;
+    }
+    
     const node = findNode(tree, key);
     if (node && !node.isLeaf) {
       navigateTo(key);
@@ -506,6 +555,88 @@ export default function FilesPage() {
   const kbTotal = Object.keys(kbDocs).length;
   const kbVectorized = Object.values(kbDocs).filter((d) => d.status === "done").length;
 
+  // 准备树数据（添加共享文件夹）
+  const treeDataWithShared = sharedFiles.length > 0 ? [
+    {
+      key: "__SHARED__",
+      title: "📁 共享文件",
+      isLeaf: false,
+      children: sharedFiles.map((f) => ({
+        key: `shared://${f.id}`,
+        title: f.name,
+        isLeaf: true,
+        size: f.size,
+        modifiedAt: f.sharedAt,
+        ext: f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".")).toLowerCase() : "",
+        isShared: true,
+        owner: f.owner,
+      })),
+    },
+    ...tree,
+  ] : tree;
+
+  // 共享文件表格列
+  const sharedColumns = [
+    {
+      title: "文件名",
+      dataIndex: "name",
+      key: "name",
+      ellipsis: true,
+      render: (name: string, record: SharedFileItem) => (
+        <Flex align="center" gap={8}>
+          {getFileIcon(name.includes(".") ? name.slice(name.lastIndexOf(".")).toLowerCase() : "", 18)}
+          <Text>{name}</Text>
+          <Tag color="blue">共享</Tag>
+        </Flex>
+      ),
+    },
+    {
+      title: "分享者",
+      dataIndex: "owner",
+      key: "owner",
+      width: 120,
+      render: (owner: string) => <Text type="secondary" style={{ fontSize: 12 }}>{owner}</Text>,
+    },
+    {
+      title: "大小",
+      dataIndex: "size",
+      key: "size",
+      width: 90,
+      render: (size: number) => <Text type="secondary" style={{ fontSize: 12 }}>{formatSize(size)}</Text>,
+    },
+    {
+      title: "分享时间",
+      dataIndex: "sharedAt",
+      key: "sharedAt",
+      width: 120,
+      render: (ts: number) => <Text type="secondary" style={{ fontSize: 12 }}>{formatTime(ts)}</Text>,
+    },
+    {
+      title: "权限",
+      dataIndex: "permission",
+      key: "permission",
+      width: 80,
+      render: (perm: string) => <Tag>{perm === "write" ? "可编辑" : "只读"}</Tag>,
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 100,
+      render: (_: any, record: SharedFileItem) => (
+        <Space size={0}>
+          <Tooltip title="下载">
+            <Button 
+              type="text" 
+              size="small" 
+              icon={<DownloadOutlined />} 
+              onClick={() => window.open(`/api/download?path=${encodeURIComponent(record.path)}&token=${localStorage.getItem("token") || ""}`, "_blank")}
+            />
+          </Tooltip>
+        </Space>
+      ),
+    },
+  ];
+
   return (
     <Flex gap={16} style={{ height: "calc(100vh - 64px - 48px)" }}>
       {/* Left: Folder Tree */}
@@ -522,11 +653,11 @@ export default function FilesPage() {
       >
         {loadingTree ? (
           <Flex justify="center" style={{ padding: 24 }}><Spin size="small" /></Flex>
-        ) : tree.length === 0 ? (
+        ) : treeDataWithShared.length === 0 ? (
           <Empty description={t("no_data")} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <Tree
-            treeData={tree}
+            treeData={treeDataWithShared}
             showIcon
             icon={renderTreeIcon}
             selectedKeys={selectedFolder ? [selectedFolder] : []}
@@ -544,67 +675,81 @@ export default function FilesPage() {
         style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto", padding: 0 } }}
         title={
-          <Flex align="center" gap={4} style={{ fontSize: 13 }}>
-            <HomeOutlined
-              style={{ cursor: "pointer", color: "#1677ff" }}
-              onClick={() => navigateTo("")}
-            />
-            {breadcrumbParts.map((part, i) => (
-              <Flex key={i} align="center" gap={4}>
-                <RightOutlined style={{ fontSize: 10, color: "#999" }} />
-                <Text
-                  style={{ cursor: "pointer", color: i === breadcrumbParts.length - 1 ? undefined : "#1677ff" }}
-                  onClick={() => navigateTo(breadcrumbParts.slice(0, i + 1).join("/"))}
-                >
-                  {part}
+          isSharedFolder ? (
+            <Flex align="center" gap={8} style={{ fontSize: 13 }}>
+              <ShareAltOutlined style={{ color: "#1677ff" }} />
+              <Text strong>共享文件</Text>
+              <Tag>{sharedFiles.length} 个文件</Tag>
+            </Flex>
+          ) : (
+            <Flex align="center" gap={4} style={{ fontSize: 13 }}>
+              <HomeOutlined
+                style={{ cursor: "pointer", color: "#1677ff" }}
+                onClick={() => navigateTo("")}
+              />
+              {breadcrumbParts.map((part, i) => (
+                <Flex key={i} align="center" gap={4}>
+                  <RightOutlined style={{ fontSize: 10, color: "#999" }} />
+                  <Text
+                    style={{ cursor: "pointer", color: i === breadcrumbParts.length - 1 ? undefined : "#1677ff" }}
+                    onClick={() => navigateTo(breadcrumbParts.slice(0, i + 1).join("/"))}
+                  >
+                    {part}
+                  </Text>
+                </Flex>
+              ))}
+              {breadcrumbParts.length === 0 && (
+                <Text type="secondary">
+                  {t("files_root")} · {kbTotal} 个入库 · {kbVectorized} 个已向量化
                 </Text>
-              </Flex>
-            ))}
-            {breadcrumbParts.length === 0 && (
-              <Text type="secondary">
-                {t("files_root")} · {kbTotal} 个入库 · {kbVectorized} 个已向量化
-              </Text>
-            )}
-          </Flex>
+              )}
+            </Flex>
+          )
         }
         extra={
-          <Space>
-            <Upload
-              accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.zip"
-              showUploadList={false}
-              multiple
-              beforeUpload={(file) => { handleUpload(file); return false; }}
-            >
-              <Button type="primary" size="small" icon={<UploadOutlined />} loading={uploading}>
-                上传文件
-              </Button>
-            </Upload>
-            <Button size="small" icon={<PlusOutlined />} onClick={() => setNewFolderOpen(true)}>
-              {t("files_new_folder")}
+          isSharedFolder ? (
+            <Button size="small" icon={<ReloadOutlined />} onClick={loadSharedFiles} loading={loadingShared}>
+              刷新
             </Button>
-            <Button
-              size="small"
-              icon={<RobotOutlined />}
-              loading={organizing}
-              onClick={handleOrganize}
-              type="primary"
-              ghost
-            >
-              {organizing ? t("files_organizing") : t("files_organize")}
+          ) : (
+            <Space>
+              <Upload
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.zip"
+                showUploadList={false}
+                multiple
+                beforeUpload={(file) => { handleUpload(file); return false; }}
+              >
+                <Button type="primary" size="small" icon={<UploadOutlined />} loading={uploading}>
+                  上传文件
+                </Button>
+              </Upload>
+              <Button size="small" icon={<PlusOutlined />} onClick={() => setNewFolderOpen(true)}>
+                {t("files_new_folder")}
+              </Button>
+              <Button
+                size="small"
+                icon={<RobotOutlined />}
+                loading={organizing}
+                onClick={handleOrganize}
+                type="primary"
+                ghost
+              >
+                {organizing ? t("files_organizing") : t("files_organize")}
             </Button>
             <Button size="small" icon={<ReloadOutlined />} onClick={refreshAll} />
           </Space>
+          )
         }
       >
         <Table
-          columns={columns}
-          dataSource={files}
-          rowKey="path"
+          columns={isSharedFolder ? (sharedColumns as any) : columns}
+          dataSource={isSharedFolder ? (sharedFiles as any[]) : files}
+          rowKey={isSharedFolder ? "id" : "path"}
           size="small"
-          loading={loadingFiles}
+          loading={isSharedFolder ? loadingShared : loadingFiles}
           pagination={false}
           scroll={{ y: "calc(100vh - 200px)" }}
-          locale={{ emptyText: <Empty description={t("files_empty")} image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          locale={{ emptyText: <Empty description={isSharedFolder ? "暂无共享文件" : t("files_empty")} image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
         />
       </Card>
 

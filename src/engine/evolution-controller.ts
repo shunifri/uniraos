@@ -514,6 +514,10 @@ export class EvolutionController {
       timestamp: Date.now(),
       approved: !this.config.requireHumanApproval,
     });
+    // 限制历史记录大小，防止内存泄漏
+    if (this.generations.length > 1000) {
+      this.generations = this.generations.slice(-500);
+    }
 
     log("info", "skill.generated", {
       name,

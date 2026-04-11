@@ -1,14 +1,14 @@
 import { useState } from "react";
 import {
-  Card, Button, Radio, Checkbox, Form, Input, InputNumber,
-  Select, DatePicker, Space, Typography, Tag, Flex, Divider,
+  Button, Radio, Checkbox, Form, Input, InputNumber,
+  Select, DatePicker, Space, Typography, Flex, Divider,
 } from "antd";
 import {
-  CheckCircleOutlined, CloseCircleOutlined,
+  CheckCircleOutlined, CheckOutlined,
   FormOutlined, UnorderedListOutlined, QuestionCircleOutlined,
 } from "@ant-design/icons";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 const { TextArea } = Input;
 
 interface Option {
@@ -42,6 +42,38 @@ interface ConfirmCardProps {
   disabled?: boolean;
 }
 
+const glassCardStyle: React.CSSProperties = {
+  maxWidth: 520,
+  margin: "8px 0",
+  padding: "20px",
+  borderRadius: 16,
+  background: "rgba(255, 255, 255, 0.9)",
+  backdropFilter: "blur(12px)",
+  border: "1px solid rgba(139, 92, 246, 0.15)",
+  boxShadow: "0 4px 16px rgba(139, 92, 246, 0.08)",
+};
+
+const gradientIconStyle: React.CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: 10,
+  background: "linear-gradient(135deg, #8B5CF6, #EC4899)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+function GlassCardHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <Flex align="center" gap={8} style={{ marginBottom: 16 }}>
+      <span style={gradientIconStyle}>
+        {icon}
+      </span>
+      <Text strong style={{ fontSize: 15 }}>{title}</Text>
+    </Flex>
+  );
+}
+
 export default function ConfirmCard({
   confirmId, type, title, description,
   options = [], multiSelect = false, fields = [],
@@ -52,63 +84,108 @@ export default function ConfirmCard({
   const [selectedMulti, setSelectedMulti] = useState<string[]>([]);
   const [form] = Form.useForm();
 
-  // --- SELECTION MODE ---
+  // --- SELECTION MODE --- 统一横排芯片布局
   if (type === "selection") {
+    const chipStyle = (isSelected: boolean): React.CSSProperties => ({
+      padding: "8px 18px",
+      borderRadius: 20,
+      fontSize: 14,
+      fontWeight: 500,
+      cursor: disabled ? "default" : "pointer",
+      opacity: disabled ? 0.6 : 1,
+      transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+      background: isSelected ? "linear-gradient(135deg, #8B5CF6, #EC4899)" : "rgba(139, 92, 246, 0.06)",
+      color: isSelected ? "white" : "#475569",
+      border: `1px solid ${isSelected ? "transparent" : "rgba(139, 92, 246, 0.15)"}`,
+      boxShadow: isSelected ? "0 2px 12px rgba(139, 92, 246, 0.3)" : "none",
+      whiteSpace: "nowrap" as const,
+    });
+
     if (!multiSelect) {
-      // Single select: click to confirm immediately
       return (
-        <Card size="small" style={{ maxWidth: 480, margin: "8px 0", borderColor: "#1890ff", borderRadius: 12 }}
-          title={<Flex align="center" gap={8}><UnorderedListOutlined style={{ color: "#1890ff" }} /><Text strong>{title}</Text></Flex>}>
-          {description && <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>{description}</Text>}
-          <Flex vertical gap={8}>
-            {options.map((opt) => (
-              <Card key={opt.id} size="small" hoverable={!disabled}
-                style={{
-                  cursor: disabled ? "default" : "pointer",
-                  borderColor: selectedSingle === opt.id ? "#1890ff" : undefined,
-                  backgroundColor: selectedSingle === opt.id ? "#e6f7ff" : undefined,
-                }}
-                onClick={() => {
-                  if (disabled) return;
-                  setSelectedSingle(opt.id);
-                  onConfirm(confirmId, { selectedId: opt.id, selectedLabel: opt.label });
-                }}>
-                <Text strong>{opt.label}</Text>
-                {opt.description && <Text type="secondary" style={{ display: "block", fontSize: 12 }}>{opt.description}</Text>}
-              </Card>
-            ))}
-          </Flex>
-          {disabled && <Tag color="green" style={{ marginTop: 8 }}><CheckCircleOutlined /> 已选择</Tag>}
-        </Card>
+        <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
+          <GlassCardHeader
+            icon={<UnorderedListOutlined style={{ color: "white", fontSize: 14 }} />}
+            title={title}
+          />
+          {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {options.map((opt) => {
+              const isSelected = selectedSingle === opt.id;
+              return (
+                <div
+                  key={opt.id}
+                  onClick={() => { if (disabled) return; setSelectedSingle(opt.id); onConfirm(confirmId, { selectedId: opt.id, selectedLabel: opt.label }); }}
+                  style={chipStyle(isSelected)}
+                  title={opt.description}
+                  onMouseEnter={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.12)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.3)"; } }}
+                  onMouseLeave={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.06)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.15)"; } }}
+                >
+                  {opt.label}
+                </div>
+                );
+              })}
+          </div>
+
+          {disabled && (
+            <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+              <CheckCircleOutlined style={{ color: "#10B981" }} />
+              <Text style={{ color: "#10B981", fontSize: 12 }}>已选择</Text>
+            </Flex>
+          )}
+        </div>
       );
     }
 
-    // Multi select: checkboxes + confirm button
+    // Multi select: horizontal chips + confirm button
     return (
-      <Card size="small" style={{ maxWidth: 480, margin: "8px 0", borderColor: "#1890ff", borderRadius: 12 }}
-        title={<Flex align="center" gap={8}><UnorderedListOutlined style={{ color: "#1890ff" }} /><Text strong>{title}</Text></Flex>}>
-        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>{description}</Text>}
-        <Checkbox.Group disabled={disabled} value={selectedMulti} onChange={(vals) => setSelectedMulti(vals as string[])}>
-          <Flex vertical gap={8}>
-            {options.map((opt) => (
-              <Checkbox key={opt.id} value={opt.id}>
-                <Text strong>{opt.label}</Text>
-                {opt.description && <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>{opt.description}</Text>}
-              </Checkbox>
-            ))}
+      <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
+        <GlassCardHeader
+          icon={<UnorderedListOutlined style={{ color: "white", fontSize: 14 }} />}
+          title={title}
+        />
+        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, flexWrap: "wrap" }}>
+          {options.map((opt) => {
+            const isSelected = selectedMulti.includes(opt.id);
+            return (
+              <div
+                key={opt.id}
+                onClick={() => {
+                  if (disabled) return;
+                  setSelectedMulti(prev => isSelected ? prev.filter(v => v !== opt.id) : [...prev, opt.id]);
+                }}
+                style={chipStyle(isSelected)}
+                title={opt.description}
+                onMouseEnter={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.12)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.3)"; } }}
+                onMouseLeave={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.06)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.15)"; } }}
+              >
+                {isSelected && <CheckOutlined style={{ fontSize: 10, marginRight: 4 }} />}
+                {opt.label}
+              </div>
+            );
+          })}
+        </div>
+        {selectedMulti.length > 0 && !disabled && (
+          <Flex gap={8} style={{ marginTop: 12 }}>
+            <Button
+              type="primary"
+              size="small"
+              style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10 }}
+              onClick={() => {
+                const selected = options.filter(o => selectedMulti.includes(o.id));
+                onConfirm(confirmId, { selected: selected.map(o => ({ id: o.id, label: o.label })) });
+              }}>{confirmText} ({selectedMulti.length})</Button>
+            <Button size="small" style={{ borderRadius: 10 }} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
           </Flex>
-        </Checkbox.Group>
-        <Divider style={{ margin: "12px 0" }} />
-        <Space>
-          <Button type="primary" disabled={disabled || selectedMulti.length === 0}
-            onClick={() => {
-              const selected = options.filter(o => selectedMulti.includes(o.id));
-              onConfirm(confirmId, { selected: selected.map(o => ({ id: o.id, label: o.label })) });
-            }}>{confirmText}</Button>
-          <Button disabled={disabled} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
-        </Space>
-        {disabled && <Tag color="green" style={{ marginTop: 8 }}><CheckCircleOutlined /> 已确认</Tag>}
-      </Card>
+        )}
+        {disabled && (
+          <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+            <CheckCircleOutlined style={{ color: "#10B981" }} />
+            <Text style={{ color: "#10B981", fontSize: 12 }}>已确认</Text>
+          </Flex>
+        )}
+      </div>
     );
   }
 
@@ -138,9 +215,12 @@ export default function ConfirmCard({
     };
 
     return (
-      <Card size="small" style={{ maxWidth: 520, margin: "8px 0", borderColor: "#722ed1", borderRadius: 12 }}
-        title={<Flex align="center" gap={8}><FormOutlined style={{ color: "#722ed1" }} /><Text strong>{title}</Text></Flex>}>
-        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>{description}</Text>}
+      <div style={{ ...glassCardStyle, maxWidth: 520 }}>
+        <GlassCardHeader
+          icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
+          title={title}
+        />
+        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
         <Form form={form} layout="vertical" disabled={disabled} size="small"
           initialValues={fields.reduce((acc, f) => {
             if (f.defaultValue !== undefined) acc[f.key] = f.defaultValue;
@@ -154,32 +234,53 @@ export default function ConfirmCard({
           ))}
         </Form>
         <Space>
-          <Button type="primary" disabled={disabled}
+          <Button
+            type="primary"
+            disabled={disabled}
+            style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10, boxShadow: "0 4px 14px rgba(139, 92, 246, 0.3)" }}
             onClick={async () => {
               try {
                 const values = await form.validateFields();
                 onConfirm(confirmId, values);
               } catch { /* validation failed */ }
             }}>{confirmText}</Button>
-          <Button disabled={disabled} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
+          <Button style={{ borderRadius: 10 }} disabled={disabled} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
         </Space>
-        {disabled && <Tag color="green" style={{ marginTop: 8 }}><CheckCircleOutlined /> 已提交</Tag>}
-      </Card>
+        {disabled && (
+          <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+            <CheckCircleOutlined style={{ color: "#10B981" }} />
+            <Text style={{ color: "#10B981", fontSize: 12 }}>已提交</Text>
+          </Flex>
+        )}
+      </div>
     );
   }
 
   // --- APPROVAL MODE ---
   return (
-    <Card size="small" style={{ maxWidth: 480, margin: "8px 0", borderColor: "#faad14", borderRadius: 12 }}
-      title={<Flex align="center" gap={8}><QuestionCircleOutlined style={{ color: "#faad14" }} /><Text strong>{title}</Text></Flex>}>
-      {description && <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>{description}</Text>}
+    <div style={glassCardStyle}>
+      <GlassCardHeader
+        icon={<QuestionCircleOutlined style={{ color: "white", fontSize: 14 }} />}
+        title={title}
+      />
+      {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
       <Space>
-        <Button type="primary" disabled={disabled}
+        <Button
+          type="primary"
+          disabled={disabled}
+          style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10 }}
           onClick={() => onConfirm(confirmId, { approved: true })}>{confirmText}</Button>
-        <Button danger disabled={disabled}
+        <Button
+          style={{ borderRadius: 10 }}
+          disabled={disabled}
           onClick={() => onCancel(confirmId)}>{cancelText}</Button>
       </Space>
-      {disabled && <Tag color="green" style={{ marginTop: 8 }}><CheckCircleOutlined /> 已确认</Tag>}
-    </Card>
+      {disabled && (
+        <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+          <CheckCircleOutlined style={{ color: "#10B981" }} />
+          <Text style={{ color: "#10B981", fontSize: 12 }}>已确认</Text>
+        </Flex>
+      )}
+    </div>
   );
 }

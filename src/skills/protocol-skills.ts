@@ -4,7 +4,7 @@
  * 提供 WebSocket、Server-Sent Events、消息队列等协议能力。
  * 让智能体能够进行双向实时通信和异步消息处理。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 // ===== WebSocket 管理 =====
@@ -22,7 +22,7 @@ let wsIdCounter = 0;
 
 function createWSSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "ws_connect",
       description:
         "建立 WebSocket 连接。参数: url(string), protocols?(string[]), headers?(object). 返回 connectionId",
@@ -112,7 +112,7 @@ function createWSSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "ws_send",
       description: "通过 WebSocket 发送消息。参数: connectionId(string), data(string)",
       timeout: 10000,
@@ -139,7 +139,7 @@ function createWSSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "ws_receive",
       description: "获取 WebSocket 接收到的消息。参数: connectionId(string), limit?(number, 默认 10), waitMs?(number, 等待新消息毫秒数)",
       timeout: 30000,
@@ -174,7 +174,7 @@ function createWSSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "ws_close",
       description: "关闭 WebSocket 连接。参数: connectionId(string)",
       handler: async (params) => {
@@ -199,7 +199,7 @@ function createWSSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "ws_list",
       description: "列出所有 WebSocket 连接状态",
       handler: async () => {
@@ -228,7 +228,7 @@ let subIdCounter = 0;
 
 function createMessageBusSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "mq_publish",
       description: "发布消息到频道。参数: channel(string), data(any), publisher?(string)",
       handler: async (params) => {
@@ -274,7 +274,7 @@ function createMessageBusSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "mq_consume",
       description: "消费频道中的消息。参数: channel(string), limit?(number, 默认 10), since?(number, 时间戳)",
       handler: async (params) => {
@@ -308,7 +308,7 @@ function createMessageBusSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "mq_channels",
       description: "列出所有消息频道及其状态",
       handler: async () => {

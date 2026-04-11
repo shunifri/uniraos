@@ -218,3 +218,19 @@ export function getRelated(
     relationTypes: [...relationSet],
   };
 }
+
+/**
+ * VersionChain class — thin wrapper around the standalone version functions.
+ * Provided for backwards compatibility with EnhancedLTMBackend.
+ */
+export class VersionChain {
+  createVersion(
+    key: string,
+    value: unknown,
+    entries: EnhancedLTMEntry[],
+    relation?: VersionRelation,
+    parentId?: string,
+  ): { fields: VersionFields; deprecatedId: string | null } {
+    return createVersion(key, value, entries, relation, parentId);
+  }
+}

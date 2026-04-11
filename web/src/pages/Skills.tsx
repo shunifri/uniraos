@@ -21,12 +21,28 @@ import {
   ThunderboltOutlined,
   EyeOutlined,
   EyeInvisibleOutlined,
+  ShareAltOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { api } from "@/api";
 import CodeEditor from "@/components/CodeEditor";
+import ShareDialog from "@/components/ShareDialog";
 
 const { Text, Title } = Typography;
+
+interface ParamProperty {
+  type?: string;
+  description?: string;
+  enum?: unknown[];
+  [key: string]: unknown;
+}
+
+interface ParamSchema {
+  type?: string;
+  properties?: Record<string, ParamProperty>;
+  required?: string[];
+  [key: string]: unknown;
+}
 
 interface SkillInfo {
   name: string;
@@ -35,6 +51,9 @@ interface SkillInfo {
   visible: boolean;
   dependencies: string[];
   timeout?: number;
+  paramSchema?: ParamSchema | null;
+  isSystem?: boolean;
+  owner?: string;
 }
 
 const autonomyColors: Record<string, string> = {
@@ -55,6 +74,7 @@ export default function SkillsPage() {
   const [results, setResults] = useState<
     Array<{ name: string; data: any; success: boolean; time: string }>
   >([]);
+  const [shareSkill, setShareSkill] = useState<SkillInfo | null>(null);
 
   useEffect(() => {
     loadSkills();
@@ -100,10 +120,11 @@ export default function SkillsPage() {
   };
 
   return (
-    <Flex gap={16} style={{ height: "100%" }}>
+    <Flex gap={16} style={{ height: "calc(100vh - 112px)" }}>
       {/* Left: Skill List */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <ThunderboltOutlined />
@@ -157,6 +178,12 @@ export default function SkillsPage() {
                       style={{ fontSize: 10, color: "#999" }}
                     />
                   )}
+                  {(!skill.isSystem || skill.owner) && (
+                    <ShareAltOutlined
+                      style={{ fontSize: 10, color: "#1677ff", cursor: "pointer" }}
+                      onClick={(e) => { e.stopPropagation(); setShareSkill(skill); }}
+                    />
+                  )}
                 </Flex>
                 <Flex gap={4} style={{ marginTop: 4 }}>
                   <Tag
@@ -188,7 +215,7 @@ export default function SkillsPage() {
 
       {/* Center: Execute & Results */}
       <Flex vertical flex={1} gap={16} style={{ overflow: "auto" }}>
-        <Card size="small" title={t("execute_skill")}>
+        <Card size="small" className="glass-card" title={t("execute_skill")}>
           <Form layout="vertical" size="small">
             <Form.Item label={t("skill_name")}>
               <Input
@@ -215,6 +242,7 @@ export default function SkillsPage() {
         {results.length > 0 && (
           <Card
             size="small"
+            className="glass-card"
             title={t("results")}
             extra={
               <a onClick={() => setResults([])}>{t("clear")}</a>
@@ -253,10 +281,20 @@ export default function SkillsPage() {
         )}
       </Flex>
 
+      {/* Share Dialog */}
+      <ShareDialog
+        open={!!shareSkill}
+        onClose={() => setShareSkill(null)}
+        resourceType="skill"
+        resourceId={shareSkill?.name || ""}
+        resourceName={shareSkill?.name || ""}
+      />
+
       {/* Right: Skill Detail */}
       {selected && (
         <Card
           size="small"
+          className="glass-card"
           title={t("skill_detail")}
           style={{ width: 320, height: "100%", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}
           styles={{ body: { flex: 1, overflow: "auto" } }}
@@ -291,6 +329,50 @@ export default function SkillsPage() {
               </Descriptions.Item>
             )}
           </Descriptions>
+          {selected.paramSchema && selected.paramSchema.properties && (
+            <div style={{ marginTop: 12 }}>
+              <Text strong style={{ fontSize: 12 }}>
+                Parameters
+              </Text>
+              <div style={{ marginTop: 6 }}>
+                {Object.entries(selected.paramSchema.properties).map(([paramName, prop]) => (
+                  <div
+                    key={paramName}
+                    style={{
+                      padding: "4px 0",
+                      borderBottom: "1px solid var(--ant-color-border-secondary)",
+                    }}
+                  >
+                    <Flex align="center" gap={6} wrap="wrap">
+                      <Text code style={{ fontSize: 11 }}>
+                        {paramName}
+                      </Text>
+                      {prop.type && (
+                        <Tag style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}>
+                          {prop.type as string}
+                        </Tag>
+                      )}
+                      {selected.paramSchema?.required?.includes(paramName) && (
+                        <Tag color="red" style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}>
+                          required
+                        </Tag>
+                      )}
+                    </Flex>
+                    {prop.description && (
+                      <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 2 }}>
+                        {prop.description as string}
+                      </Text>
+                    )}
+                    {prop.enum && (
+                      <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 2 }}>
+                        enum: {(prop.enum as unknown[]).map(String).join(", ")}
+                      </Text>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
       )}
     </Flex>

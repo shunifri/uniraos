@@ -16,3 +16,5 @@ export { SkillLifecycleManager } from "./skill-lifecycle.js";
 export type { SkillLifecycleInfo, CanaryConfig } from "./skill-lifecycle.js";
 export { EmergenceDetector } from "./emergence-detector.js";
 export type { EmergencePattern } from "./emergence-detector.js";
+export { SkillAccessService } from "./skill-access-service.js";
+export type { SkillAccessResult, SkillAccessChangeEvent } from "./skill-access-service.js";

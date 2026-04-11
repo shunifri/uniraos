@@ -4,7 +4,7 @@
  * 提供 Skill 的导出、导入和共享能力。
  * 支持将 Skill 打包为标准化格式，可在不同 RAOS 实例间迁移。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import { runInSandbox } from "../engine/worker-sandbox.js";
@@ -153,7 +153,7 @@ export class SkillMarketplace {
         }
       };
 
-      const skill = defineSkill({
+      const skill = defineSystemSkill({
         name: pkg.name,
         version: pkg.version,
         description: `[导入] ${pkg.description}`,

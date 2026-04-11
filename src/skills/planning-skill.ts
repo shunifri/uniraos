@@ -4,7 +4,7 @@
  * LLM 先分析任务生成执行计划，再按计划逐步调用 Skill。
  * 支持动态调整（计划中途发现问题可重新规划）。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -15,7 +15,7 @@ export function createPlanningSkill(
   getProvider: () => LLMProvider | null,
 ): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "plan_and_execute",
       description: `多步规划执行：LLM 分析任务，生成执行计划，然后逐步执行。
 参数:

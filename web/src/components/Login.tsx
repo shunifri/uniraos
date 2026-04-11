@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Form,
@@ -9,12 +9,13 @@ import {
   Tag,
   Alert,
   Space,
+  Divider,
 } from 'antd';
-import { UserOutlined, LockOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, PhoneOutlined } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useAuthStore } from '@/store/auth';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface LoginForm {
   username: string;
@@ -25,9 +26,21 @@ const Login: React.FC = () => {
   const navigate = useNavigate();
   const t = useI18nStore((s) => s.t);
   const login = useAuthStore((s) => s.login);
+  const loginAnonymous = useAuthStore((s) => s.loginAnonymous);
 
   const [loading, setLoading] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showGuestForm, setShowGuestForm] = useState(false);
+  const [phone, setPhone] = useState('');
+
+  // 检查 localStorage 中是否已有手机号，自动登录
+  useEffect(() => {
+    const savedPhone = localStorage.getItem('raos-anon-phone');
+    if (savedPhone) {
+      setPhone(savedPhone);
+    }
+  }, []);
 
   const handleSubmit = async (values: LoginForm) => {
     setLoading(true);
@@ -41,6 +54,47 @@ const Login: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGuestLogin = async () => {
+    // 验证手机号格式
+    if (!/^1[3-9]\d{9}$/.test(phone)) {
+      setError(t('login_phone_invalid'));
+      return;
+    }
+
+    setGuestLoading(true);
+    setError(null);
+
+    try {
+      await loginAnonymous(phone);
+      navigate('/chat');
+    } catch (err: any) {
+      setError(err?.message || t('login_failed'));
+    } finally {
+      setGuestLoading(false);
+    }
+  };
+
+  const handleGuestClick = () => {
+    // 如果 localStorage 中已有手机号，直接登录
+    const savedPhone = localStorage.getItem('raos-anon-phone');
+    if (savedPhone && /^1[3-9]\d{9}$/.test(savedPhone)) {
+      setPhone(savedPhone);
+      setGuestLoading(true);
+      setError(null);
+      loginAnonymous(savedPhone)
+        .then(() => navigate('/chat'))
+        .catch((err: any) => {
+          setError(err?.message || t('login_failed'));
+          // 登录失败时清除缓存的手机号，显示表单让用户重新输入
+          localStorage.removeItem('raos-anon-phone');
+          setShowGuestForm(true);
+        })
+        .finally(() => setGuestLoading(false));
+      return;
+    }
+    setShowGuestForm(true);
   };
 
   return (
@@ -100,7 +154,7 @@ const Login: React.FC = () => {
             />
           </Form.Item>
 
-          <Form.Item style={{ marginBottom: 0 }}>
+          <Form.Item style={{ marginBottom: 12 }}>
             <Button
               type="primary"
               htmlType="submit"
@@ -111,6 +165,44 @@ const Login: React.FC = () => {
             </Button>
           </Form.Item>
         </Form>
+
+        <Divider plain style={{ margin: '12px 0' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('login_phone_hint')}
+          </Text>
+        </Divider>
+
+        {showGuestForm ? (
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              prefix={<PhoneOutlined />}
+              placeholder={t('login_phone')}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onPressEnter={handleGuestLogin}
+              maxLength={11}
+              style={{ flex: 1 }}
+              size="large"
+            />
+            <Button
+              type="default"
+              loading={guestLoading}
+              onClick={handleGuestLogin}
+              size="large"
+            >
+              {guestLoading ? t('login_guest_loading') : t('login_guest')}
+            </Button>
+          </Space.Compact>
+        ) : (
+          <Button
+            block
+            loading={guestLoading}
+            onClick={handleGuestClick}
+            size="large"
+          >
+            {guestLoading ? t('login_guest_loading') : t('login_guest')}
+          </Button>
+        )}
       </Card>
     </div>
   );

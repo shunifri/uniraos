@@ -69,6 +69,21 @@ export interface MemoryConfig {
   backend: 'file' | 'enhanced';
 }
 
+/** Document Mind 配置 */
+export interface DocMindConfig {
+  enabled?: boolean;
+  accessKeyId?: string;
+  accessKeySecret?: string;
+  endpoint?: string;
+  regionId?: string;
+  /** 最大轮询时间（分钟） */
+  maxPollingMinutes?: number;
+  /** 轮询间隔（秒） */
+  pollingIntervalSeconds?: number;
+  /** 音视频解析模式: base(基本) / advance(剧情解析) */
+  multimediaMode?: 'base' | 'advance';
+}
+
 export interface RAOSConfig {
   llm: LLMProviderConfig | null;
   multimodal: MultimodalConfig;
@@ -82,6 +97,7 @@ export interface RAOSConfig {
   evolution: EvolutionConfig;
   memory: MemoryConfig;
   modelCards?: Partial<Record<ModelCardType, ModelCardConfig>>;
+  docMind?: DocMindConfig;
 }
 
 const DEFAULT_CONFIG: RAOSConfig = {
@@ -119,6 +135,16 @@ const DEFAULT_CONFIG: RAOSConfig = {
     backend: 'file',
   },
   modelCards: {},
+  docMind: {
+    enabled: false,
+    accessKeyId: '',
+    accessKeySecret: '',
+    endpoint: 'docmind-api.cn-hangzhou.aliyuncs.com',
+    regionId: 'cn-hangzhou',
+    maxPollingMinutes: 30,
+    pollingIntervalSeconds: 3,
+    multimediaMode: 'advance',
+  },
 };
 
 export class ConfigManager {
@@ -149,6 +175,7 @@ export class ConfigManager {
           evolution: { ...DEFAULT_CONFIG.evolution, ...(saved as any).evolution },
           memory: { ...DEFAULT_CONFIG.memory, ...(saved as any).memory },
           modelCards: (saved as any).modelCards ?? {},
+          docMind: { ...DEFAULT_CONFIG.docMind, ...(saved as any).docMind },
         };
       }
     } catch {
@@ -309,5 +336,25 @@ export class ConfigManager {
   setMemory(config: Partial<MemoryConfig>): void {
     this.config.memory = { ...this.config.memory, ...config };
     this.save();
+  }
+
+  // ===== Document Mind 配置 =====
+
+  getDocMind(): DocMindConfig {
+    return { ...DEFAULT_CONFIG.docMind, ...this.config.docMind };
+  }
+
+  setDocMind(config: Partial<DocMindConfig>): void {
+    this.config.docMind = { ...DEFAULT_CONFIG.docMind, ...this.config.docMind, ...config };
+    this.save();
+  }
+
+  /** 检查 Document Mind 是否已配置 */
+  isDocMindConfigured(): boolean {
+    return !!(
+      this.config.docMind?.enabled &&
+      this.config.docMind?.accessKeyId &&
+      this.config.docMind?.accessKeySecret
+    );
   }
 }

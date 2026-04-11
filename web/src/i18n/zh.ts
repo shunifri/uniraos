@@ -15,6 +15,12 @@ const zh = {
   login_failed: '登录失败',
   login_username_required: '请输入用户名',
   login_password_required: '请输入密码',
+  login_guest: '游客访问',
+  login_guest_loading: '进入中...',
+  login_phone: '手机号',
+  login_phone_required: '请输入手机号',
+  login_phone_invalid: '请输入有效的11位手机号',
+  login_phone_hint: '输入手机号即可免注册使用',
   logout: '退出登录',
 
   // Common
@@ -142,6 +148,9 @@ const zh = {
   username: '用户名',
   password: '密码',
   display_name: '显示名称',
+  phone: '手机号',
+  email: '邮箱',
+  select_roles: '选择角色',
   department: '部门',
   create_user: '创建用户',
   evolution_config: '演化配置',

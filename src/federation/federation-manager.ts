@@ -20,6 +20,7 @@ import type {
   FederationEventHandler,
 } from "./types.js";
 import type { SkillMigrationManager } from "./skill-migration.js";
+import { log } from "../utils/logger.js";
 
 /** 推荐策略接口 — 可插拔 */
 export interface RecommendationStrategy {
@@ -197,7 +198,7 @@ export class FederationManager {
     try {
       await this.transport.broadcast("federation:heartbeat", profile);
       this.emit({ type: "federation:heartbeat", timestamp: Date.now(), data: { instanceId: this.instanceId } });
-    } catch { /* 心跳失败不影响运行 */ }
+    } catch (err) { log("debug", "federation.heartbeat_failed", { error: err instanceof Error ? err.message : String(err) }); }
   }
 
   /** 同步指标并生成推荐 */
@@ -206,11 +207,11 @@ export class FederationManager {
     try {
       const results = await this.transport.broadcast("federation:metrics", {});
       for (const { instanceId, result } of results) {
-        if (result && typeof result === "object" && !("error" in (result as any))) {
+        if (result && typeof result === "object" && !("error" in (result as any)) && "skills" in (result as any)) {
           this.remoteSnapshots.set(instanceId, result as FederatedMetricsSnapshot);
         }
       }
-    } catch { /* 指标同步失败不影响运行 */ }
+    } catch (err) { log("debug", "federation.sync_failed", { error: err instanceof Error ? err.message : String(err) }); }
 
     // 生成推荐
     const localSkills = this.registry.list().map((s) => s.name);

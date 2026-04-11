@@ -58,13 +58,17 @@ export class SkillLifecycleManager {
   ): void {
     const info = this.getOrCreate(name);
     info.state = "canary";
+    const trafficPercent = Math.max(0, Math.min(100, opts?.trafficPercent ?? 10));
+    const promoteThreshold = Math.max(0, Math.min(1, opts?.promoteThreshold ?? 0.95));
+    const rollbackThreshold = Math.max(0, Math.min(1, opts?.rollbackThreshold ?? 0.5));
+    const minCalls = Math.max(1, opts?.minCalls ?? 20);
     info.canaryConfig = {
       oldVersion,
       newVersion,
-      trafficPercent: opts?.trafficPercent ?? 10,
-      promoteThreshold: opts?.promoteThreshold ?? 0.95,
-      rollbackThreshold: opts?.rollbackThreshold ?? 0.5,
-      minCalls: opts?.minCalls ?? 20,
+      trafficPercent,
+      promoteThreshold,
+      rollbackThreshold,
+      minCalls,
       startedAt: Date.now(),
     };
     log("info", "lifecycle.canary_started", { name, oldVersion, newVersion });
@@ -109,8 +113,8 @@ export class SkillLifecycleManager {
     // 切换活跃版本
     try {
       this.registry.switchVersion(name, newVersion);
-    } catch {
-      // 版本可能未注册，忽略
+    } catch (err) {
+      log("warn", "lifecycle.canary_promote_version_switch_failed", { name, newVersion, error: err instanceof Error ? err.message : String(err) });
     }
 
     log("info", "lifecycle.canary_promoted", { name, version: newVersion });
@@ -127,8 +131,8 @@ export class SkillLifecycleManager {
 
     try {
       this.registry.switchVersion(name, oldVersion);
-    } catch {
-      // 忽略
+    } catch (err) {
+      log("warn", "lifecycle.canary_rollback_version_switch_failed", { name, oldVersion, error: err instanceof Error ? err.message : String(err) });
     }
 
     log("warn", "lifecycle.canary_rolled_back", { name, oldVersion, newVersion });

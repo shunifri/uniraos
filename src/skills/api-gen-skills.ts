@@ -12,7 +12,7 @@
  *   api_delete      — 删除已导入的 API
  *   api_test        — 测试 API Skill 调用
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import Database from "better-sqlite3";
@@ -429,7 +429,7 @@ function generateSkillForEndpoint(
 
   const description = `[API] ${endpoint.summary || endpoint.description || `${endpoint.method} ${endpoint.path}`}${paramDesc ? `. 参数: ${paramDesc}` : ""}`;
 
-  const skill = defineSkill({
+  const skill = defineSystemSkill({
     name: skillName,
     description,
     timeout: 30000,
@@ -547,7 +547,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
   const WORKSPACE_BASE = resolve(process.cwd(), ".raos", "workspace");
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "api_import",
       description:
         "从 API 文档导入并自动生成 Skills。参数: doc?(object, OpenAPI/Swagger JSON), path?(string, workspace中的文档路径), url?(string, 远程文档 URL), name?(string, 服务名), auth?(object, 认证配置 {type, apiKey, token, username, password, ...})",
@@ -674,7 +674,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "api_auth_config",
       description:
         "配置 API 服务的认证信息。参数: serviceId(string), auth(object, {type: 'api_key'|'bearer'|'basic'|'oauth2'|'custom_header'|'hmac'|'aws_v4', ...具体字段})",
@@ -719,7 +719,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "api_list",
       description: "列出所有已导入的 API 服务及其 Skills",
       handler: async () => {
@@ -757,7 +757,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "api_delete",
       description: "删除已导入的 API 服务及其所有 Skills。参数: serviceId(string)",
       handler: async (params) => {
@@ -800,7 +800,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "api_test",
       description: "测试 API Skill 调用。参数: skillName(string, 要测试的 Skill 名称), params?(object, 调用参数)",
       timeout: 30000,

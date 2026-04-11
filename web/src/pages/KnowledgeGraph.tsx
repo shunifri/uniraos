@@ -165,14 +165,34 @@ export default function KnowledgeGraphPage() {
       const degree = node.degree ?? 1;
       const size = Math.max(10, Math.min(40, 10 + degree * 3));
 
+      // 友好的显示名称：去掉 fact:/recall: 等前缀，下划线转空格
+      const rawName = node.label || node.id;
+      const friendlyName = rawName
+        .replace(/^(fact:|recall:|recall:graph:)/, "")
+        .replace(/_/g, " ");
+      const truncatedName = friendlyName.length > 15 ? friendlyName.slice(0, 12) + "..." : friendlyName;
+
+      // 节点实际内容（value）
+      const nodeValue = (node as any).properties?.value;
+      const valueStr = nodeValue
+        ? (typeof nodeValue === "string" ? nodeValue : JSON.stringify(nodeValue))
+        : "";
+      const valuePreview = valueStr.length > 100 ? valueStr.slice(0, 100) + "..." : valueStr;
+
       return {
         id: node.id,
-        name: node.label || node.id,
+        name: friendlyName,
         symbolSize: size,
         itemStyle: { color: communityColor },
-        label: { show: size > 18, fontSize: 10 },
+        label: {
+          show: true,
+          fontSize: 10,
+          formatter: () => truncatedName,
+        },
         tooltip: {
-          formatter: `${node.label}<br/>Type: ${node.type}<br/>Community: ${node.communityId ?? "N/A"}<br/>Degree: ${degree}`,
+          formatter: `<b style="font-size:14px">${friendlyName}</b>`
+            + (valuePreview ? `<br/><span style="color:#475569">${valuePreview}</span>` : "")
+            + `<br/><span style="color:#94A3B8;font-size:11px">类型: ${node.type} · 关联: ${degree}${node.tags?.length ? " · 标签: " + node.tags.join(", ") : ""}</span>`,
         },
         value: degree,
       };
@@ -188,16 +208,22 @@ export default function KnowledgeGraphPage() {
             ? { type: "dotted" as const, opacity: 0.4 }
             : { type: "solid" as const, opacity: 0.8 };
 
+        // 边的关系标签：去掉 shared_tags: 前缀，显示更友好
+        const edgeLabel = (edge.label ?? edge.type).replace("shared_tags:", "共同标签: ");
         return {
           source: edge.source,
           target: edge.target,
           lineStyle,
-          label: { show: false, formatter: edge.label ?? edge.type },
+          label: { show: false },
+          tooltip: { formatter: `<b>${edgeLabel}</b><br/><span style="color:#94A3B8">${edge.type}</span>` },
         };
       });
 
     return {
-      tooltip: { trigger: "item" },
+      tooltip: {
+        trigger: "item",
+        formatter: (params: any) => params.data?.tooltip?.formatter ?? params.name,
+      },
       series: [
         {
           type: "graph",
@@ -277,7 +303,7 @@ export default function KnowledgeGraphPage() {
       {/* Stats Row */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} sm={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic
               title="Nodes"
               value={stats?.nodeCount ?? 0}
@@ -286,7 +312,7 @@ export default function KnowledgeGraphPage() {
           </Card>
         </Col>
         <Col xs={12} sm={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic
               title="Edges"
               value={stats?.edgeCount ?? 0}
@@ -294,7 +320,7 @@ export default function KnowledgeGraphPage() {
           </Card>
         </Col>
         <Col xs={12} sm={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic
               title="Communities"
               value={stats?.communityCount ?? 0}
@@ -303,7 +329,7 @@ export default function KnowledgeGraphPage() {
           </Card>
         </Col>
         <Col xs={12} sm={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic
               title="God Nodes"
               value={stats?.godNodeCount ?? 0}
@@ -313,7 +339,7 @@ export default function KnowledgeGraphPage() {
       </Row>
 
       {/* Action Bar */}
-      <Card size="small" style={{ marginBottom: 16 }}>
+      <Card size="small" className="glass-card" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Button
             icon={<SyncOutlined spin={syncing} />}
@@ -351,6 +377,7 @@ export default function KnowledgeGraphPage() {
 
       {/* Graph Visualization */}
       <Card
+        className="glass-card"
         title={
           <Space>
             <NodeIndexOutlined />
@@ -389,7 +416,7 @@ export default function KnowledgeGraphPage() {
 
       {/* Node Table */}
       {displayNodes.length > 0 && (
-        <Card title="Nodes" size="small">
+        <Card title="Nodes" size="small" className="glass-card">
           <Table
             dataSource={displayNodes}
             columns={nodeColumns}

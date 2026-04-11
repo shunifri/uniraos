@@ -56,13 +56,12 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   // Agent streaming chat (SSE)
   router.post("/agent/chat/stream", requireAuth, requirePermission("chat.stream"), async (req, res) => {
     const userId = req.user!.id;
-    const { message, mode, conversationId, deepThink } = req.body as {
+    const { message, mode, conversationId } = req.body as {
       message: string;
       mode?: "auto" | "simple" | "react" | "legacy";
       conversationId?: string;
-      deepThink?: boolean;
     };
-    console.log(`   [Chat] user=${userId}, deepThink=${!!deepThink}, msgLen=${message?.length ?? 0}`);
+    console.log(`   [Chat] user=${userId}, msgLen=${message?.length ?? 0}`);
     if (!message) {
       res.status(400).json({ success: false, error: "message is required" });
       return;
@@ -170,10 +169,15 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         // 拦截 user_confirm：当 tool_result 包含 __userConfirm 时，改为发送 user_confirm 事件
         if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
           write("user_confirm", eventData.result.data);
+          // Save tool completion message
           saveMsg("tool", "等待用户确认...", {
             skillName: eventData.skillName ?? pendingToolName,
             status: "done",
             isError: false,
+          });
+          // Save user_confirm data for restoration on reload
+          saveMsg("user_confirm", JSON.stringify(eventData.result.data), {
+            skillName: eventData.skillName ?? pendingToolName,
           });
           return;
         }
@@ -189,6 +193,9 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
           const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
           const label = levelMap[eventData.level] || eventData.level;
           saveMsg("strategy", `策略: ${label}${eventData.reasoning ? " — " + eventData.reasoning : ""}`);
+        } else if (eventName === "thinking") {
+          const thinkContent = eventData.content || `正在思考 (第 ${eventData.iteration ?? ""} 轮)...`;
+          saveMsg("thinking", thinkContent);
         } else if (eventName === "text_delta") {
           currentAssistantText += eventData.text ?? "";
         } else if (eventName === "tool_call") {
@@ -279,8 +286,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         // 直接 AgentLoop 模式
         const loop = getAgentLoop(userId);
         if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        const loopChatOptions = deepThink ? { deepThink: true } : undefined;
-        for await (const event of loop.runStream(enrichedMessage, loopChatOptions)) {
+        for await (const event of loop.runStream(enrichedMessage)) {
           if (closed) break;
           processEvent(event.event, event.data);
         }
@@ -288,7 +294,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         // 默认 Orchestrator 模式（始终使用 react 策略，不走 simple）
         const orchestrator = getOrchestrator();
         if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        for await (const event of orchestrator.runStream({ message: enrichedMessage, userId, context: { deepThink } })) {
+        for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
           if (closed) break;
           processEvent(event.event, event.data);
         }

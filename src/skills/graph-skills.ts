@@ -1,4 +1,4 @@
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import { Autonomy } from "../types/index.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { SkillDefinition } from "../types/index.js";
@@ -14,7 +14,7 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
   }
 
   return [
-    defineSkill({
+    defineSystemSkill({
       name: "graph_query",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -38,7 +38,7 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "graph_path",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -59,7 +59,7 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "graph_communities",
       visible: true,
       autonomy: Autonomy.MANUAL,

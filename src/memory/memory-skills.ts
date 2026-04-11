@@ -13,7 +13,7 @@
  *
  * handler 通过 UserSessionManager + AsyncLocalStorage 动态获取当前用户的 STM/LTM 实例
  */
-import { defineSkill, Autonomy } from "../types/index.js";
+import { defineSkill, defineSystemSkill, Autonomy } from "../types/index.js";
 import type { SkillDefinition, ExecutionContext } from "../types/index.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -60,7 +60,7 @@ export function createMemorySkills(
 
   return [
     // ===== 短期记忆 Skills（对模型部分可见） =====
-    defineSkill({
+    defineSystemSkill({
       name: "stm_store",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -81,7 +81,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "stm_retrieve",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -108,7 +108,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "stm_forget",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -129,7 +129,7 @@ export function createMemorySkills(
     }),
 
     // ===== 长期记忆 Skills（对模型可见） =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_store",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -190,7 +190,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_search",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -236,14 +236,31 @@ export function createMemorySkills(
           }
         }
 
+        // 知识图谱优先搜索：先通过图谱 BFS 检索相关节点
+        let graphResults: any[] = [];
+        try {
+          const session = getSession(sessionManager);
+          if ((session as any).graphManager) {
+            const subgraph = (session as any).graphManager.querySubgraph(query, { maxNodes: limit ?? 10, maxDepth: 2 });
+            graphResults = (subgraph.nodes || []).map((n: any) => ({
+              id: n.id,
+              key: n.label,
+              value: n.properties?.value ?? n.label,
+              tags: n.tags || [],
+              summary: typeof n.properties?.value === 'string' ? n.properties.value : undefined,
+              source: 'graph',
+            }));
+          }
+        } catch { /* 图谱搜索失败不影响主流程 */ }
+
         // 为 Enhanced 后端传递额外参数
         const searchOptions: any = { tags, limit, semantic };
         if (rerank) searchOptions.rerank = true;
         if (filters) searchOptions.filters = filters;
         if (includeForgotten) searchOptions.includeForgotten = true;
 
-        const results = await ltm.search(query, searchOptions);
-        const mapped = results.map((r) => ({
+        const ltmResults = await ltm.search(query, searchOptions);
+        const ltmMapped = ltmResults.map((r) => ({
           id: r.id,
           key: r.key,
           value: r.value,
@@ -251,10 +268,20 @@ export function createMemorySkills(
           summary: r.summary,
         }));
 
+        // 合并：图谱结果优先（拓扑关联更精确），再补充 LTM 结果，按 key 去重
+        const seenKeys = new Set<string>();
+        const merged: any[] = [];
+        for (const r of [...graphResults, ...ltmMapped]) {
+          if (!seenKeys.has(r.key)) {
+            seenKeys.add(r.key);
+            merged.push(r);
+          }
+        }
+
         // 递归自指：将搜索结果缓存到 STM
-        if (engineRef && canRecurse(context, "stm_store") && mapped.length > 0) {
+        if (engineRef && canRecurse(context, "stm_store") && merged.length > 0) {
           try {
-            await engineRef.execute("stm_store", { key: cacheKey, value: mapped });
+            await engineRef.execute("stm_store", { key: cacheKey, value: merged });
           } catch {
             // 缓存存储失败不影响搜索结果
           }
@@ -262,12 +289,12 @@ export function createMemorySkills(
 
         return {
           success: true,
-          data: { query, results: mapped, count: results.length, cached: false },
+          data: { query, results: merged, count: merged.length, cached: false },
         };
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_delete",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -324,7 +351,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_list",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -359,7 +386,7 @@ export function createMemorySkills(
     }),
 
     // ===== 短期→长期 迁移 =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_consolidate",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -402,17 +429,18 @@ export function createMemorySkills(
     }),
 
     // ===== 元记忆 Skills（对模型不可见，自动执行） =====
-    defineSkill({
+    defineSystemSkill({
       name: "recall_context",
       visible: false,
       autonomy: Autonomy.AUTO_PRE,
       description: "自动在 Skill 执行前注入相关记忆到上下文",
       handler: async (params, _context) => {
-        const { stm, ltm } = getSession(sessionManager);
+        const session = getSession(sessionManager);
+        const { stm, ltm } = session;
         const skillName = (params.target as string) || (params.skillName as string) || "";
         if (!skillName) return { success: true, data: { skipped: true } };
 
-        const recallSkill = new RecallContextSkill(stm, ltm);
+        const recallSkill = new RecallContextSkill(stm, ltm, undefined, (session as any).graphManager);
         const { memories, cached } = await recallSkill.recall(skillName, params as Record<string, unknown>);
 
         return {
@@ -422,7 +450,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "memory_stats",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -462,7 +490,7 @@ export function createMemorySkills(
     }),
 
     // ===== 归档管理 Skills =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_archive",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -493,7 +521,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_archives_list",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -518,7 +546,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_restore",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -542,7 +570,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_schedule_archive",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -581,7 +609,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_search_archive",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -611,7 +639,7 @@ export function createMemorySkills(
     }),
 
     // ===== ltm_summarize（通用，两种后端均可用） =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_summarize",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -692,7 +720,7 @@ export function createMemorySkills(
 
     // ===== 增强 LTM Skills（Enhanced 后端专属） =====
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_version_history",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -732,7 +760,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_check_conflicts",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -753,8 +781,8 @@ export function createMemorySkills(
             success: true,
             data: {
               key,
-              hasConflicts: result.conflicts && result.conflicts.length > 0,
-              conflicts: (result.conflicts || [])
+              hasConflicts: result && result.length > 0,
+              conflicts: (result || [])
                 .slice(0, topN ?? 10)
                 .map((c: any) => ({
                   existingId: c.existingId,
@@ -763,7 +791,7 @@ export function createMemorySkills(
                   description: c.description,
                   severity: c.severity,
                 })),
-              count: result.conflicts?.length ?? 0,
+              count: result?.length ?? 0,
             },
           };
         } catch (err) {
@@ -781,7 +809,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_forgotten_log",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -822,7 +850,7 @@ export function createMemorySkills(
 
     // ===== Supermemory 专属 Skills（仅 supermemory 后端时可用） =====
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_profile",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -848,7 +876,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_extract_facts",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -874,7 +902,7 @@ export function createMemorySkills(
             const stored: string[] = [];
 
             // 存储提取的事实
-            for (const f of result.facts) {
+            for (const f of result) {
               const id = await ltm.store(`fact:${f.key}`, f.fact, {
                 tags: [...(tags ?? []), "fact", "extracted", ...(f.tags ?? [])],
                 summary: f.fact.substring(0, 100),
@@ -886,15 +914,15 @@ export function createMemorySkills(
             return {
               success: true,
               data: {
-                facts: result.facts.map((f) => ({
+                facts: result.map((f) => ({
                   key: f.key,
                   fact: f.fact,
                   confidence: f.confidence,
                   tags: f.tags,
                 })),
-                extracted: result.facts.length,
+                extracted: result.length,
                 stored: stored.length,
-                filtered: result.filtered || 0,
+                filtered: result.length,
               },
             };
           }
@@ -941,7 +969,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_forget_reason",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -992,7 +1020,7 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_set_expiration",
       visible: true,
       autonomy: Autonomy.MANUAL,
@@ -1062,7 +1090,7 @@ export function createMemorySkills(
     }),
 
     // ===== 垃圾回收 Skill（Guardian 级，不对模型可见） =====
-    defineSkill({
+    defineSystemSkill({
       name: "gc_collect",
       visible: false,
       autonomy: Autonomy.GUARDIAN,

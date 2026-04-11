@@ -12,7 +12,7 @@
  */
 import { readFileSync, existsSync } from "fs";
 import { resolve, extname } from "path";
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 const SAFE_BASE = resolve(process.cwd(), ".raos", "workspace");
@@ -75,7 +75,7 @@ function parseCSV(content: string, delimiter: string = ","): { headers: string[]
 function registerDocumentSkills(registry: SkillRegistry): void {
   // CSV 解析（内置，始终可用）
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "doc_read_csv",
       description:
         "解析 CSV 文件。参数: path(string, 相对于 workspace), delimiter?(string, 默认 ','), limit?(number, 最大行数), offset?(number, 跳过行数)",
@@ -112,7 +112,7 @@ function registerDocumentSkills(registry: SkillRegistry): void {
 
   // 通用文档读取（自动检测格式）
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "doc_read",
       description:
         "读取并解析文档文件（自动检测格式：PDF/Excel/Word/CSV/JSON/TXT）。参数: path(string, 相对于 workspace), options?(object)",

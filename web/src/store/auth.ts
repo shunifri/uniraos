@@ -10,8 +10,11 @@ export interface User {
   id: string;
   username: string;
   displayName: string;
+  phone?: string;
+  email?: string;
   roles: UserRole[];
   department?: { id: string; name: string; path: string };
+  permissions?: string[];
 }
 
 interface AuthState {
@@ -19,11 +22,14 @@ interface AuthState {
   user: User | null;
   isAdmin: boolean;
   isDeveloper: boolean;
+  isAnonymous: boolean;
 
   login: (username: string, password: string) => Promise<void>;
+  loginAnonymous: (phone: string) => Promise<void>;
   logout: () => void;
   checkSession: () => Promise<void>;
   setUser: (user: User) => void;
+  hasPermission: (perm: string) => boolean;
 }
 
 function computeRoles(roles: UserRole[] | string[]) {
@@ -42,6 +48,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isAdmin: false,
       isDeveloper: false,
+      isAnonymous: false,
 
       login: async (username: string, password: string) => {
         const res = await fetch('/api/auth/login', {
@@ -54,11 +61,26 @@ export const useAuthStore = create<AuthState>()(
           throw new Error(data.error || 'Login failed');
         }
         const { isAdmin, isDeveloper } = computeRoles(data.user.roles ?? []);
-        set({ token: data.token, user: data.user, isAdmin, isDeveloper });
+        set({ token: data.token, user: data.user, isAdmin, isDeveloper, isAnonymous: false });
+      },
+
+      loginAnonymous: async (phone: string) => {
+        const res = await fetch('/api/auth/anonymous', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          throw new Error(data.error || 'Anonymous login failed');
+        }
+        // 存储手机号到 localStorage，方便下次自动登录
+        localStorage.setItem('raos-anon-phone', phone);
+        set({ token: data.token, user: data.user, isAdmin: false, isDeveloper: false, isAnonymous: true });
       },
 
       logout: () => {
-        set({ token: null, user: null, isAdmin: false, isDeveloper: false });
+        set({ token: null, user: null, isAdmin: false, isDeveloper: false, isAnonymous: false });
       },
 
       checkSession: async () => {
@@ -75,7 +97,8 @@ export const useAuthStore = create<AuthState>()(
           const data = await res.json();
           const user: User = data.user ?? data;
           const { isAdmin, isDeveloper } = computeRoles(user.roles ?? []);
-          set({ user, isAdmin, isDeveloper });
+          const isAnonymous = (user.roles ?? []).some((r: any) => (typeof r === 'string' ? r : r.name) === 'anonymous');
+          set({ user, isAdmin, isDeveloper, isAnonymous });
         } catch {
           get().logout();
         }
@@ -83,7 +106,14 @@ export const useAuthStore = create<AuthState>()(
 
       setUser: (user: User) => {
         const { isAdmin, isDeveloper } = computeRoles(user.roles ?? []);
-        set({ user, isAdmin, isDeveloper });
+        const isAnonymous = (user.roles ?? []).some((r: any) => (typeof r === 'string' ? r : r.name) === 'anonymous');
+        set({ user, isAdmin, isDeveloper, isAnonymous });
+      },
+
+      hasPermission: (perm: string) => {
+        const { user, isAdmin } = get();
+        if (isAdmin) return true;
+        return user?.permissions?.includes(perm) ?? false;
       },
     }),
     {

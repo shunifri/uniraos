@@ -139,6 +139,7 @@ export default function GenealogyPage() {
       {/* Section 1: Stats Overview */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <ApartmentOutlined />
@@ -192,6 +193,7 @@ export default function GenealogyPage() {
       {/* Section 2: Tree View */}
       <Card
         size="small"
+        className="glass-card"
         title="Family Tree"
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadGenealogy} loading={loadingTree}>
@@ -216,6 +218,7 @@ export default function GenealogyPage() {
       {/* Section 3: Emergence Patterns */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <span>Emergence Patterns</span>

@@ -119,7 +119,8 @@ The function should implement the described functionality.`;
       };
     }
 
-    // 6b. Otherwise: register directly
+    // 6b. Otherwise: register directly with sandbox-wrapped generated code
+    const codeForHandler = generatedCode;
     const newSkill = {
       name: skillName,
       version: "1.0.0",
@@ -130,10 +131,14 @@ The function should implement the described functionality.`;
       retry: { maxRetries: 0, backoffMs: 1000, backoffMultiplier: 2 },
       description,
       capabilities,
-      handler: async (_params: Record<string, unknown>, _context: unknown) => ({
-        success: true,
-        data: { message: `Generated skill ${skillName} executed` },
-      }),
+      handler: async (params: Record<string, unknown>, _context: unknown) => {
+        try {
+          const result = await runInSandbox(codeForHandler, params, { timeout: 30000 });
+          return { success: result.success, data: result.data };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
     };
 
     try {

@@ -78,13 +78,19 @@ export interface LLMStreamChunk {
   };
 }
 
+/** LLM 调用选项 */
+export interface ChatOptions {
+  /** 启用深度思考/推理模式 */
+  deepThink?: boolean;
+}
+
 /** LLM Provider 接口 */
 export interface LLMProvider {
   readonly name: string;
   readonly model: string;
-  chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse>;
+  chat(messages: Message[], tools?: ToolDefinition[], options?: ChatOptions): Promise<LLMResponse>;
   /** 流式输出（可选，向后兼容） */
-  chatStream?(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<LLMStreamChunk>;
+  chatStream?(messages: Message[], tools?: ToolDefinition[], options?: ChatOptions): AsyncIterable<LLMStreamChunk>;
 }
 
 // ===== 多模态类型 =====

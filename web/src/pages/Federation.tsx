@@ -166,6 +166,7 @@ export default function FederationPage() {
       {/* Section 1: Instance Info */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <GlobalOutlined />
@@ -234,6 +235,7 @@ export default function FederationPage() {
       {/* Section 2: Peers Table */}
       <Card
         size="small"
+        className="glass-card"
         title={
           <Flex align="center" gap={8}>
             <span>Connected Peers</span>
@@ -259,6 +261,7 @@ export default function FederationPage() {
       {/* Section 3: Federation Config */}
       <Card
         size="small"
+        className="glass-card"
         title="Federation Configuration"
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadConfig}>

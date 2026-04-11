@@ -292,6 +292,179 @@ function runMigrations(db: Database.Database): void {
         CREATE INDEX idx_custom_themes_user ON custom_pptx_themes(user_id);
       `);
     },
+    // v5: 用户表增加 phone/email 列 + 菜单资源与权限
+    () => {
+      // Add phone and email columns to users table
+      try { db.exec(`ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''`); } catch (_) { /* column may already exist */ }
+      try { db.exec(`ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''`); } catch (_) { /* column may already exist */ }
+
+      // Menu resources for all top-level navigation items
+      const MENU_RESOURCES = [
+        { id: "res_menu_skills", name: "menu:skills", description: "技能管理" },
+        { id: "res_menu_chat", name: "menu:chat", description: "对话" },
+        { id: "res_menu_knowledge", name: "menu:knowledge", description: "知识库" },
+        { id: "res_menu_files", name: "menu:files", description: "文件管理" },
+        { id: "res_menu_config", name: "menu:config", description: "系统配置" },
+        { id: "res_menu_memory", name: "menu:memory", description: "记忆系统" },
+        { id: "res_menu_evolution", name: "menu:evolution", description: "进化引擎" },
+        { id: "res_menu_genealogy", name: "menu:genealogy", description: "族谱" },
+        { id: "res_menu_federation", name: "menu:federation", description: "联邦" },
+        { id: "res_menu_graph", name: "menu:graph", description: "知识图谱" },
+        { id: "res_menu_admin", name: "menu:admin", description: "系统管理" },
+      ];
+
+      const insertResource = db.prepare(`
+        INSERT OR IGNORE INTO resources (id, name, type, description) VALUES (?, ?, 'menu', ?)
+      `);
+      const insertPermission = db.prepare(`
+        INSERT OR IGNORE INTO permissions (id, name, description, resource_id, action) VALUES (?, ?, ?, ?, 'read')
+      `);
+      const assignToRoot = db.prepare(`
+        INSERT OR IGNORE INTO department_resources (department_id, resource_id) VALUES ('dept_root', ?)
+      `);
+      const assignToAdmin = db.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES ('role_admin', ?)
+      `);
+      const assignToUser = db.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES ('role_user', ?)
+      `);
+      const assignToViewer = db.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES ('role_viewer', ?)
+      `);
+
+      // Basic menus visible to all roles (user & viewer)
+      const basicMenus = ["skills", "chat", "knowledge", "files", "config"];
+
+      for (const res of MENU_RESOURCES) {
+        insertResource.run(res.id, res.name, res.description);
+        const permId = `perm_${res.name.replace(":", "_")}_read`;
+        const permName = `${res.name}.read`;
+        insertPermission.run(permId, permName, `访问${res.description}菜单`, res.id);
+        assignToRoot.run(res.id);
+        assignToAdmin.run(permId);
+
+        const menuKey = res.name.replace("menu:", "");
+        if (basicMenus.includes(menuKey)) {
+          assignToUser.run(permId);
+          assignToViewer.run(permId);
+        }
+      }
+    },
+    // v6: 共享规则表
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS share_rules (
+          id TEXT PRIMARY KEY,
+          resource_type TEXT NOT NULL CHECK(resource_type IN ('skill','kb_document','file')),
+          resource_id TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK(scope IN ('all','role','department','user')),
+          target_id TEXT,
+          permission TEXT NOT NULL CHECK(permission IN ('read','execute','write')) DEFAULT 'read',
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_share_rules_resource ON share_rules(resource_type, resource_id);
+        CREATE INDEX IF NOT EXISTS idx_share_rules_owner ON share_rules(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_share_rules_target ON share_rules(scope, target_id);
+      `);
+    },
+    // v7: 角色权限重构 — viewer→anonymous，重新分配 role_user 和 role_viewer(anonymous) 权限
+    () => {
+      // 1. 重命名 viewer → anonymous（保留 id 为 role_viewer，改名称和描述）
+      db.exec(`
+        UPDATE roles SET name = 'anonymous', description = '匿名用户（未登录）' WHERE id = 'role_viewer';
+      `);
+
+      // 2. 清除 role_user 和 role_viewer 的现有权限
+      db.exec(`
+        DELETE FROM role_permissions WHERE role_id IN ('role_user', 'role_viewer');
+      `);
+
+      // 3. 重新分配 role_user 权限
+      // API 权限: chat.execute, chat.stream, memory.read, memory.write, config.read, skills.read, skills.execute, tasks.read
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_user', id FROM permissions WHERE name IN (
+            'chat', 'chat.stream',
+            'memory.read', 'memory.write',
+            'config.read',
+            'skills.read', 'skills.execute',
+            'tasks.read'
+          );
+      `);
+
+      // role_user 菜单权限: menu:chat, menu:knowledge, menu:files, menu:memory, menu:skills, menu:config (read-only)
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_user', id FROM permissions WHERE name IN (
+            'menu:chat.read', 'menu:knowledge.read', 'menu:files.read',
+            'menu:memory.read', 'menu:skills.read', 'menu:config.read'
+          );
+      `);
+
+      // role_user Skill 权限（安全的 skills）
+      const userAllowedSkills = [
+        // 知识库
+        'kb_search', 'kb_ingest', 'kb_list', 'kb_delete', 'kb_share',
+        // 记忆
+        'stm_store', 'stm_retrieve', 'stm_forget', 'ltm_store', 'ltm_search', 'ltm_delete', 'ltm_list',
+        // 图表
+        'chart_recommend', 'chart_generate', 'chart_multi',
+        // 文档
+        'doc_read', 'doc_read_csv',
+        // 网络搜索
+        'web_search', 'web_fetch',
+        // 知识图谱
+        'graph_query', 'graph_path', 'graph_communities',
+        // 交互
+        'user_confirm',
+        // 规划
+        'plan_and_execute',
+      ];
+
+      const insertUserSkill = db.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_user', id FROM permissions WHERE name = ?
+      `);
+      for (const skill of userAllowedSkills) {
+        insertUserSkill.run(`skill:${skill}.execute`);
+      }
+
+      // 4. 重新分配 role_viewer (anonymous) 权限
+      // API 权限: chat.execute, chat.stream, skills.read, config.read
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_viewer', id FROM permissions WHERE name IN (
+            'chat', 'chat.stream',
+            'skills.read', 'config.read'
+          );
+      `);
+
+      // anonymous 菜单权限: menu:chat, menu:knowledge
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_viewer', id FROM permissions WHERE name IN (
+            'menu:chat.read', 'menu:knowledge.read'
+          );
+      `);
+
+      // anonymous Skill 权限（最小集）
+      const anonAllowedSkills = [
+        'user_confirm',
+        'kb_search', 'kb_list',
+        'chart_recommend', 'chart_generate',
+        'web_search', 'web_fetch',
+        'doc_read',
+      ];
+
+      const insertAnonSkill = db.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_viewer', id FROM permissions WHERE name = ?
+      `);
+      for (const skill of anonAllowedSkills) {
+        insertAnonSkill.run(`skill:${skill}.execute`);
+      }
+    },
   ];
 
   // 执行未应用的迁移

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Flex, Typography, Tag, Button, List, Spin, Badge, Drawer, Input, message, Segmented, Collapse } from "antd";
+import { MenuOutlined } from "@ant-design/icons";
 import { Bubble, Sender, Think, CodeHighlighter, Attachments } from "@ant-design/x";
 import type { Attachment } from "@ant-design/x/es/attachments";
 import type { AttachmentsRef } from "@ant-design/x/es/attachments";
@@ -29,6 +30,12 @@ import {
   FileMarkdownOutlined,
   BookOutlined,
   ReadOutlined,
+  ToolOutlined,
+  RightOutlined,
+  SearchOutlined,
+  BarChartOutlined,
+  DatabaseOutlined,
+  GlobalOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { apiFetch, pageImageUrl } from "@/api";
@@ -183,6 +190,7 @@ function parseMsg(m: any): ChatMsg {
     fileDownload: m.extra?.fileDownload || undefined,
     kbReferences: m.extra?.kbReferences || undefined,
     webReferences: m.extra?.webReferences || undefined,
+    resultData: m.extra?.resultData || undefined,
   };
 }
 
@@ -282,6 +290,8 @@ export default function ChatPage() {
   // 动态 PPTX 主题列表（内置 + 自定义）
   const [pptxThemes, setPptxThemes] = useState<Array<{ name: string; label: string; custom: boolean; sourceFile?: string; preview: { bg: string; title: string; accent: string } }>>([]);
   const pptxThemesFetched = useRef(false);
+  // 移动端侧边栏开关
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const setActiveConvId = (id: string | null) => {
     activeConvIdRef.current = id;
@@ -305,10 +315,13 @@ export default function ChatPage() {
     }).catch(() => {});
   }, []);
 
-  // 自动滚动到底部
+  // 自动滚动到底部 — 流式时直接跳底（无动画），避免频繁触发 smooth 导致跳动
   useEffect(() => {
     if (shouldScrollRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      const container = scrollContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
     }
   }, [messages]);
 
@@ -402,9 +415,13 @@ export default function ChatPage() {
   const handleScroll = () => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    // 加载更早消息
     if (container.scrollTop < 50 && hasMore && !loadingMore) {
       loadOlderMessages();
     }
+    // 检测用户是否在底部附近（50px 阈值）
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    shouldScrollRef.current = isAtBottom;
   };
 
   const switchConversation = (convId: string) => {
@@ -601,7 +618,8 @@ export default function ChatPage() {
 
       const userMsg: ChatMsg = { role: "user", content: text };
       shouldScrollRef.current = true;
-      setMessages((prev) => [...prev, userMsg]);
+      // 添加用户消息 + typing 指示器
+      setMessages((prev) => [...prev, userMsg, { role: "thinking" as any, content: "__typing__" }]);
       setInputValue("");
       setLoading(true);
 
@@ -648,6 +666,9 @@ export default function ChatPage() {
             let data: any;
             try { data = JSON.parse(eventData); } catch { continue; }
 
+            // 移除 typing 指示器的辅助函数
+            const removeTyping = (msgs: ChatMsg[]) => msgs.filter(m => !(m.role === "thinking" && m.content === "__typing__"));
+
             if (eventType === "text_delta") {
               if (needNewBubble) {
                 needNewBubble = false;
@@ -655,7 +676,7 @@ export default function ChatPage() {
                 const snapshot = currentText;
                 const refs = pendingKbRefs.current.length > 0 ? [...pendingKbRefs.current] : undefined;
                 const webRefs = pendingWebRefs.current.length > 0 ? [...pendingWebRefs.current] : undefined;
-                setMessages((prev) => [...prev, { role: "assistant", content: snapshot, kbReferences: refs, webReferences: webRefs }]);
+                setMessages((prev) => [...removeTyping(prev), { role: "assistant", content: snapshot, kbReferences: refs, webReferences: webRefs }]);
               } else {
                 currentText += data.text;
                 const snapshot = currentText;
@@ -704,15 +725,32 @@ export default function ChatPage() {
                 });
               }
             } else if (eventType === "strategy_selected") {
-              const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
-              const label = levelMap[data.level] || data.level;
-              setMessages((prev) => [...prev, { role: "strategy", content: `策略: ${label}${data.reasoning ? " — " + data.reasoning : ""}` }]);
+              const levelMap: Record<string, string> = {
+                simple: "💬 直接为你解答",
+                react: "🔍 正在分析，将逐步为你处理",
+                team: "👥 多角度协作分析中",
+              };
+              const label = levelMap[data.level] || `🤖 处理中`;
+              setMessages((prev) => [...removeTyping(prev), { role: "strategy", content: label }]);
             } else if (eventType === "thinking") {
-              setMessages((prev) => [...prev, { role: "thinking", content: `正在思考 (第 ${data.iteration} 轮)...` }]);
+              // 显示思考内容（如果有 content 字段则显示思考过程）
+              const thinkContent = data.content || `正在思考 (第 ${data.iteration ?? ""} 轮)...`;
+              setMessages((prev) => {
+                const cleaned = removeTyping(prev);
+                // 合并连续思考消息
+                const lastIdx = cleaned.length - 1;
+                if (lastIdx >= 0 && cleaned[lastIdx].role === "thinking" && cleaned[lastIdx].content !== "__typing__") {
+                  const next = [...cleaned];
+                  next[lastIdx] = { ...next[lastIdx], content: next[lastIdx].content + "\n" + thinkContent };
+                  return next;
+                }
+                return [...cleaned, { role: "thinking", content: thinkContent }];
+              });
             } else if (eventType === "tool_start") {
-              setMessages((prev) => [...prev, { role: "tool", content: `正在使用 ${data.skillName}...`, skillName: data.skillName, status: "running" }]);
+              setMessages((prev) => [...removeTyping(prev), { role: "tool", content: `正在使用 ${data.skillName}...`, skillName: data.skillName, status: "running" }]);
             } else if (eventType === "tool_result") {
               const r = data.result;
+              console.log("[CHART-DEBUG] tool_result:", data.skillName, "hasOption:", !!r?.data?.option, "hasChartType:", !!r?.data?.chartType, "hasCharts:", !!r?.data?.charts);
               let summary = "";
               let chartOptions: Record<string, unknown>[] | undefined;
 
@@ -752,10 +790,16 @@ export default function ChatPage() {
               }
             } else if (eventType === "user_confirm") {
               const confirmData = data;
-              setMessages(prev => [...prev, {
-                role: "user_confirm" as any,
-                content: JSON.stringify(confirmData),
-              }]);
+              setMessages(prev => {
+                const next = [...prev];
+                // Update the preceding tool_start (running) message to "done" so loading stops
+                const toolIdx = next.findLastIndex((m) => m.role === "tool" && m.status === "running");
+                if (toolIdx >= 0) {
+                  next[toolIdx] = { ...next[toolIdx], content: "等待用户确认...", status: "done" };
+                }
+                next.push({ role: "user_confirm" as any, content: JSON.stringify(confirmData) });
+                return next;
+              });
             } else if (eventType === "error") {
               setMessages((prev) => [...prev, { role: "assistant", content: data.error, isError: true }]);
             }
@@ -783,18 +827,17 @@ export default function ChatPage() {
     apiFetch("/api/agent/clear", { method: "POST" }).catch(() => {});
   };
 
-  const toolIcon = (status?: string, isError?: boolean) => {
-    if (status === "running") return <LoadingOutlined style={{ color: "#1677ff" }} />;
-    if (isError || status === "error") return <CloseCircleOutlined style={{ color: "#ff4d4f" }} />;
-    return <CheckCircleOutlined style={{ color: "#52c41a" }} />;
-  };
-
   return (
     <Flex style={{ height: "calc(100vh - 64px - 48px)", width: "100%" }}>
+      {/* Mobile sidebar overlay */}
+      <div
+        className={`mobile-sidebar-overlay ${mobileSidebarOpen ? "visible" : ""}`}
+        onClick={() => setMobileSidebarOpen(false)}
+      />
       {/* Sidebar */}
-      <div style={{ width: 240, borderRight: "1px solid var(--ant-color-border)", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+      <div className={`glass-card chat-sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`} style={{ width: 240, borderRight: "1px solid var(--ant-color-border)", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", borderRadius: 0 }}>
         <div style={{ padding: "12px 12px 8px" }}>
-          <Button type="primary" icon={<PlusOutlined />} block onClick={newChat}>{t("create")}</Button>
+          <Button type="primary" icon={<PlusOutlined />} block onClick={() => { newChat(); setMobileSidebarOpen(false); }}>{t("create")}</Button>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "0 4px" }}>
           <List
@@ -802,8 +845,9 @@ export default function ChatPage() {
             split={false}
             renderItem={(conv) => (
               <List.Item
-                style={{ padding: "8px 12px", cursor: "pointer", borderRadius: 6, background: conv.id === activeConvId ? "var(--ant-color-primary-bg)" : undefined, marginBottom: 2 }}
-                onClick={() => switchConversation(conv.id)}
+                className={conv.id === activeConvId ? "conv-active" : ""}
+                style={{ padding: "8px 12px", cursor: "pointer", borderRadius: 6, marginBottom: 2 }}
+                onClick={() => { switchConversation(conv.id); setMobileSidebarOpen(false); }}
               >
                 <Flex align="center" gap={8} style={{ width: "100%", minWidth: 0 }}>
                   <MessageOutlined style={{ flexShrink: 0, opacity: 0.5 }} />
@@ -817,13 +861,21 @@ export default function ChatPage() {
       </div>
 
       {/* Main chat */}
-      <Flex vertical style={{ flex: 1, maxWidth: 900, margin: "0 auto", width: "100%", minWidth: 0 }}>
+      <Flex vertical className="chat-main" style={{ flex: 1, maxWidth: 900, margin: "0 auto", width: "100%", minWidth: 0, overflow: "hidden" }}>
         {/* Messages */}
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          style={{ flex: 1, overflow: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 12 }}
+          style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "24px 20px", display: "flex", flexDirection: "column", gap: 16 }}
         >
+          {/* Mobile sidebar toggle */}
+          <Button
+            className="mobile-menu-btn"
+            type="text"
+            icon={<MenuOutlined />}
+            onClick={() => setMobileSidebarOpen(true)}
+            style={{ alignSelf: "flex-start", marginBottom: -8 }}
+          />
           {/* 加载更多指示器 */}
           {hasMore && (
             <Flex justify="center" style={{ padding: "8px 0" }}>
@@ -834,11 +886,13 @@ export default function ChatPage() {
           )}
 
           {messages.length === 0 && !hasMore && (
-            <Flex vertical align="center" justify="center" style={{ flex: 1, opacity: 0.5 }}>
-              <RobotOutlined style={{ fontSize: 48, marginBottom: 16 }} />
-              <Text type="secondary">{t("chat_empty")}</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t("chat_empty_sub")}</Text>
-            </Flex>
+            <div className="chat-empty" style={{ textAlign: "center", margin: "auto" }}>
+              <img src="/ai-avatar.png" alt="AI" style={{ width: 72, height: 72, borderRadius: 20, margin: "0 auto 20px", display: "block", boxShadow: "0 8px 32px rgba(139, 92, 246, 0.25)" }} />
+              <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
+                <span className="text-gradient">RAOS 智能助手</span>
+              </div>
+              <div style={{ color: "#94A3B8", fontSize: 14 }}>有什么我可以帮你的？</div>
+            </div>
           )}
           {messages.map((msg, i) => {
             if (msg.role === "user") {
@@ -868,6 +922,7 @@ export default function ChatPage() {
                   <Bubble
                     key={msg.id ?? `m${i}`}
                     placement="end"
+                    className="user-bubble"
                     content={textOnly || " "}
                     contentRender={(content) => {
                       const getExt = (name: string) => {
@@ -950,7 +1005,7 @@ export default function ChatPage() {
                       </div>
                       );
                     }}
-                    avatar={<div style={{ width: 32, height: 32, borderRadius: "50%", background: "#1677ff", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><UserOutlined /></div>}
+                    avatar={<div style={{ width: 34, height: 34, borderRadius: 12, background: 'linear-gradient(135deg, #667eea, #764ba2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14, boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)' }}><UserOutlined /></div>}
                   />
                 );
               }
@@ -959,46 +1014,106 @@ export default function ChatPage() {
                 <Bubble
                   key={msg.id ?? `m${i}`}
                   placement="end"
+                  className="user-bubble"
                   content={msg.content}
-                  avatar={<div style={{ width: 32, height: 32, borderRadius: "50%", background: "#1677ff", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><UserOutlined /></div>}
+                  avatar={<div style={{ width: 34, height: 34, borderRadius: 12, background: 'linear-gradient(135deg, #667eea, #764ba2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14, boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)' }}><UserOutlined /></div>}
                 />
               );
             }
             if (msg.role === "thinking") {
+              // Typing 指示器
+              if (msg.content === "__typing__") {
+                return (
+                  <div key={msg.id ?? `m${i}`} style={{ display: "flex", gap: 12, alignItems: "center", marginLeft: 4, animation: "fade-in-up 0.3s ease-out" }}>
+                    <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10 }} />
+                    <div style={{ display: "flex", gap: 4, padding: "10px 16px", borderRadius: 16, background: "rgba(139, 92, 246, 0.06)" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#8B5CF6", opacity: 0.6, animation: "pulse-border 1.2s infinite" }} />
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#A78BFA", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.2s" }} />
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#C4B5FD", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.4s" }} />
+                    </div>
+                  </div>
+                );
+              }
+              // 思考内容 — 内联小标签，点击可展开
               return (
-                <Flex key={msg.id ?? `m${i}`} justify="center" style={{ padding: "2px 0" }}>
-                  <Tag icon={<BulbOutlined />} color="processing" style={{ fontSize: 11 }}>{msg.content}</Tag>
-                </Flex>
+                <div key={msg.id ?? `m${i}`} style={{ marginLeft: 46, padding: "2px 0" }}>
+                  <Collapse ghost size="small" defaultActiveKey={[]} style={{ width: "fit-content" }} items={[{
+                    key: "think",
+                    label: (
+                      <span className="strategy-badge" style={{ background: "linear-gradient(135deg, rgba(139, 92, 246, 0.06), rgba(236, 72, 153, 0.04))" }}>
+                        <BulbOutlined style={{ fontSize: 11 }} />
+                        深度思考
+                      </span>
+                    ),
+                    children: (
+                      <Text style={{ fontSize: 12, color: "#64748B", whiteSpace: "pre-wrap", lineHeight: 1.6, display: "block", maxHeight: 200, overflow: "auto", padding: "8px 12px", background: "rgba(139,92,246,0.03)", borderRadius: 10 }}>{msg.content}</Text>
+                    ),
+                  }]} />
+                </div>
               );
             }
             if (msg.role === "strategy") {
               return (
-                <Flex key={msg.id ?? `m${i}`} justify="center" style={{ padding: "2px 0" }}>
-                  <Tag icon={<BulbOutlined />} color="purple" style={{ fontSize: 11 }}>{msg.content}</Tag>
+                <Flex key={msg.id ?? `m${i}`} justify="center" style={{ padding: "4px 0" }}>
+                  <span className="strategy-badge">
+                    <BulbOutlined style={{ fontSize: 12 }} />
+                    {msg.content}
+                  </span>
                 </Flex>
               );
             }
             if (msg.role === "tool") {
+              // 工具调用：嵌入式可折叠行（参考 ChatGPT/Kimi 风格）
+              const toolIcon = msg.skillName?.includes("search") ? <SearchOutlined />
+                : msg.skillName?.includes("kb_") ? <FileTextOutlined />
+                : msg.skillName?.includes("web_") ? <GlobalOutlined />
+                : msg.skillName?.includes("chart") ? <BarChartOutlined />
+                : msg.skillName?.includes("file") ? <FileOutlined />
+                : msg.skillName?.includes("db_") || msg.skillName?.includes("mysql") ? <DatabaseOutlined />
+                : <ToolOutlined />;
+              const isRunning = msg.status === "running";
+              const toolLabel = msg.skillName?.replace(/_/g, " ") ?? "tool";
+              const summary = msg.content && msg.content !== "完成" && msg.content !== "失败" ? msg.content : "";
+
               return (
-                <div key={msg.id ?? `m${i}`}>
-                  <Flex align="center" gap={6} style={{ padding: "2px 16px" }}>
-                    {toolIcon(msg.status, msg.isError)}
-                    <Tag color={msg.isError ? "error" : msg.status === "running" ? "processing" : "success"} style={{ fontSize: 11, margin: 0 }}>{msg.skillName}</Tag>
-                    <Text type={msg.isError ? "danger" : "secondary"} style={{ fontSize: 12 }}>{msg.content}</Text>
-                  </Flex>
-                  {msg.resultData && !msg.chartOptions && !msg.fileDownload && (
-                    <div style={{ padding: "4px 16px 4px 40px" }}>
-                      <Collapse size="small" ghost items={[{
-                        key: "detail",
-                        label: <Text type="secondary" style={{ fontSize: 11 }}>查看详情</Text>,
-                        children: (
-                          <pre style={{ fontSize: 11, maxHeight: 200, overflow: "auto", background: "#f5f5f5", padding: 8, borderRadius: 4, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                            {JSON.stringify(msg.resultData, null, 2)}
-                          </pre>
-                        ),
-                      }]} />
-                    </div>
-                  )}
+                <div key={msg.id ?? `m${i}`} style={{ marginLeft: 46, animation: 'fade-in-up 0.3s ease-out' }}>
+                  <Collapse
+                    ghost
+                    size="small"
+                    expandIcon={({ isActive }) => (
+                      <span style={{ transition: 'transform 0.3s', display: 'inline-block', transform: isActive ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                        <RightOutlined style={{ fontSize: 10, color: '#94A3B8' }} />
+                      </span>
+                    )}
+                    items={[{
+                      key: "tool",
+                      label: (
+                        <Flex align="center" gap={10} style={{ padding: '2px 0', overflow: 'hidden', minWidth: 0 }}>
+                          <span style={{ color: isRunning ? '#667eea' : msg.isError ? '#EF4444' : '#64748B', fontSize: 15, flexShrink: 0 }}>
+                            {isRunning ? <LoadingOutlined spin /> : toolIcon}
+                          </span>
+                          <Text style={{ fontSize: 14, color: '#334155', fontWeight: 500, flexShrink: 0 }}>{toolLabel}</Text>
+                          {summary && (
+                            <Text style={{ fontSize: 13, color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+                              {summary.length > 60 ? summary.slice(0, 60) + "..." : summary}
+                            </Text>
+                          )}
+                        </Flex>
+                      ),
+                      children: msg.resultData ? (
+                        <pre style={{ fontSize: 12, maxHeight: 240, overflow: 'auto', background: '#F8FAFC', padding: 12, borderRadius: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#475569', border: '1px solid #E2E8F0', margin: '4px 0' }}>
+                          {JSON.stringify(msg.resultData, null, 2)}
+                        </pre>
+                      ) : (
+                        <Text type="secondary" style={{ fontSize: 12 }}>{msg.content || "无详情"}</Text>
+                      ),
+                    }]}
+                    style={{
+                      background: isRunning ? 'rgba(102, 126, 234, 0.04)' : msg.isError ? 'rgba(239, 68, 68, 0.04)' : '#F8FAFC',
+                      borderRadius: 12,
+                      border: `1px solid ${isRunning ? 'rgba(102, 126, 234, 0.12)' : msg.isError ? 'rgba(239, 68, 68, 0.12)' : '#E2E8F0'}`,
+                    }}
+                  />
                   {msg.chartOptions && msg.chartOptions.length > 0 && (
                     <div style={{ padding: "8px 16px" }}>
                       {msg.chartOptions.map((opt, ci) => (
@@ -1286,8 +1401,8 @@ export default function ChatPage() {
               const data = JSON.parse(msg.content);
               const isDisabled = confirmedCards.has(data.confirmId);
               return (
+                <div key={msg.id ?? `m${i}`} style={{ marginLeft: 46 }}>
                 <ConfirmCard
-                  key={msg.id ?? `m${i}`}
                   confirmId={data.confirmId}
                   type={data.type}
                   title={data.title}
@@ -1306,6 +1421,19 @@ export default function ChatPage() {
                         body: JSON.stringify({ confirmId, response }),
                       });
                       setConfirmedCards(prev => new Set(prev).add(confirmId));
+                      // 更新前面 tool 消息的文字为用户选择内容
+                      const label = (response as any)?.selectedLabel || (response as any)?.selected?.map((s: any) => s.label).join(", ") || "已确认";
+                      setMessages(prev => {
+                        const next = [...prev];
+                        // 从当前 confirm 消息往前找最近的 user_confirm tool
+                        for (let j = next.length - 1; j >= 0; j--) {
+                          if (next[j].role === "tool" && next[j].skillName === "user_confirm" && next[j].content === "等待用户确认...") {
+                            next[j] = { ...next[j], content: `已选择: ${label}` };
+                            break;
+                          }
+                        }
+                        return next;
+                      });
                     } catch (err) {
                       console.error("Confirm failed:", err);
                     }
@@ -1318,11 +1446,23 @@ export default function ChatPage() {
                         body: JSON.stringify({ confirmId, cancelled: true }),
                       });
                       setConfirmedCards(prev => new Set(prev).add(confirmId));
+                      // 更新 tool 消息为已取消
+                      setMessages(prev => {
+                        const next = [...prev];
+                        for (let j = next.length - 1; j >= 0; j--) {
+                          if (next[j].role === "tool" && next[j].skillName === "user_confirm" && next[j].content === "等待用户确认...") {
+                            next[j] = { ...next[j], content: "已取消" };
+                            break;
+                          }
+                        }
+                        return next;
+                      });
                     } catch (err) {
                       console.error("Cancel failed:", err);
                     }
                   }}
                 />
+                </div>
               );
             }
             if (msg.role === "system") {
@@ -1334,16 +1474,14 @@ export default function ChatPage() {
             const refs = msg.kbReferences;
             return (
               <div key={msg.id ?? `m${i}`}>
-                <Bubble
-                  placement="start"
-                  content={bubbleContent}
-                  avatar={<div style={{ width: 32, height: 32, borderRadius: "50%", background: "#52c41a", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><RobotOutlined /></div>}
-                  loading={isStreaming && !msg.content}
-                  contentRender={(content) => {
-                    const md = typeof content === "string" ? content : String(content ?? "");
-                    return (
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', animation: 'fade-in-up 0.3s ease-out' }}>
+                  <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {isStreaming && !msg.content ? (
+                      <Spin size="small" />
+                    ) : (
                       <XMarkdown
-                        content={preprocessFootnotes(md)}
+                        content={preprocessFootnotes(bubbleContent)}
                         streaming={{ hasNextChunk: isStreaming }}
                         components={{
                           ...markdownComponents,
@@ -1361,9 +1499,9 @@ export default function ChatPage() {
                         }}
                         openLinksInNewTab
                       />
-                    );
-                  }}
-                />
+                    )}
+                  </div>
+                </div>
                 {refs && refs.length > 0 && !loading && (() => {
                   // 按文档去重，合并引用编号
                   const docMap = new Map<string, { docName: string; indices: number[]; ref: KbReference }>();
@@ -1399,43 +1537,36 @@ export default function ChatPage() {
                           return (
                             <div
                               key={docId}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 10,
-                                padding: "8px 14px", borderRadius: 10,
-                                background: "rgba(255,255,255,0.95)",
-                                border: "1px solid rgba(0,0,0,0.06)",
-                                boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
-                                cursor: "pointer", minWidth: 180, maxWidth: 280, flexShrink: 0,
-                                transition: "box-shadow 0.2s, border-color 0.2s",
-                              }}
-                              onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.12)"; e.currentTarget.style.borderColor = meta.color; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.06)"; e.currentTarget.style.borderColor = "rgba(0,0,0,0.06)"; }}
+                              className="kb-ref-card"
                               onClick={() => { setViewingRefs(refs); setViewingRefIndex(indices[0]); }}
                             >
-                              <div style={{
-                                width: 36, height: 36, borderRadius: 8,
-                                background: meta.bg,
-                                display: "flex", alignItems: "center", justifyContent: "center",
-                                fontSize: 18, flexShrink: 0,
-                              }}>
-                                {getFileIcon("." + ext)}
-                              </div>
-                              <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="decor-circle" style={{ background: meta.color }} />
+                              <Flex align="center" gap={10}>
                                 <div style={{
-                                  fontSize: 12, fontWeight: 500, color: "#333",
-                                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                                  lineHeight: 1.3,
-                                }}>{docName}</div>
-                                <Flex align="center" gap={6} style={{ marginTop: 2 }}>
-                                  <span style={{
-                                    fontSize: 10, fontWeight: 600, color: meta.color,
-                                    background: meta.bg, padding: "1px 6px", borderRadius: 4,
-                                  }}>{meta.label}</span>
-                                  {indices.length > 1 && (
-                                    <span style={{ fontSize: 10, color: "#999" }}>{indices.length} 处引用</span>
-                                  )}
-                                </Flex>
-                              </div>
+                                  width: 36, height: 36, borderRadius: 8,
+                                  background: meta.bg,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  fontSize: 18, flexShrink: 0,
+                                }}>
+                                  {getFileIcon("." + ext)}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{
+                                    fontSize: 12, fontWeight: 500, color: "#333",
+                                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                    lineHeight: 1.3,
+                                  }}>{docName}</div>
+                                  <Flex align="center" gap={6} style={{ marginTop: 2 }}>
+                                    <span style={{
+                                      fontSize: 10, fontWeight: 600, color: meta.color,
+                                      background: meta.bg, padding: "1px 6px", borderRadius: 4,
+                                    }}>{meta.label}</span>
+                                    {indices.length > 1 && (
+                                      <span style={{ fontSize: 10, color: "#999" }}>{indices.length} 处引用</span>
+                                    )}
+                                  </Flex>
+                                </div>
+                              </Flex>
                             </div>
                           );
                         })}
@@ -1497,7 +1628,7 @@ export default function ChatPage() {
         </div>
 
         {/* Sender with Attachments Header */}
-        <div style={{ borderTop: "1px solid var(--ant-color-border)", flexShrink: 0, padding: "12px 16px" }}>
+        <div className="chat-sender-area">
           <Sender
             ref={senderRef}
             placeholder={hasParsingAttachments ? "文档解析中，请稍候..." : t("chat_placeholder")}

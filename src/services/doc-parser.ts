@@ -70,17 +70,27 @@ export interface PageResult {
 
 /**
  * 通过大模型从文档内容中自动提取标签
+ * @param existingTags 已有标签列表，AI 会优先从中选择匹配的标签，避免重复创建
  */
-export async function extractTags(content: string, visionConfig: VisionModelConfig): Promise<string[]> {
+export async function extractTags(
+  content: string, 
+  visionConfig: VisionModelConfig,
+  existingTags: string[] = []
+): Promise<string[]> {
   // 截取前 3000 字符用于标签提取，避免 token 过多
   const snippet = content.length > 3000 ? content.substring(0, 3000) : content;
+
+  // 构建提示词，如果存在已有标签，告诉 AI 优先使用
+  const existingTagsPrompt = existingTags.length > 0
+    ? `\n\n系统已有以下标签（请优先从中选择匹配的标签，不要重复创建新标签）：\n[${existingTags.join(", ")}]`
+    : "";
 
   const body = {
     model: visionConfig.model,
     messages: [
       {
         role: "user",
-        content: `请从以下文档内容中提取 3-8 个关键分类标签。标签应简短（2-6个字），涵盖文档主题、行业、类型等维度。
+        content: `请从以下文档内容中提取 3-8 个关键分类标签。标签应简短（2-6个字），涵盖文档主题、行业、类型等维度。${existingTagsPrompt}
 
 仅返回 JSON 数组格式，例如：["标签1", "标签2", "标签3"]
 不要包含任何解释文字。
@@ -938,8 +948,13 @@ const TEXT_EXTS = new Set([".txt", ".md", ".log", ".yml", ".yaml", ".toml", ".in
  *
  * @param filePath 文件绝对路径
  * @param visionConfig 视觉模型配置（可选，PDF/Word/PPT/图片 OCR 需要）
+ * @param existingTags 已有标签列表（可选），用于指导 AI 优先使用已有标签，避免重复创建
  */
-export async function parseDocument(filePath: string, visionConfig: VisionModelConfig | null = null): Promise<DocParseResult> {
+export async function parseDocument(
+  filePath: string, 
+  visionConfig: VisionModelConfig | null = null,
+  existingTags: string[] = []
+): Promise<DocParseResult> {
   if (!existsSync(filePath)) {
     return { success: false, format: "unknown", content: "", error: `文件不存在: ${filePath}` };
   }
@@ -964,7 +979,7 @@ export async function parseDocument(filePath: string, visionConfig: VisionModelC
   // 解析成功且有视觉模型时，自动提取标签
   if (result.success && visionConfig && result.content.length > 0) {
     try {
-      result.tags = await extractTags(result.content, visionConfig);
+      result.tags = await extractTags(result.content, visionConfig, existingTags);
     } catch {
       // 标签提取失败不影响主流程
     }

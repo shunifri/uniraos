@@ -23,6 +23,7 @@ import type {
   FederationEvent,
   FederationEventHandler,
 } from "./types.js";
+import { log } from "../utils/logger.js";
 
 // ===== 内置策略 =====
 
@@ -280,10 +281,16 @@ export class EvolutionEngine {
 
   /** 响应式检测：指标恶化时立即触发进化循环 */
   checkAndTrigger(): void {
-    const degraded = this.metrics.checkDegradation?.(0.3);
-    if (degraded && degraded.length > 0) {
-      // Trigger immediate cycle
-      this.runCycle().catch(() => {});
+    try {
+      const degraded = this.metrics.checkDegradation?.(0.3);
+      if (degraded && Array.isArray(degraded) && degraded.length > 0) {
+        log("info", "evolution.degradation_detected", { count: degraded.length, skills: degraded.map((d: any) => d.skillName ?? d) });
+        this.runCycle().catch((err) => {
+          log("error", "evolution.reactive_cycle_failed", { error: err instanceof Error ? err.message : String(err) });
+        });
+      }
+    } catch (err) {
+      log("error", "evolution.check_trigger_failed", { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -304,7 +311,8 @@ export class EvolutionEngine {
       try {
         const actions = await strategy.analyze(context);
         return actions;
-      } catch {
+      } catch (err) {
+        log("warn", "evolution.strategy_failed", { strategy: strategy.name, error: err instanceof Error ? err.message : String(err) });
         return [];
       }
     });
@@ -371,10 +379,13 @@ export class EvolutionEngine {
   async executeAction(action: EvolutionAction): Promise<{ success: boolean; message: string }> {
     // 进化控制器检查
     if (action.type === "adopt" || action.type === "generate") {
+      const capabilities = Array.isArray(action.payload?.capabilities)
+        ? (action.payload.capabilities as string[])
+        : [];
       const check = this.evolutionController.canGenerate(
         action.skillName,
         "evolution-engine",
-        (action.payload.capabilities as string[]) ?? [],
+        capabilities,
       );
       if (!check.allowed) {
         const result = { success: false, message: `Evolution controller blocked: ${check.reason}` };
@@ -405,6 +416,10 @@ export class EvolutionEngine {
       });
 
       this.executedActions.push({ ...action, executedAt: Date.now(), result });
+      // 限制历史记录大小，防止内存泄漏
+      if (this.executedActions.length > 500) {
+        this.executedActions = this.executedActions.slice(-300);
+      }
 
       // 记录到进化控制器
       if (result.success && (action.type === "adopt" || action.type === "generate")) {

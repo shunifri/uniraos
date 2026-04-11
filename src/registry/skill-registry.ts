@@ -6,10 +6,37 @@ import {
 } from "../utils/errors.js";
 import { validateDAG } from "./dag-validator.js";
 
+/** Skill 变更事件 */
+export interface SkillRegistryEvent {
+  type: "registered" | "unregistered" | "version_switched";
+  skillName: string;
+  skill?: SkillDefinition;
+}
+
+type EventListener = (event: SkillRegistryEvent) => void;
+
 export class SkillRegistry {
   private skills = new Map<string, SkillDefinition>();
   /** 多版本存储: name → version → SkillDefinition */
   private versions = new Map<string, Map<string, SkillDefinition>>();
+  private listeners: Set<EventListener> = new Set();
+
+  /** 订阅 Skill 变更事件 */
+  onChange(listener: EventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** 触发事件 */
+  private emit(event: SkillRegistryEvent): void {
+    this.listeners.forEach((listener) => {
+      try {
+        listener(event);
+      } catch {
+        // 忽略监听器错误
+      }
+    });
+  }
 
   /** 注册 Skill，自动验证依赖图 */
   register(skill: SkillDefinition): void {
@@ -31,6 +58,9 @@ export class SkillRegistry {
       this.versions.set(skill.name, new Map());
     }
     this.versions.get(skill.name)!.set(skill.version, skill);
+
+    // 触发事件
+    this.emit({ type: "registered", skillName: skill.name, skill });
   }
 
   /** 注册同名 Skill 的新版本（旧版本保留但不再活跃） */
@@ -67,6 +97,9 @@ export class SkillRegistry {
     const skill = versionMap.get(version);
     if (!skill) throw new SkillNotFoundError(`${name}@${version}`);
     this.skills.set(name, skill);
+
+    // 触发事件
+    this.emit({ type: "version_switched", skillName: name, skill });
   }
 
   /** 获取某个 Skill 的所有版本 */
@@ -88,6 +121,9 @@ export class SkillRegistry {
 
     this.skills.delete(name);
     this.versions.delete(name);
+
+    // 触发事件
+    this.emit({ type: "unregistered", skillName: name });
   }
 
   /** 查找 Skill */
@@ -110,6 +146,35 @@ export class SkillRegistry {
   /** 列出对模型可见的 Skill */
   listVisible(): SkillDefinition[] {
     return this.list().filter((s) => s.visible);
+  }
+
+  /** 列出特定用户可用的 Skill（系统 + 自己的 + 共享给自己的） */
+  listForUser(userId: string, sharedSkillNames?: string[]): SkillDefinition[] {
+    return this.list().filter(s =>
+      s.isSystem !== false || // 系统 Skill
+      !s.owner || // 无 owner（系统 Skill）
+      s.owner === userId || // 自己的
+      (sharedSkillNames && sharedSkillNames.includes(s.name)) // 共享的
+    );
+  }
+
+  /** 列出特定用户可见的 Skill（用于 Tool Bridge） */
+  listVisibleForUser(userId: string, sharedSkillNames?: string[]): SkillDefinition[] {
+    return this.listForUser(userId, sharedSkillNames).filter(s => s.visible);
+  }
+
+  /** 按权限列表过滤 Skill（用于 role-based skill 装载） */
+  listByPermissions(permissions: string[]): SkillDefinition[] {
+    const permSet = new Set(permissions);
+    // 检查是否有通配符权限
+    const hasWildcard = permSet.has("skill:*.execute") || permSet.has("skill:*.read");
+    if (hasWildcard) return this.list();
+    return this.list().filter(s => permSet.has(`skill:${s.name}.execute`));
+  }
+
+  /** 按权限列表过滤可见 Skill */
+  listVisibleByPermissions(permissions: string[]): SkillDefinition[] {
+    return this.listByPermissions(permissions).filter(s => s.visible);
   }
 
   /** 获取 Skill 数量 */

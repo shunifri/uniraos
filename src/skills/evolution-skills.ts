@@ -7,7 +7,7 @@
  * - evolution_red_lines: Manage red line constraints
  * - evolution_check: Dry-run check if hypothetical skill generation would pass constraints
  */
-import { defineSkill, Autonomy } from "../types/index.js";
+import { defineSkill, defineSystemSkill, Autonomy } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { EvolutionController } from "../engine/evolution-controller.js";
 import type { EmergenceDetector } from "../engine/emergence-detector.js";
@@ -18,7 +18,7 @@ export function createEvolutionSkills(
 ): SkillDefinition[] {
   return [
     // ===== evolution_genealogy: Query skill genealogy =====
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_genealogy",
       description: `Query the skill genealogy tree.
 Params:
@@ -84,7 +84,7 @@ Params:
     }),
 
     // ===== evolution_emergence_report: Get emergence detection report =====
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_emergence_report",
       description: `Get emergence detection report showing detected patterns.
 Params:
@@ -117,7 +117,7 @@ Params:
     }),
 
     // ===== evolution_red_lines: Manage red line constraints =====
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_red_lines",
       description: `Manage red line constraints for skill generation safety.
 Params:
@@ -205,7 +205,7 @@ Params:
     }),
 
     // ===== evolution_check: Dry-run check if skill generation would pass constraints =====
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_check",
       description: `Dry-run check if a hypothetical skill generation would pass all constraints.
 Params:

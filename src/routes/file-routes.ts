@@ -7,6 +7,8 @@ import { getDb } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
 import { extractPptxStyle } from "../services/pptx-style-extractor.js";
 import { getKnowledgeBase } from "../skills/knowledge-skills.js";
+import { ShareRepository } from "../db/share-repository.js";
+import { getUserRoles } from "../db/user-repository.js";
 import type { RouteDependencies } from "./index.js";
 
 const WS_BASE = join(process.cwd(), ".raos", "workspace");
@@ -825,6 +827,215 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     } catch {
       res.json({ success: true, kbNames: [], kbDocs: {} });
     }
+  });
+
+  // Shared files - 获取分享给我的文件列表
+  router.get("/files/shared", requireAuth, (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const roles = getUserRoles(userId);
+      const roleIds = roles.map((r) => r.id);
+
+      // 获取用户部门路径
+      const userRow = getDb()
+        .prepare("SELECT department_id FROM users WHERE id = ?")
+        .get(userId) as { department_id: string } | undefined;
+      let deptPath = "/";
+      if (userRow?.department_id) {
+        const deptRow = getDb()
+          .prepare("SELECT path FROM departments WHERE id = ?")
+          .get(userRow.department_id) as { path: string } | undefined;
+        if (deptRow) deptPath = deptRow.path;
+      }
+
+      // 查询分享给我的文件
+      const shareRepo = new ShareRepository(getDb());
+      const sharedFileIds = shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+
+      // 获取文件详情（从 upload_records 表或文件系统）
+      const files: Array<{
+        id: string;
+        name: string;
+        path: string;
+        size: number;
+        owner: string;
+        ownerName?: string;
+        sharedAt: number;
+        permission: string;
+      }> = [];
+
+      // 从 upload_records 查询文件信息
+      if (sharedFileIds.length > 0) {
+        const db = getDb();
+        for (const fileId of sharedFileIds) {
+          // 尝试从 upload_records 获取
+          const uploadRow = db
+            .prepare("SELECT * FROM upload_records WHERE id = ? OR file_path LIKE ?")
+            .get(fileId, `%${fileId}%`) as any;
+
+          if (uploadRow) {
+            files.push({
+              id: uploadRow.id,
+              name: uploadRow.original_name || uploadRow.file_path.split("/").pop() || fileId,
+              path: uploadRow.file_path,
+              size: uploadRow.file_size || 0,
+              owner: uploadRow.uploaded_by || "unknown",
+              sharedAt: uploadRow.created_at || Date.now(),
+              permission: "read", // 默认可读
+            });
+          } else {
+            // 如果找不到记录，尝试从文件系统获取（简化处理）
+            files.push({
+              id: fileId,
+              name: fileId.split("/").pop() || fileId,
+              path: fileId,
+              size: 0,
+              owner: "unknown",
+              sharedAt: Date.now(),
+              permission: "read",
+            });
+          }
+        }
+      }
+
+      res.json({ success: true, files, total: files.length });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // Shared files tree - 用于前端展示"共享文件"虚拟文件夹
+  router.get("/files/tree-with-shared", requireAuth, (req, res) => {
+    interface TreeNode {
+      key: string;
+      title: string;
+      isLeaf: boolean;
+      children?: TreeNode[];
+      size?: number;
+      modifiedAt?: number;
+      ext?: string;
+      isShared?: boolean;
+      owner?: string;
+    }
+
+    const EXCLUDED_DIRS = new Set(["excel_content", "node_modules", "__MACOSX", "Excel解包文件"]);
+    const EXCLUDED_EXTS = new Set([".db", ".db-shm", ".db-wal", ".tmp", ".lock"]);
+
+    function buildTree(dir: string, prefix: string): TreeNode[] {
+      const entries: TreeNode[] = [];
+      try {
+        const items = readdirSync(dir);
+        for (const item of items) {
+          if (item.startsWith(".")) continue;
+          if (EXCLUDED_DIRS.has(item) || item.includes("解包")) continue;
+          const fullPath = join(dir, item);
+          const relativePath = prefix ? `${prefix}/${item}` : item;
+          try {
+            const stat = statSync(fullPath);
+            if (stat.isDirectory()) {
+              entries.push({
+                key: relativePath,
+                title: item,
+                isLeaf: false,
+                children: buildTree(fullPath, relativePath),
+              });
+            } else {
+              const ext = item.includes(".") ? item.slice(item.lastIndexOf(".")).toLowerCase() : "";
+              if (EXCLUDED_EXTS.has(ext)) continue;
+              entries.push({
+                key: relativePath,
+                title: item,
+                isLeaf: true,
+                size: stat.size,
+                modifiedAt: stat.mtimeMs,
+                ext,
+              });
+            }
+          } catch { /* skip inaccessible */ }
+        }
+      } catch { /* dir not readable */ }
+
+      const stripTs = (n: string) => n.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
+      const deduped = new Map<string, TreeNode>();
+      for (const e of entries) {
+        const key = e.isLeaf ? stripTs(e.title) : e.title;
+        const existing = deduped.get(key);
+        if (!existing || (e.isLeaf && e.modifiedAt && existing.modifiedAt && e.modifiedAt > existing.modifiedAt)) {
+          deduped.set(key, e);
+        }
+      }
+      const result = Array.from(deduped.values());
+
+      result.sort((a, b) => {
+        if (a.isLeaf !== b.isLeaf) return a.isLeaf ? 1 : -1;
+        return a.title.localeCompare(b.title);
+      });
+      return result;
+    }
+
+    // 构建常规文件树
+    const tree = buildTree(WS_BASE, "");
+
+    // 添加"共享文件"虚拟文件夹
+    try {
+      const userId = req.user!.id;
+      const roles = getUserRoles(userId);
+      const roleIds = roles.map((r) => r.id);
+
+      const userRow = getDb()
+        .prepare("SELECT department_id FROM users WHERE id = ?")
+        .get(userId) as { department_id: string } | undefined;
+      let deptPath = "/";
+      if (userRow?.department_id) {
+        const deptRow = getDb()
+          .prepare("SELECT path FROM departments WHERE id = ?")
+          .get(userRow.department_id) as { path: string } | undefined;
+        if (deptRow) deptPath = deptRow.path;
+      }
+
+      const shareRepo = new ShareRepository(getDb());
+      const sharedFileIds = shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+
+      if (sharedFileIds.length > 0) {
+        const sharedChildren: TreeNode[] = [];
+        const db = getDb();
+
+        for (const fileId of sharedFileIds) {
+          const uploadRow = db
+            .prepare("SELECT * FROM upload_records WHERE id = ? OR file_path LIKE ?")
+            .get(fileId, `%${fileId}%`) as any;
+
+          if (uploadRow) {
+            const name = uploadRow.original_name || uploadRow.file_path.split("/").pop() || fileId;
+            const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")).toLowerCase() : "";
+            sharedChildren.push({
+              key: `shared://${fileId}`,
+              title: name,
+              isLeaf: true,
+              size: uploadRow.file_size || 0,
+              modifiedAt: uploadRow.created_at || Date.now(),
+              ext,
+              isShared: true,
+              owner: uploadRow.uploaded_by || "unknown",
+            });
+          }
+        }
+
+        if (sharedChildren.length > 0) {
+          // 按名称排序
+          sharedChildren.sort((a, b) => a.title.localeCompare(b.title));
+
+          tree.unshift({
+            key: "__SHARED__",
+            title: "📁 共享文件",
+            isLeaf: false,
+            children: sharedChildren,
+          });
+        }
+      }
+    } catch { /* ignore shared files errors */ }
+
+    res.json({ success: true, tree });
   });
 
   // User documents (aggregate uploads + KB status)

@@ -216,7 +216,17 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
         id,
         description,
         blocking: blocking ?? true,
-        check: () => null,
+        check: (ctx) => {
+          // Custom red lines can match by skill name pattern in the description
+          // Description format: "block:pattern" will block skills matching the pattern
+          if (description.startsWith("block:")) {
+            const pattern = description.slice(6).trim();
+            if (ctx.skillName.includes(pattern)) {
+              return `Custom red line "${id}": skill "${ctx.skillName}" matches blocked pattern "${pattern}"`;
+            }
+          }
+          return null;
+        },
       });
       res.json({ success: true, added: id });
     } else {
@@ -227,14 +237,14 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   // ===== Approval Workflow API Endpoints =====
 
   // GET /api/evolution/approvals — List pending approvals
-  router.get("/evolution/approvals", (req, res) => {
+  router.get("/evolution/approvals", requireAuth, requireAdmin, (req, res) => {
     const pending = evolutionController.getPendingApprovals();
     res.json({ approvals: pending });
   });
 
   // POST /api/evolution/approvals/:id/approve
-  router.post("/evolution/approvals/:id/approve", async (req, res) => {
-    const approval = evolutionController.approve(req.params.id);
+  router.post("/evolution/approvals/:id/approve", requireAuth, requireAdmin, async (req, res) => {
+    const approval = evolutionController.approve(req.params.id as string);
     if (!approval) {
       res.status(404).json({ error: "Approval not found or already processed" });
       return;
@@ -247,8 +257,12 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
         description: `[已审批] ${approval.description}`,
         capabilities: approval.capabilities,
         handler: async (params) => {
-          try { return await runInSandbox(code, params); }
-          catch (err) { return { success: false, error: err instanceof Error ? err : new Error(String(err)) }; }
+          try {
+            const result = await runInSandbox(code, params);
+            return { success: result.success, data: result.data };
+          } catch (err) {
+            return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+          }
         },
       });
       registry.register(skill);
@@ -260,9 +274,9 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // POST /api/evolution/approvals/:id/reject
-  router.post("/evolution/approvals/:id/reject", (req, res) => {
+  router.post("/evolution/approvals/:id/reject", requireAuth, requireAdmin, (req, res) => {
     const reason = req.body?.reason ?? "Rejected by admin";
-    const success = evolutionController.reject(req.params.id, reason);
+    const success = evolutionController.reject(req.params.id as string, reason);
     if (!success) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -271,22 +285,35 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/evolution/engine/status
-  router.get("/evolution/engine/status", (req, res) => {
+  router.get("/evolution/engine/status", requireAuth, (req, res) => {
     res.json(evolutionEngine.getStatus());
   });
 
   // POST /api/evolution/engine/cycle — Manual trigger
-  router.post("/evolution/engine/cycle", async (req, res) => {
+  router.post("/evolution/engine/cycle", requireAuth, requireAdmin, async (req, res) => {
     const result = await evolutionEngine.runCycle();
     res.json({ actions: result.actions.length, executed: result.executed.length, details: result });
   });
 
   // GET /api/evolution/engine/actions
-  router.get("/evolution/engine/actions", (req, res) => {
+  router.get("/evolution/engine/actions", requireAuth, requireAdmin, (req, res) => {
     res.json({ pending: evolutionEngine.getPendingActions(), executed: evolutionEngine.getExecutedActions() });
   });
 
   // ===== Federation API endpoints =====
+
+  // POST /api/federation/sync — dedicated sync endpoint (called by the frontend)
+  router.post("/federation/sync", requireAuth, async (_req, res) => {
+    try {
+      const result = await federationTransport.handleRequest("sync", {}, "local");
+      res.json({ success: true, ...(result as Record<string, unknown>) });
+    } catch (err) {
+      res.status(400).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 
   router.post("/federation/:action", express.json(), async (req, res) => {
     try {

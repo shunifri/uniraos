@@ -10,7 +10,7 @@
 import Database from "better-sqlite3";
 import { resolve, dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 // ===== 连接池管理 =====
@@ -119,7 +119,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
   mkdirSync(DB_BASE, { recursive: true });
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "db_query",
       description:
         "执行只读 SQL 查询。参数: sql(string), params?(array, 绑定参数), db?(string, 数据库文件路径，相对于 workspace，默认 data.db)",
@@ -163,7 +163,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "db_execute",
       description:
         "执行 SQL 写操作（INSERT/UPDATE/DELETE/CREATE 等）。参数: sql(string), params?(array), db?(string, 默认 data.db)",
@@ -203,7 +203,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "db_batch",
       description:
         "在事务中批量执行多条 SQL 语句。参数: statements(array of {sql, params?}), db?(string, 默认 data.db)",
@@ -248,7 +248,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "db_schema",
       description:
         "查看数据库的表结构信息。参数: db?(string, 默认 data.db), table?(string, 指定表名则只返回该表)",
@@ -300,7 +300,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "db_connections",
       description: "查看数据库连接池状态，可选关闭指定连接。参数: action?('list'|'close'|'close_all'), db?(string, close 时指定)",
       handler: async (params) => {
@@ -370,7 +370,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
     }
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "mysql_query",
         description:
           "执行 MySQL 查询。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
@@ -409,7 +409,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "mysql_execute",
         description:
           "执行 MySQL 写操作。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
@@ -478,7 +478,7 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
     }
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "pg_query",
         description:
           "执行 PostgreSQL 查询。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
@@ -509,7 +509,7 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "pg_execute",
         description:
           "执行 PostgreSQL 写操作。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
@@ -568,7 +568,7 @@ async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
     }
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "redis_get",
         description: "获取 Redis 键值。参数: key(string), connection?({host?,port?,password?,db?})",
         timeout: 10000,
@@ -589,7 +589,7 @@ async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "redis_set",
         description: "设置 Redis 键值。参数: key(string), value(string), ttl?(number, 秒), connection?({host?,port?,password?,db?})",
         timeout: 10000,
@@ -615,7 +615,7 @@ async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "redis_del",
         description: "删除 Redis 键。参数: keys(string|string[]), connection?({host?,port?,password?,db?})",
         timeout: 10000,
@@ -636,7 +636,7 @@ async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "redis_keys",
         description: "搜索 Redis 键。参数: pattern(string, 如 'user:*'), connection?({host?,port?,password?,db?})",
         timeout: 10000,
@@ -692,7 +692,7 @@ async function createMSSQLSkills(registry: SkillRegistry): Promise<boolean> {
     }
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "mssql_query",
         description:
           "执行 MSSQL 查询。参数: sql(string), params?(object, 命名参数如 {id: 1}), connection({server,user,password,database,port?,encrypt?})",
@@ -726,7 +726,7 @@ async function createMSSQLSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "mssql_execute",
         description:
           "执行 MSSQL 写操作。参数: sql(string), params?(object), connection({server,user,password,database,port?,encrypt?})",
@@ -784,7 +784,7 @@ async function createOracleSkills(registry: SkillRegistry): Promise<boolean> {
     }
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "oracle_query",
         description:
           "执行 Oracle 查询。参数: sql(string), params?(array|object, 绑定参数), connection({user,password,connectString})",
@@ -819,7 +819,7 @@ async function createOracleSkills(registry: SkillRegistry): Promise<boolean> {
     );
 
     registry.register(
-      defineSkill({
+      defineSystemSkill({
         name: "oracle_execute",
         description:
           "执行 Oracle 写操作。参数: sql(string), params?(array|object), connection({user,password,connectString}), autoCommit?(boolean, 默认 true)",

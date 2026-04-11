@@ -72,7 +72,7 @@ describe("Orchestrator", () => {
       expect(decision.level).toBe("react");
     });
 
-    it("returns simple strategy when LLM says simple", async () => {
+    it("forces react even when LLM says simple (simple mode disabled)", async () => {
       const responseJson = JSON.stringify({
         level: "simple",
         reasoning: "just a greeting",
@@ -81,7 +81,8 @@ describe("Orchestrator", () => {
       const deps = makeDeps(responseJson);
       const orchestrator = new Orchestrator(deps);
       const decision = await orchestrator.analyzeStrategy("hello");
-      expect(decision.level).toBe("simple");
+      // simple is forced to react to ensure tool-use capability
+      expect(decision.level).toBe("react");
       expect(decision.reasoning).toBe("just a greeting");
     });
 

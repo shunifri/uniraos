@@ -7,11 +7,12 @@
  * - skill_optimizer: 分析 Skill 执行指标，建议优化
  * - skill_list_all: 列出所有 Skill 的完整信息（含指标）
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
 import { runInSandbox } from "../engine/worker-sandbox.js";
+import { getCurrentUserId } from "../user/request-context.js";
 
 export function createMetaSkills(
   registry: SkillRegistry,
@@ -24,7 +25,7 @@ export function createMetaSkills(
   }
   // ===== skill_compose: 声明式组合 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_compose",
       description: `创建一个组合 Skill，将多个现有 Skill 串联或并行执行。
 参数:
@@ -70,9 +71,11 @@ export function createMetaSkills(
         }
 
         // 创建组合 Skill
-        const composedSkill = defineSkill({
+        const userId = getCurrentUserId();
+        const composedSkill = defineSystemSkill({
           name,
           description: `[组合] ${description}`,
+          owner: userId !== "default" ? userId : undefined,
           handler: async (inputParams, context) => {
             const results: Record<string, unknown> = {};
             results["$input"] = inputParams;
@@ -129,7 +132,7 @@ export function createMetaSkills(
 
   // ===== skill_from_template: 模板生成 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_from_template",
       description: `基于模板创建新 Skill。
 参数:
@@ -164,6 +167,8 @@ export function createMetaSkills(
         }
 
         let skill;
+        const userId = getCurrentUserId();
+        const ownerValue = userId !== "default" ? userId : undefined;
 
         switch (template) {
           case "transform":
@@ -179,6 +184,9 @@ export function createMetaSkills(
             return { success: false, error: new Error(`未知模板: ${template}`) };
         }
 
+        if (ownerValue) {
+          (skill as any).owner = ownerValue;
+        }
         registry.register(skill);
 
         return {
@@ -195,7 +203,7 @@ export function createMetaSkills(
 
   // ===== skill_unregister: 删除动态 Skill =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_unregister",
       description: "注销一个动态创建的 Skill。参数: name(string)",
       handler: async (params) => {
@@ -216,7 +224,7 @@ export function createMetaSkills(
 
   // ===== skill_info: 获取 Skill 详情 + 指标 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_info",
       description: "获取指定 Skill 的详细信息和执行指标。参数: name(string)",
       paramSchema: {
@@ -258,7 +266,7 @@ export function createMetaSkills(
 
   // ===== skill_from_description: LLM 驱动的 Skill 生成 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_from_description",
       description: `从自然语言描述生成新 Skill。需要 LLM 支持。
 参数:
@@ -345,9 +353,11 @@ Skill 描述: ${description}${exampleText}
           }
 
           // 注册 — 每次调用都通过 Worker 沙箱执行
-          const skill = defineSkill({
+          const userId = getCurrentUserId();
+          const skill = defineSystemSkill({
             name,
             description: `[AI生成] ${description}`,
+            owner: userId !== "default" ? userId : undefined,
             capabilities,
             handler: async (p) => {
               const sandboxResult = await runInSandbox(code, p);
@@ -387,7 +397,7 @@ Skill 描述: ${description}${exampleText}
 
   // ===== skill_optimizer: 分析 Skill 指标并建议优化 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_optimizer",
       description: `分析 Skill 执行指标，给出优化建议。
 参数:
@@ -446,7 +456,7 @@ Skill 描述: ${description}${exampleText}
 
   // ===== skill_test: 自动测试 Skill =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_test",
       description: `自动测试一个 Skill，可手动提供测试用例或让 LLM 生成。
 参数:
@@ -585,7 +595,7 @@ Skill 描述: ${skill.description}
 
   // ===== skill_list_all: 列出所有 Skill 完整信息 =====
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_list_all",
       description: "列出所有已注册 Skill 的完整信息，包含版本、能力声明和执行指标。",
       handler: async () => {
@@ -695,7 +705,7 @@ function createTransformSkill(name: string, description: string, config: Record<
   const outputField = config.outputField as string;
   const expression = config.expression as string;
 
-  return defineSkill({
+  return defineSystemSkill({
     name,
     description: `[模板:transform] ${description}`,
     handler: async (params) => {
@@ -730,7 +740,7 @@ function createTransformSkill(name: string, description: string, config: Record<
 function createValidateSkill(name: string, description: string, config: Record<string, unknown>) {
   const rules = config.rules as Array<{ field: string; condition: string; message: string }>;
 
-  return defineSkill({
+  return defineSystemSkill({
     name,
     description: `[模板:validate] ${description}`,
     handler: async (params) => {
@@ -778,7 +788,7 @@ function createAggregateSkill(
   const skills = config.skills as string[];
   const mergeStrategy = (config.mergeStrategy as string) ?? "merge";
 
-  return defineSkill({
+  return defineSystemSkill({
     name,
     description: `[模板:aggregate] ${description}`,
     handler: async (params) => {

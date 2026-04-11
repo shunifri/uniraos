@@ -16,6 +16,8 @@ export interface User {
   username: string;
   displayName: string;
   avatar: string;
+  phone: string;
+  email: string;
   departmentId: string | null;
   status: "active" | "disabled" | "deleted";
   createdAt: number;
@@ -28,6 +30,9 @@ export interface CreateUserInput {
   password: string;
   displayName?: string;
   departmentId?: string;
+  phone?: string;
+  email?: string;
+  roleIds?: string[];
 }
 
 export interface UserWithDetails extends User {
@@ -60,12 +65,16 @@ export function createUser(input: CreateUserInput): User {
   const departmentId = input.departmentId ?? "dept_root";
 
   db.prepare(`
-    INSERT INTO users (id, username, display_name, password_hash, department_id)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, input.username, input.displayName ?? input.username, passwordHash, departmentId);
+    INSERT INTO users (id, username, display_name, password_hash, department_id, phone, email)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, input.username, input.displayName ?? input.username, passwordHash, departmentId, input.phone ?? "", input.email ?? "");
 
-  // 默认赋予 user 角色
-  db.prepare("INSERT INTO user_roles (user_id, role_id) VALUES (?, 'role_user')").run(id);
+  // Assign roles: use provided roleIds, or default to 'role_user'
+  const roleIds = input.roleIds && input.roleIds.length > 0 ? input.roleIds : ["role_user"];
+  const insertRole = db.prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)");
+  for (const roleId of roleIds) {
+    insertRole.run(id, roleId);
+  }
 
   return getUserById(id)!;
 }
@@ -77,6 +86,11 @@ export function getUserById(id: string): User | null {
 
 export function getUserByUsername(username: string): User | null {
   const row = getDb().prepare("SELECT * FROM users WHERE username = ? AND status != 'deleted'").get(username) as any;
+  return row ? mapUser(row) : null;
+}
+
+export function getUserByPhone(phone: string): User | null {
+  const row = getDb().prepare("SELECT * FROM users WHERE phone = ? AND status != 'deleted'").get(phone) as any;
   return row ? mapUser(row) : null;
 }
 
@@ -97,7 +111,7 @@ export function countUsers(status = "active"): number {
   return row.c;
 }
 
-export function updateUser(id: string, fields: { displayName?: string; avatar?: string; status?: string; departmentId?: string }): User | null {
+export function updateUser(id: string, fields: { displayName?: string; avatar?: string; status?: string; departmentId?: string; phone?: string; email?: string; roleIds?: string[] }): User | null {
   const db = getDb();
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -106,13 +120,24 @@ export function updateUser(id: string, fields: { displayName?: string; avatar?: 
   if (fields.avatar !== undefined) { sets.push("avatar = ?"); vals.push(fields.avatar); }
   if (fields.status !== undefined) { sets.push("status = ?"); vals.push(fields.status); }
   if (fields.departmentId !== undefined) { sets.push("department_id = ?"); vals.push(fields.departmentId); }
+  if (fields.phone !== undefined) { sets.push("phone = ?"); vals.push(fields.phone); }
+  if (fields.email !== undefined) { sets.push("email = ?"); vals.push(fields.email); }
 
-  if (sets.length === 0) return getUserById(id);
+  if (sets.length > 0) {
+    sets.push("updated_at = unixepoch()");
+    vals.push(id);
+    db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  }
 
-  sets.push("updated_at = unixepoch()");
-  vals.push(id);
+  // Update roles if provided
+  if (fields.roleIds !== undefined && fields.roleIds.length > 0) {
+    db.prepare("DELETE FROM user_roles WHERE user_id = ?").run(id);
+    const insertRole = db.prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)");
+    for (const roleId of fields.roleIds) {
+      insertRole.run(id, roleId);
+    }
+  }
 
-  db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
   return getUserById(id);
 }
 
@@ -165,97 +190,34 @@ export function removeRole(userId: string, roleId: string): void {
 // ===== 权限查询（交叉控制） =====
 
 /**
- * 检查用户是否拥有指定权限（交叉控制模型）
+ * 检查用户是否拥有指定权限（RBAC 模型）
  *
- * 条件：
- *   (1) 用户角色授予了该 permission（角色维度）
- *   AND
- *   (2) 用户部门（含祖先）拥有该 permission 关联的 resource（部门维度）
- *   例外：admin 角色跳过部门检查
+ * 仅通过角色维度控制权限
  */
 export function userHasPermission(userId: string, permissionName: string): boolean {
   const db = getDb();
 
-  // 先检查是否是 admin（跳过部门检查）
-  const isAdmin = db.prepare(`
-    SELECT 1 FROM user_roles ur
-    JOIN roles r ON r.id = ur.role_id
-    WHERE ur.user_id = ? AND r.name = 'admin'
-    LIMIT 1
-  `).get(userId);
-
-  if (isAdmin) {
-    // admin 只需角色维度
-    const hasRolePerm = db.prepare(`
-      SELECT 1 FROM permissions p
-      JOIN role_permissions rp ON rp.permission_id = p.id
-      JOIN user_roles ur ON ur.role_id = rp.role_id
-      WHERE ur.user_id = ? AND p.name = ?
-      LIMIT 1
-    `).get(userId, permissionName);
-    return !!hasRolePerm;
-  }
-
-  // 非 admin：交叉控制（6 表 JOIN）
   const row = db.prepare(`
-    SELECT 1
-    FROM permissions p
+    SELECT 1 FROM permissions p
     JOIN role_permissions rp ON rp.permission_id = p.id
     JOIN user_roles ur ON ur.role_id = rp.role_id
-    JOIN users u ON u.id = ur.user_id
-    JOIN departments user_dept ON user_dept.id = u.department_id
-    WHERE ur.user_id = ?
-      AND p.name = ?
-      AND EXISTS (
-        SELECT 1 FROM department_resources dr
-        JOIN departments res_dept ON res_dept.id = dr.department_id
-        WHERE dr.resource_id = p.resource_id
-          AND user_dept.path LIKE res_dept.path || '%'
-      )
+    WHERE ur.user_id = ? AND p.name = ?
     LIMIT 1
   `).get(userId, permissionName);
 
   return !!row;
 }
 
-/** 获取用户所有有效权限名（已过交叉控制） */
+/** 获取用户所有有效权限名 */
 export function getUserPermissions(userId: string): string[] {
   const db = getDb();
 
-  // admin 直接返回角色权限
-  const isAdmin = db.prepare(`
-    SELECT 1 FROM user_roles ur
-    JOIN roles r ON r.id = ur.role_id
-    WHERE ur.user_id = ? AND r.name = 'admin'
-    LIMIT 1
-  `).get(userId);
-
-  if (isAdmin) {
-    const rows = db.prepare(`
-      SELECT DISTINCT p.name
-      FROM permissions p
-      JOIN role_permissions rp ON rp.permission_id = p.id
-      JOIN user_roles ur ON ur.role_id = rp.role_id
-      WHERE ur.user_id = ?
-    `).all(userId) as Array<{ name: string }>;
-    return rows.map((r) => r.name);
-  }
-
-  // 非 admin：交叉控制
   const rows = db.prepare(`
     SELECT DISTINCT p.name
     FROM permissions p
     JOIN role_permissions rp ON rp.permission_id = p.id
     JOIN user_roles ur ON ur.role_id = rp.role_id
-    JOIN users u ON u.id = ur.user_id
-    JOIN departments user_dept ON user_dept.id = u.department_id
     WHERE ur.user_id = ?
-      AND EXISTS (
-        SELECT 1 FROM department_resources dr
-        JOIN departments res_dept ON res_dept.id = dr.department_id
-        WHERE dr.resource_id = p.resource_id
-          AND user_dept.path LIKE res_dept.path || '%'
-      )
   `).all(userId) as Array<{ name: string }>;
 
   return rows.map((r) => r.name);
@@ -339,6 +301,8 @@ function mapUser(row: any): User {
     username: row.username,
     displayName: row.display_name,
     avatar: row.avatar ?? "",
+    phone: row.phone ?? "",
+    email: row.email ?? "",
     departmentId: row.department_id ?? null,
     status: row.status,
     createdAt: row.created_at,

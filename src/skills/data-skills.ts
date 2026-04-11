@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, renameSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { createHash } from "crypto";
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import { getCurrentUserId } from "../user/request-context.js";
 
@@ -67,7 +67,7 @@ function createFileSkills(registry: SkillRegistry): void {
   mkdirSync(SAFE_BASE, { recursive: true });
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_read",
       description: "读取文件内容。参数: path(string, 相对于 workspace), encoding?(string, 默认 utf-8)",
       paramSchema: {
@@ -98,7 +98,7 @@ function createFileSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_write",
       description: "写入文件内容（覆盖）。参数: path(string, 相对于 workspace), content(string), encoding?(string)。注意：文档/PPT 请使用 .md 格式，禁止 .pptx/.docx/.pdf。",
       paramSchema: {
@@ -127,7 +127,7 @@ function createFileSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_append",
       description: "追加内容到文件末尾。参数: path(string), content(string)",
       paramSchema: {
@@ -148,7 +148,7 @@ function createFileSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_delete",
       description: "删除文件。参数: path(string, 相对于 workspace)",
       paramSchema: {
@@ -169,7 +169,7 @@ function createFileSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_list",
       description: "列出目录下的文件和子目录。参数: path?(string, 默认根目录), recursive?(boolean, 默认 false)",
       paramSchema: {
@@ -213,7 +213,7 @@ function createFileSkills(registry: SkillRegistry): void {
 
 function createFileProvideSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_provide",
       description:
         `向用户提供文件下载。先检查 workspace 中是否存在该文件，存在则返回下载信息；不存在则创建文件后返回下载信息。系统会自动渲染可视化下载卡片，你在回复文本中不要再重复输出下载链接或文件名链接。参数: path(string, 相对于 workspace 的文件路径), content?(string, 如果文件不存在则用此内容创建), filename?(string, 下载时显示的文件名)。
@@ -326,7 +326,7 @@ theme: business-blue
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_provide_multi",
       description:
         "向用户提供多个文件的打包下载。系统会自动渲染可视化下载卡片，你在回复文本中不要再重复输出下载链接。参数: files(Array<{path: string, filename?: string}>), zipName?(string, 压缩包名称，默认 files.zip)",
@@ -406,7 +406,7 @@ function createUploadSkills(registry: SkillRegistry): void {
   }
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_upload",
       description:
         "上传文件到工作空间。参数: filename(string, 原始文件名), content(string, base64编码的文件内容), description?(string), tags?(string[]), uploadedBy?(string), targetDir?(string, 相对workspace的目标文件夹路径)",
@@ -573,7 +573,7 @@ function createUploadSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_upload_list",
       description: "列出所有已上传的文件。参数: query?(string, 搜索文件名或描述), limit?(number, 默认 50)",
       handler: async (params) => {
@@ -621,7 +621,7 @@ function createUploadSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_upload_delete",
       description: "删除已上传的文件。参数: path(string, 如 uploads/xxx.pdf) 或 id(string, 上传记录 ID)",
       handler: async (params) => {
@@ -664,7 +664,7 @@ function createUploadSkills(registry: SkillRegistry): void {
 
   // 搜索用户上传的文件并返回下载链接（支持模糊匹配，多个结果全部返回）
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "file_search",
       description:
         "搜索用户上传的文件。根据关键词模糊匹配文件名，返回所有匹配结果及下载链接。如果有多个相似文件，全部返回让用户选择。参数: query(string, 搜索关键词), limit?(number, 默认 10)",
@@ -776,7 +776,7 @@ function guessMimeType(ext: string): string {
 
 function createHttpSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "http_call",
       description:
         "发起 HTTP 请求。参数: url(string), method?(string, 默认 GET), headers?(object), body?(string|object), timeout?(number, ms, 默认 30000)",
@@ -873,7 +873,7 @@ function createHttpSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "http_get",
       description: "发起 GET 请求（简化版）。参数: url(string), headers?(object)",
       timeout: 30000,
@@ -893,7 +893,7 @@ function createHttpSkills(registry: SkillRegistry): void {
 
 function createShellSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "shell_exec",
       description:
         "在安全沙箱中执行 shell 命令。参数: command(string), cwd?(string, 相对于 workspace), timeout?(number, ms, 默认 10000)。仅允许安全命令。",
@@ -961,7 +961,7 @@ function createShellSkills(registry: SkillRegistry): void {
 
 function createPptxThemeSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "pptx_learn_style",
       description:
         "从 workspace 中的 PPTX 文件学习风格（提取配色方案和字体），保存为自定义主题。参数: filePath(string, workspace 中的 PPTX 文件路径), name?(string, 主题名称，默认用文件名)",
@@ -1013,7 +1013,7 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "pptx_list_themes",
       description: "列出所有可用的 PPTX 主题（包括内置主题和用户自定义主题）。无参数。",
       handler: async (params) => {
@@ -1058,7 +1058,7 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "pptx_delete_theme",
       description: "删除一个自定义 PPTX 主题。参数: themeId(string, 主题 ID)",
       handler: async (params) => {

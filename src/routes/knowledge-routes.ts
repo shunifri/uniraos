@@ -166,5 +166,103 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // 获取所有标签及其使用次数
+  router.get("/knowledge/tags", requireAuth, async (req, res) => {
+    try {
+      const result = await engine.execute("kb_tags", { owner: req.user!.id });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // 获取所有文件格式及其数量
+  router.get("/knowledge/formats", requireAuth, async (req, res) => {
+    try {
+      const result = await engine.execute("kb_formats", { owner: req.user!.id });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // 获取文档版面结构数据
+  router.get("/knowledge/documents/:docId/layouts", requireAuth, (req, res) => {
+    try {
+      const owner = req.user!.id;
+      const docId = String(req.params.docId);
+      const kb = getKnowledgeBase(owner);
+      
+      // 获取版面数据
+      const layouts = kb.getLayouts(docId);
+      const segments = kb.getSegments(docId);
+      
+      // 获取文档基本信息
+      const docInfo = kb["db"].prepare(
+        "SELECT name, media_type, page_count FROM kb_documents WHERE doc_id = ?"
+      ).get(docId) as any;
+      
+      if (!docInfo) {
+        res.status(404).json({ success: false, error: "Document not found" });
+        return;
+      }
+
+      // 整理媒体项
+      const images: Array<{ id: string; page: number; url: string; type: string }> = [];
+      const tables: Array<{ id: string; page: number; content: any }> = [];
+
+      // 从 layouts 中提取图片和表格
+      for (const layout of layouts) {
+        if (layout.type === 'figure' || layout.subType === 'picture') {
+          images.push({
+            id: layout.uniqueId || layout.id,
+            page: layout.pageNum || layout.page || 1,
+            url: layout.imageUrl || '',
+            type: 'image',
+          });
+        } else if (layout.type === 'table') {
+          tables.push({
+            id: layout.uniqueId || layout.id,
+            page: layout.pageNum || layout.page || 1,
+            content: layout.cells || layout.text,
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        docId,
+        docName: docInfo.name,
+        mediaType: docInfo.media_type || 'document',
+        pageCount: docInfo.page_count || 0,
+        layouts: layouts.map((l: any) => ({
+          id: l.uniqueId || l.id,
+          type: l.type,
+          subType: l.subType,
+          page: l.pageNum || l.page || 1,
+          text: l.text || l.markdownContent || '',
+          level: l.level || 0,
+          bbox: l.pos ? {
+            x: Math.min(...l.pos.map((p: any) => p.x)),
+            y: Math.min(...l.pos.map((p: any) => p.y)),
+            w: Math.max(...l.pos.map((p: any) => p.x)) - Math.min(...l.pos.map((p: any) => p.x)),
+            h: Math.max(...l.pos.map((p: any) => p.y)) - Math.min(...l.pos.map((p: any) => p.y)),
+          } : null,
+        })),
+        segments: segments.map((s: any) => ({
+          index: s.index,
+          startTime: s.startTime || s.start_time,
+          endTime: s.endTime || s.end_time,
+          keyFrameUrl: s.keyFrameUrl,
+          asrText: s.asrText || s.asr_text,
+          synopsis: s.synopsis,
+        })),
+        mediaItems: { images, tables },
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   return router;
 }

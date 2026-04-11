@@ -124,6 +124,10 @@ export interface SkillDefinition {
   errorPropagation?: ErrorPropagation;
   /** 参数 Schema（JSON Schema 格式），用于 Tool Bridge 生成精确的 LLM 工具定义 */
   paramSchema?: ParamSchema;
+  /** 创建者 userId，系统 Skill 为 undefined */
+  owner?: string;
+  /** 系统内置 Skill 标记 */
+  isSystem?: boolean;
 }
 
 /** 调用追踪条目 */
@@ -179,6 +183,15 @@ export function defineSkill(
     timeout: 30000,
     retry: { maxRetries: 0, backoffMs: 1000, backoffMultiplier: 2 },
     description: "",
+    isSystem: partial.isSystem ?? false,
     ...partial,
   };
+}
+
+/** 创建系统 Skill 的便捷方法（自动设置 isSystem: true） */
+export function defineSystemSkill(
+  partial: Pick<SkillDefinition, "name" | "handler"> &
+    Partial<Omit<SkillDefinition, "name" | "handler">>,
+): SkillDefinition {
+  return defineSkill({ ...partial, isSystem: true });
 }

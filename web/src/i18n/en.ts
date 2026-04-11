@@ -17,6 +17,12 @@ const en: Translations = {
   login_failed: 'Login failed',
   login_username_required: 'Please enter username',
   login_password_required: 'Please enter password',
+  login_guest: 'Guest Access',
+  login_guest_loading: 'Entering...',
+  login_phone: 'Phone Number',
+  login_phone_required: 'Please enter phone number',
+  login_phone_invalid: 'Please enter a valid 11-digit phone number',
+  login_phone_hint: 'Enter phone number for guest access',
   logout: 'Logout',
 
   // Common
@@ -144,6 +150,9 @@ const en: Translations = {
   username: 'Username',
   password: 'Password',
   display_name: 'Display Name',
+  phone: 'Phone',
+  email: 'Email',
+  select_roles: 'Select Roles',
   department: 'Department',
   create_user: 'Create User',
   evolution_config: 'Evolution Config',

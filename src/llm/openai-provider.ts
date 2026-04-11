@@ -2,6 +2,7 @@
  * OpenAI 兼容 Provider（支持 OpenAI、DeepSeek、本地 Ollama 等）
  */
 import type {
+  ChatOptions,
   LLMProvider,
   LLMProviderConfig,
   LLMResponse,
@@ -36,6 +37,7 @@ export class OpenAIProvider implements LLMProvider {
     messages: Message[],
     tools?: ToolDefinition[],
     stream = false,
+    options?: ChatOptions,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.model,
@@ -48,14 +50,25 @@ export class OpenAIProvider implements LLMProvider {
       body.tool_choice = "auto";
     }
     if (stream) body.stream = true;
+
+    // 深度思考模式：不同模型有不同的 API 参数
+    if (options?.deepThink) {
+      // DeepSeek 的思考模式 (火山引擎/官方 API)
+      body.thinking = { type: "enabled", budget_tokens: 8192 };
+      // 思考模式下不支持 temperature
+      delete body.temperature;
+      console.log(`   [DeepThink] Enabled for model ${this.model}, budget_tokens=8192`);
+    }
+
     return body;
   }
 
   async chat(
     messages: Message[],
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<LLMResponse> {
-    const body = this.buildRequestBody(messages, tools);
+    const body = this.buildRequestBody(messages, tools, false, options);
 
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
@@ -78,8 +91,9 @@ export class OpenAIProvider implements LLMProvider {
   async *chatStream(
     messages: Message[],
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): AsyncIterable<LLMStreamChunk> {
-    const body = this.buildRequestBody(messages, tools, true);
+    const body = this.buildRequestBody(messages, tools, true, options);
 
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
@@ -101,6 +115,7 @@ export class OpenAIProvider implements LLMProvider {
 
     // 按 index 缓冲 tool call 增量
     const toolCallBuffers = new Map<number, { id: string; name: string; args: string }>();
+    let loggedR = false, loggedC = false; // 每次 chatStream 调用独立的日志标记
 
     try {
       while (true) {
@@ -134,10 +149,32 @@ export class OpenAIProvider implements LLMProvider {
 
           const delta = data.choices?.[0]?.delta;
           if (!delta) continue;
+          // DEBUG: 打印 content 到来（不管是否同时有 reasoning）
+          if (delta.content && !loggedC) {
+            console.log(`   [Provider] content arrived: "${String(delta.content).slice(0, 80)}", hasReasoning=${!!delta.reasoning_content}`);
+            loggedC = true;
+          }
+
+          // reasoning_content (DeepSeek thinking mode)
+          if (delta.reasoning_content) {
+            if (!loggedR) { console.log("   [Provider] Got reasoning_content"); loggedR = true; }
+            yield { type: "text_delta", text: delta.reasoning_content, reasoning: true } as any;
+          }
 
           // text content
           if (delta.content) {
-            yield { type: "text_delta", text: delta.content };
+            if (!loggedC) { console.log(`   [Provider] Got content: "${(delta.content as string).slice(0, 50)}"`); loggedC = true; }
+            let text = delta.content as string;
+            // 如果包含 <think> 标签，提取思考内容单独发送
+            if (text.includes("<think>") || text.includes("</think>")) {
+              // 累积处理：移除 think 标签，内容作为 reasoning 发送
+              text = text.replace(/<think>/g, "").replace(/<\/think>/g, "");
+              if (text.trim()) {
+                yield { type: "text_delta", text };
+              }
+            } else {
+              yield { type: "text_delta", text };
+            }
           }
 
           // tool calls
@@ -164,6 +201,9 @@ export class OpenAIProvider implements LLMProvider {
 
           // finish_reason
           const finishReason = data.choices?.[0]?.finish_reason;
+          if (finishReason) {
+            console.log(`   [Provider] finish_reason=${finishReason}, hasContent=${!!delta.content}, deltaKeys=${Object.keys(delta).join(",")}`);
+          }
           if (finishReason === "tool_calls" || finishReason === "stop") {
             for (const [, tc] of toolCallBuffers) {
               yield {
@@ -271,6 +311,7 @@ interface OpenAIStreamDelta {
   choices?: {
     delta: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: {
         index: number;
         id?: string;

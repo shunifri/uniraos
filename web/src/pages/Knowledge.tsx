@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Flex,
   Card,
@@ -17,7 +17,10 @@ import {
   Popconfirm,
   Drawer,
   Segmented,
+  Select,
+  Dropdown,
 } from "antd";
+import type { MenuProps } from "antd";
 import {
   UploadOutlined,
   SearchOutlined,
@@ -29,10 +32,14 @@ import {
   NumberOutlined,
   LoadingOutlined,
   EyeOutlined,
+  ShareAltOutlined,
+  FilterOutlined,
 } from "@ant-design/icons";
 import { XMarkdown } from "@ant-design/x-markdown";
 import { useI18nStore } from "@/i18n";
 import { api, apiFetch, pageImageUrl } from "@/api";
+import ShareDialog from "@/components/ShareDialog";
+import MediaSearchResultCard from "@/components/MediaSearchResultCard";
 
 const { Text } = Typography;
 const { Dragger } = Upload;
@@ -48,6 +55,17 @@ interface KBDocument {
   shared?: boolean;
   vectorized?: number;
   vectorTotal?: number;
+  format?: string;
+}
+
+interface KBTag {
+  tag: string;
+  count: number;
+}
+
+interface KBFormat {
+  format: string;
+  count: number;
 }
 
 interface SearchResult {
@@ -59,6 +77,10 @@ interface SearchResult {
   chunkIndex?: number;
   pageNumber?: number | null;
   bboxes?: Array<{ page: number; bbox: [number, number, number, number] }> | null;
+  mediaType?: 'document' | 'video' | 'audio' | 'text';
+  timeRange?: { start: number; end: number } | null;
+  frameUrl?: string | null;
+  asrText?: string | null;
 }
 
 /** 在页面图片上叠加黄色高亮矩形 */
@@ -102,6 +124,8 @@ export default function KnowledgePage() {
 
   const [stats, setStats] = useState<any>({});
   const [documents, setDocuments] = useState<KBDocument[]>([]);
+  const [allTags, setAllTags] = useState<KBTag[]>([]);
+  const [allFormats, setAllFormats] = useState<KBFormat[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -113,6 +137,12 @@ export default function KnowledgePage() {
   const [viewLoading, setViewLoading] = useState(false);
   const [viewTab, setViewTab] = useState<"markdown" | "images" | "compare">("markdown");
   const [viewPageImages, setViewPageImages] = useState<number[]>([]);
+  const [shareDoc, setShareDoc] = useState<KBDocument | null>(null);
+  
+  // 筛选状态
+  const [filterName, setFilterName] = useState("");
+  const [filterTags, setFilterTags] = useState<string[]>([]);
+  const [filterFormat, setFilterFormat] = useState<string | null>(null);
 
   const handleViewDoc = async (docId: string, docName: string) => {
     setViewLoading(true);
@@ -161,10 +191,30 @@ export default function KnowledgePage() {
     setLoadingDocs(false);
   }, []);
 
+  const loadTags = useCallback(async () => {
+    try {
+      const data = await api.get<any>("/api/knowledge/tags");
+      if (data.success) {
+        setAllTags(data.tags || []);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadFormats = useCallback(async () => {
+    try {
+      const data = await api.get<any>("/api/knowledge/formats");
+      if (data.success) {
+        setAllFormats(data.formats || []);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     loadStats();
     loadDocuments();
-  }, [loadStats, loadDocuments]);
+    loadTags();
+    loadFormats();
+  }, [loadStats, loadDocuments, loadTags, loadFormats]);
 
   // 轮询：有文档正在解析或向量化时每 3 秒刷新
   useEffect(() => {
@@ -267,6 +317,31 @@ export default function KnowledgePage() {
     setRebuilding(false);
   };
 
+  // 筛选逻辑
+  const filteredDocuments = useMemo(() => {
+    return documents.filter((doc) => {
+      // 名称模糊匹配
+      if (filterName && !doc.name.toLowerCase().includes(filterName.toLowerCase())) {
+        return false;
+      }
+      // 标签筛选
+      if (filterTags.length > 0 && !filterTags.some((tag) => doc.tags?.includes(tag))) {
+        return false;
+      }
+      // 格式筛选
+      if (filterFormat && doc.format !== filterFormat) {
+        return false;
+      }
+      return true;
+    });
+  }, [documents, filterName, filterTags, filterFormat]);
+
+  const clearFilters = () => {
+    setFilterName("");
+    setFilterTags([]);
+    setFilterFormat(null);
+  };
+
   const columns = [
     {
       title: t("name"),
@@ -325,10 +400,11 @@ export default function KnowledgePage() {
     {
       title: t("actions"),
       key: "actions",
-      width: 110,
+      width: 140,
       render: (_: any, record: KBDocument) => (
         <Space size={0}>
           <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => handleViewDoc(record.id, record.name)} />
+          <Button type="text" size="small" icon={<ShareAltOutlined />} onClick={() => setShareDoc(record)} />
           <Popconfirm title={t("confirm")} onConfirm={() => handleDelete(record.id)}>
             <Button type="text" danger size="small" icon={<DeleteOutlined />} />
           </Popconfirm>
@@ -342,29 +418,29 @@ export default function KnowledgePage() {
       {/* Stats */}
       <Row gutter={16}>
         <Col span={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic title={t("kb_doc_count")} value={stats.documentCount ?? 0} prefix={<FileTextOutlined />} />
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic title={t("kb_chunk_count")} value={stats.chunkCount ?? 0} prefix={<NumberOutlined />} />
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic title="Tokens" value={stats.totalTokens ?? 0} prefix={<DatabaseOutlined />} />
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small">
+          <Card size="small" className="glass-card">
             <Statistic title={t("kb_vector_status")} value={stats.embeddingProvider && stats.embeddingProvider !== "local" ? stats.embeddingProvider : t("kb_vector_none")} prefix={<CloudOutlined />} />
           </Card>
         </Col>
       </Row>
 
       {/* Import */}
-      <Card size="small" title={t("kb_import")}>
+      <Card size="small" className="glass-card" title={t("kb_import")}>
         <Flex gap={12} align="start">
           <div style={{ flex: 1 }}>
             <Dragger
@@ -393,7 +469,7 @@ export default function KnowledgePage() {
       </Card>
 
       {/* Search */}
-      <Card size="small" title={t("kb_search")}>
+      <Card size="small" className="glass-card" title={t("kb_search")}>
         <Input.Search
           placeholder={t("kb_search_hint")}
           enterButton={<SearchOutlined />}
@@ -408,8 +484,34 @@ export default function KnowledgePage() {
             {searchResults.map((r, i) => {
               const hasBbox = r.bboxes && r.bboxes.length > 0 && r.docId;
               const hasPage = r.pageNumber != null && r.docId;
+              const isMedia = r.mediaType === 'video' || r.mediaType === 'audio';
+              
+              // 多媒体类型使用 MediaSearchResultCard
+              if (isMedia && r.timeRange) {
+                return (
+                  <MediaSearchResultCard
+                    key={i}
+                    docId={r.docId!}
+                    docName={r.docName}
+                    mediaType={r.mediaType as 'video' | 'audio'}
+                    frameUrl={r.frameUrl}
+                    timeRange={r.timeRange}
+                    asrText={r.asrText}
+                    content={r.content}
+                    score={r.score}
+                    query={searchQuery}
+                    onDocClick={r.docId ? () => handleViewDoc(r.docId!, r.docName) : undefined}
+                    onTimeClick={(time) => {
+                      // TODO: 实现播放器跳转
+                      console.log('跳转至时间:', time);
+                    }}
+                  />
+                );
+              }
+              
+              // 文档类型使用原有 Card
               return (
-                <Card key={i} size="small" style={{ marginBottom: 8 }}>
+                <Card key={i} size="small" className="glass-card" style={{ marginBottom: 8 }}>
                   <Flex justify="space-between" align="center">
                     <Text
                       strong
@@ -443,10 +545,16 @@ export default function KnowledgePage() {
         )}
       </Card>
 
-      {/* Document List */}
+      {/* Document List with Filters */}
       <Card
         size="small"
-        title={t("kb_documents")}
+        className="glass-card"
+        title={
+          <Flex align="center" gap={8}>
+            <span>{t("kb_documents")}</span>
+            <Tag>{filteredDocuments.length}</Tag>
+          </Flex>
+        }
         extra={
           <Space>
             <Button size="small" icon={<ReloadOutlined />} onClick={loadDocuments}>{t("refresh")}</Button>
@@ -454,15 +562,66 @@ export default function KnowledgePage() {
           </Space>
         }
       >
+        {/* Filter Bar */}
+        <Flex gap={8} style={{ marginBottom: 12 }} wrap>
+          <Input
+            placeholder="搜索文档名称..."
+            value={filterName}
+            onChange={(e) => setFilterName(e.target.value)}
+            prefix={<SearchOutlined />}
+            size="small"
+            style={{ width: 200 }}
+            allowClear
+          />
+          <Select
+            mode="multiple"
+            placeholder="筛选标签"
+            value={filterTags}
+            onChange={setFilterTags}
+            size="small"
+            style={{ minWidth: 150, maxWidth: 250 }}
+            allowClear
+            maxTagCount="responsive"
+            options={allTags.map((t) => ({
+              label: `${t.tag} (${t.count})`,
+              value: t.tag,
+            }))}
+          />
+          <Select
+            placeholder="文件格式"
+            value={filterFormat}
+            onChange={setFilterFormat}
+            size="small"
+            style={{ width: 120 }}
+            allowClear
+            options={allFormats.map((f) => ({
+              label: `${f.format.toUpperCase()} (${f.count})`,
+              value: f.format,
+            }))}
+          />
+          {(filterName || filterTags.length > 0 || filterFormat) && (
+            <Button size="small" onClick={clearFilters}>清除筛选</Button>
+          )}
+        </Flex>
+
         <Table
           columns={columns}
-          dataSource={documents}
+          dataSource={filteredDocuments}
           rowKey="id"
           size="small"
           loading={loadingDocs}
           pagination={{ pageSize: 20 }}
         />
       </Card>
+
+      {/* Share Dialog */}
+      <ShareDialog
+        open={!!shareDoc}
+        onClose={() => setShareDoc(null)}
+        resourceType="kb_document"
+        resourceId={shareDoc?.id || ""}
+        resourceName={shareDoc?.name || ""}
+      />
 
       {/* 文档解析内容查看 Drawer */}
       <Drawer

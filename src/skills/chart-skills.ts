@@ -4,7 +4,7 @@
  * 根据结构化数据自动推荐并生成最适合的 ECharts 图表配置。
  * 智能体可以分析数据特征，自动选择图表类型，生成可直接渲染的 ECharts option。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 // ===== 图表类型推荐引擎 =====
@@ -386,7 +386,7 @@ function generateHeatmapChart(
 
 export function createChartSkills(registry: SkillRegistry): void {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "chart_recommend",
       description:
         "分析结构化数据，推荐最适合的图表类型。参数: data(array of objects, 数据行), maxRecommendations?(number, 最多返回几个推荐, 默认 3)",
@@ -418,7 +418,7 @@ export function createChartSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "chart_generate",
       description:
         "根据数据生成 ECharts 图表配置。参数: data(array of objects), chartType?(string, 不指定则自动推荐), title?(string, 图表标题), config?(object, 自定义配置覆盖)",
@@ -463,7 +463,7 @@ export function createChartSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "chart_multi",
       description:
         "为同一组数据生成多种图表配置（仪表板视图）。参数: data(array of objects), title?(string), maxCharts?(number, 默认 3)",

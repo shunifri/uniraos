@@ -81,6 +81,15 @@ export function pageImageUrl(docId: string, page: number): string {
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
+/**
+ * 生成带认证 token 的视频帧图片 URL
+ */
+export function videoFrameUrl(docId: string, framePath: string): string {
+  const token = useAuthStore.getState().token;
+  const base = `/api/knowledge/documents/${docId}/frame?path=${encodeURIComponent(framePath)}`;
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+}
+
 export const getConfig = () => api.get('/api/config');
 
 export const saveLLMConfig = (config: unknown) => api.put('/api/config/llm', config);

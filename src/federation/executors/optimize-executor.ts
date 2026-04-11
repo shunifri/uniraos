@@ -115,12 +115,19 @@ Focus on fixing the performance issue described above.`;
     const newVersion = bumpPatchVersion(existingSkill.version);
     const newVersionedName = `${skillName}@${newVersion}`;
 
-    // Create a new skill definition with the generated code as a dynamic handler
+    // Create a new skill definition with the generated code wrapped in a sandbox handler
     const optimizedSkill = {
       ...existingSkill,
       version: newVersion,
-      // The handler wraps the generated code; in production this would be compiled
-      handler: existingSkill.handler,
+      handler: async (params: Record<string, unknown>, context: unknown) => {
+        try {
+          const result = await runInSandbox(generatedCode, params, { timeout: existingSkill.timeout ?? 30000 });
+          return { success: result.success, data: result.data };
+        } catch {
+          // Fallback to original handler if sandbox execution fails
+          return existingSkill.handler(params, context as any);
+        }
+      },
     };
 
     try {

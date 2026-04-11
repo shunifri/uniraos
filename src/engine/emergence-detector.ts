@@ -99,6 +99,9 @@ export class EmergenceDetector {
     this.detectSelfReferenceLoop(skillName, context.callStack, now);
     this.detectCapabilityEscalation(skillName, context.callStack, now);
     this.detectResourceSpike(skillName, now);
+
+    // Prevent unbounded growth
+    this.trimPatterns();
   }
 
   /**
@@ -151,6 +154,13 @@ export class EmergenceDetector {
    */
   clearPatterns(): void {
     this.patterns = [];
+  }
+
+  /** Trim patterns list to prevent unbounded growth */
+  private trimPatterns(): void {
+    if (this.patterns.length > 500) {
+      this.patterns = this.patterns.slice(-300);
+    }
   }
 
   // --- Detection strategies ---
