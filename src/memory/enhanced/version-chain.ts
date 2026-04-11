@@ -220,8 +220,8 @@ export function getRelated(
 }
 
 /**
- * VersionChain class — thin wrapper around the standalone version functions.
- * Provided for backwards compatibility with EnhancedLTMBackend.
+ * VersionChain 类 - 版本链管理的包装器
+ * 提供面向对象的接口来访问版本链函数
  */
 export class VersionChain {
   createVersion(
@@ -232,5 +232,17 @@ export class VersionChain {
     parentId?: string,
   ): { fields: VersionFields; deprecatedId: string | null } {
     return createVersion(key, value, entries, relation, parentId);
+  }
+
+  getHistory(key: string, entries: EnhancedLTMEntry[]): EnhancedLTMEntry[] {
+    return getHistory(key, entries);
+  }
+
+  getChain(id: string, entries: EnhancedLTMEntry[]): EnhancedLTMEntry[] {
+    return getChain(id, entries);
+  }
+
+  getRelated(id: string, entries: EnhancedLTMEntry[]): VersionContext | null {
+    return getRelated(id, entries);
   }
 }

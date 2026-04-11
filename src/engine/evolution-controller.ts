@@ -9,8 +9,12 @@
  * - 人类监督环
  * - Red Line 约束系统
  * - Genealogy 族谱 API
+ * - SQLite 持久化
  */
 import { log } from "../utils/logger.js";
+import Database from "better-sqlite3";
+import { existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
 export interface EvolutionConfig {
   /** Skill 生成 Skill 的最大深度（默认 3） */
@@ -116,62 +120,134 @@ export class EvolutionController {
   private pendingApprovals: PendingApproval[] = [];
   private redLines: RedLineConstraint[] = [];
   private violations: RedLineViolation[] = [];
-  private budget = {
-    totalBudget: 100,        // Total energy units
-    used: 0,                 // Used so far
-    costPerGenerate: 10,     // Cost to generate a new skill
-    costPerOptimize: 5,      // Cost to optimize existing
-    costPerAdopt: 3,         // Cost to adopt from federation
-    regenRate: 1,            // Units regenerated per hour
-    lastRegenAt: Date.now(),
-  };
+  private db: Database.Database | null = null;
+  private dbPath: string | null = null;
 
-  constructor(config?: Partial<EvolutionConfig>) {
+  constructor(config?: Partial<EvolutionConfig>, dbPath?: string) {
     this.config = { ...DEFAULT_EVOLUTION_CONFIG, ...config };
+    this.dbPath = dbPath || null;
+    if (dbPath) {
+      this.initDatabase();
+    }
     this.initBuiltInRedLines();
   }
 
-  /** Check if budget allows an action */
-  hasBudget(actionType: string): boolean {
-    this.regenerate();
-    const cost = this.getActionCost(actionType);
-    return (this.budget.totalBudget - this.budget.used) >= cost;
-  }
+  /** 初始化 SQLite 数据库 */
+  private initDatabase(): void {
+    if (!this.dbPath) return;
 
-  /** Consume budget for an action */
-  consumeBudget(actionType: string): void {
-    this.regenerate();
-    const cost = this.getActionCost(actionType);
-    this.budget.used += cost;
-  }
+    try {
+      // 确保目录存在
+      const dir = dirname(this.dbPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
 
-  /** Get current budget status */
-  getBudgetStatus(): { total: number; used: number; remaining: number; regenRate: number } {
-    this.regenerate();
-    return {
-      total: this.budget.totalBudget,
-      used: this.budget.used,
-      remaining: this.budget.totalBudget - this.budget.used,
-      regenRate: this.budget.regenRate,
-    };
-  }
+      this.db = new Database(this.dbPath);
+      this.db.pragma("journal_mode = WAL");
 
-  private regenerate(): void {
-    const now = Date.now();
-    const hoursPassed = (now - this.budget.lastRegenAt) / 3600000;
-    const regen = Math.floor(hoursPassed * this.budget.regenRate);
-    if (regen > 0) {
-      this.budget.used = Math.max(0, this.budget.used - regen);
-      this.budget.lastRegenAt = now;
+      // 创建表
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS evolution_generations (
+          id TEXT PRIMARY KEY,
+          skillName TEXT NOT NULL,
+          generatedBy TEXT NOT NULL,
+          depth INTEGER NOT NULL,
+          createdAt INTEGER NOT NULL,
+          approved INTEGER NOT NULL,
+          data TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS evolution_violations (
+          id TEXT PRIMARY KEY,
+          constraintId TEXT NOT NULL,
+          description TEXT NOT NULL,
+          blocking INTEGER NOT NULL,
+          skillName TEXT NOT NULL,
+          detectedAt INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS evolution_approvals (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL,
+          code TEXT,
+          capabilities TEXT,
+          generatedBy TEXT NOT NULL,
+          depth INTEGER NOT NULL,
+          createdAt INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          statusUpdatedAt INTEGER
+        );
+      `);
+
+      // 从数据库恢复历史数据
+      this.loadFromDatabase();
+      log("info", "evolution.db_initialized", { path: this.dbPath });
+    } catch (err) {
+      log("error", "evolution.db_init_failed", {
+        path: this.dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  private getActionCost(actionType: string): number {
-    switch (actionType) {
-      case "generate": return this.budget.costPerGenerate;
-      case "optimize": return this.budget.costPerOptimize;
-      case "adopt": return this.budget.costPerAdopt;
-      default: return 0;
+  /** 从数据库加载历史数据 */
+  private loadFromDatabase(): void {
+    if (!this.db) return;
+
+    try {
+      // 加载 generations
+      const genStmt = this.db.prepare("SELECT * FROM evolution_generations");
+      for (const row of genStmt.all() as any[]) {
+        this.generations.push({
+          name: row.skillName,
+          generatedBy: row.generatedBy,
+          depth: row.depth,
+          timestamp: row.createdAt,
+          approved: row.approved === 1,
+        });
+        this.currentDepth.set(row.skillName, row.depth);
+      }
+
+      // 加载 violations
+      const violStmt = this.db.prepare("SELECT * FROM evolution_violations");
+      for (const row of violStmt.all() as any[]) {
+        this.violations.push({
+          constraintId: row.constraintId,
+          description: row.description,
+          blocking: row.blocking === 1,
+          skillName: row.skillName,
+          detectedAt: row.detectedAt,
+        });
+      }
+
+      // 加载 pending approvals (status='pending')
+      const appStmt = this.db.prepare(
+        "SELECT * FROM evolution_approvals WHERE status = 'pending'"
+      );
+      for (const row of appStmt.all() as any[]) {
+        this.pendingApprovals.push({
+          id: row.id,
+          name: row.name,
+          description: row.description,
+          code: row.code || "",
+          capabilities: row.capabilities ? JSON.parse(row.capabilities) : [],
+          generatedBy: row.generatedBy,
+          depth: row.depth,
+          createdAt: row.createdAt,
+        });
+      }
+
+      log("info", "evolution.db_loaded", {
+        generations: this.generations.length,
+        violations: this.violations.length,
+        pendingApprovals: this.pendingApprovals.length,
+      });
+    } catch (err) {
+      log("error", "evolution.db_load_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -304,6 +380,21 @@ export class EvolutionController {
         };
         newViolations.push(violation);
         this.violations.push(violation);
+
+        // 持久化到数据库
+        if (this.db) {
+          try {
+            const violationId = crypto.randomUUID();
+            this.db.prepare(
+              "INSERT INTO evolution_violations (id, constraintId, description, blocking, skillName, detectedAt) VALUES (?, ?, ?, ?, ?, ?)"
+            ).run(violationId, rl.id, violationDesc, rl.blocking ? 1 : 0, ctx.skillName, now);
+          } catch (err) {
+            log("warn", "evolution.violation_persist_failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
         log(rl.blocking ? "error" : "warn", "redline.violation", {
           constraintId: rl.id,
           skillName: ctx.skillName,
@@ -451,11 +542,6 @@ export class EvolutionController {
 
   /** 检查是否允许生成新 Skill */
   canGenerate(name: string, generatedBy: string, capabilities: string[]): { allowed: boolean; reason?: string } {
-    // Budget check
-    if (!this.hasBudget("generate")) {
-      return { allowed: false, reason: "Insufficient evolution budget for generate action" };
-    }
-
     // Red line checks first
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
     const ctx: RedLineContext = {
@@ -505,18 +591,32 @@ export class EvolutionController {
   recordGeneration(name: string, generatedBy: string): void {
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
     const depth = parentDepth + 1;
+    const now = Date.now();
+    const approved = !this.config.requireHumanApproval;
+
     this.currentDepth.set(name, depth);
 
-    this.generations.push({
+    const record: GenerationRecord = {
       name,
       generatedBy,
       depth,
-      timestamp: Date.now(),
-      approved: !this.config.requireHumanApproval,
-    });
-    // 限制历史记录大小，防止内存泄漏
-    if (this.generations.length > 1000) {
-      this.generations = this.generations.slice(-500);
+      timestamp: now,
+      approved,
+    };
+    this.generations.push(record);
+
+    // 持久化到数据库
+    if (this.db) {
+      try {
+        const id = crypto.randomUUID();
+        this.db.prepare(
+          "INSERT INTO evolution_generations (id, skillName, generatedBy, depth, createdAt, approved, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(id, name, generatedBy, depth, now, approved ? 1 : 0, JSON.stringify(record));
+      } catch (err) {
+        log("warn", "evolution.generation_persist_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     log("info", "skill.generated", {
@@ -537,7 +637,9 @@ export class EvolutionController {
   ): string {
     const id = crypto.randomUUID();
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
-    this.pendingApprovals.push({
+    const now = Date.now();
+
+    const approval: PendingApproval = {
       id,
       name,
       description,
@@ -545,8 +647,22 @@ export class EvolutionController {
       capabilities,
       generatedBy,
       depth: parentDepth + 1,
-      createdAt: Date.now(),
-    });
+      createdAt: now,
+    };
+    this.pendingApprovals.push(approval);
+
+    // 持久化到数据库
+    if (this.db) {
+      try {
+        this.db.prepare(
+          "INSERT INTO evolution_approvals (id, name, description, code, capabilities, generatedBy, depth, createdAt, status, statusUpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(id, name, description, code, JSON.stringify(capabilities), generatedBy, approval.depth, now, "pending", now);
+      } catch (err) {
+        log("warn", "evolution.approval_persist_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     log("info", "skill.pending_approval", { id, name, generatedBy });
     return id;
@@ -593,6 +709,21 @@ export class EvolutionController {
   /** 更新配置 */
   updateConfig(partial: Partial<EvolutionConfig>): void {
     this.config = { ...this.config, ...partial };
+  }
+
+  /** 关闭数据库连接 */
+  close(): void {
+    if (this.db) {
+      try {
+        this.db.close();
+        this.db = null;
+        log("info", "evolution.db_closed", {});
+      } catch (err) {
+        log("error", "evolution.db_close_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 }
 

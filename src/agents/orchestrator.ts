@@ -79,14 +79,6 @@ const TOOL_USAGE_GUIDELINES = `
 - 查询 SQLite 时使用 db_query
 - 执行写操作分别使用 mysql_execute / db_execute
 
-### 用户交互确认（极其重要！必须遵守！）
-当需要用户做**任何选择或确认**时，**必须**调用 user_confirm，**绝对禁止**用文字提问：
-- 有固定选项 → user_confirm(type="selection")，优先用这种
-- 需要自由输入（姓名/邮箱等） → user_confirm(type="form")
-- 确认操作 → user_confirm(type="approval")
-- **回复末尾绝不能出现"你想要...？""需要我...吗？"这类选择题**
-- 推荐完某样东西后的跟进也必须用 selection 卡片，不能文字追问
-
 ### 记忆管理
 - 重要的对话结论、用户偏好，应主动存入短期记忆（stm_store）
 - 需要长期保存的知识使用 ltm_store
@@ -94,22 +86,14 @@ const TOOL_USAGE_GUIDELINES = `
 ### 输出格式
 - 回复使用 Markdown 格式
 - 代码块标注语言类型
-- 表格数据优先用图表展示，其次用 Markdown 表格
-
-### 用户交互确认（最高优先级！每次回复必须检查！）
-回复结束前必须自检——如果你的回复末尾出现了以下任何模式，**立刻停止输出文本，改为调用 user_confirm**：
-- 任何问号结尾的选择题："你想...？""需要我...？""要不要...？"
-- 列举多个选项让用户选择："1. xxx 2. xxx 3. xxx 请选择"
-- 征求下一步意见："请告诉我您的偏好""您希望我..."
-- **正确做法**：先输出陈述性总结，然后调用 user_confirm(type="selection", options=[...]) 给出选项卡片
-- **绝对禁止**在文本末尾写选择题后就结束回复`;
+- 表格数据优先用图表展示，其次用 Markdown 表格`;
 
 
 /** 默认 Profile 模板 */
 const DEFAULT_PROFILES: Record<string, AgentProfile> = {
   general: {
     role: "通用助手",
-    personality: "你是一个友善的 AI 助手，擅长回答各类问题。当你需要用户做任何选择时，必须调用 user_confirm Skill 而不是用文字提问。回复末尾绝不能出现问号选择题。",
+    personality: "你是一个友善的 AI 助手，擅长回答各类问题。",
     expertise: ["通用知识", "问答"],
     allowedSkills: [],
   },
@@ -310,25 +294,26 @@ export class Orchestrator {
 
     try {
       const skills = this.deps.registry.list();
-      const hasGraphQuery = skills.some((s) => s.name === "graph_query");
       const hasLtmSearch = skills.some((s) => s.name === "ltm_search");
-      // KB 搜索由 AI 通过 tool-use 自主调用 kb_search，不再预注入
+      const hasKbSearch = skills.some((s) => s.name === "kb_search");
+
+      // 并行检索 LTM 和知识库
       const promises: Promise<{ type: string; data: any } | null>[] = [];
 
-      // 优先：知识图谱 BFS 检索（拓扑关联，效率更高）
-      if (hasGraphQuery) {
-        promises.push(
-          Promise.race([
-            this.deps.engine.execute("graph_query", { query: userMessage, maxDepth: 2, maxNodes: 5 }).then((r) => r.success && (r.data as any)?.nodes?.length > 0 ? { type: "graph", data: r.data } : null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
-          ]).catch(() => null)
-        );
-      } else if (hasLtmSearch) {
-        // 降级：LTM 关键词/语义搜索
+      if (hasLtmSearch) {
         promises.push(
           Promise.race([
             this.deps.engine.execute("ltm_search", { query: userMessage, limit: 5 }).then((r) => r.success ? { type: "ltm", data: r.data } : null),
             new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+          ]).catch(() => null)
+        );
+      }
+
+      if (hasKbSearch) {
+        promises.push(
+          Promise.race([
+            this.deps.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.35 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
           ]).catch(() => null)
         );
       }
@@ -338,16 +323,7 @@ export class Orchestrator {
       for (const res of results) {
         if (!res || !res.data || typeof res.data !== "object") continue;
 
-        if (res.type === "graph") {
-          // 知识图谱 BFS 结果
-          const nodes = (res.data.nodes ?? []) as Array<{ label: string; tags: string[]; properties: Record<string, unknown> }>;
-          if (nodes.length > 0) {
-            const memoryLines = nodes.map(
-              (n) => `- [${n.label}] ${n.properties?.value ? String(n.properties.value).slice(0, 300) : ""}${n.tags?.length ? ` (tags: ${n.tags.join(", ")})` : ""}`
-            );
-            context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n${memoryLines.join("\n")}`;
-          }
-        } else if (res.type === "ltm") {
+        if (res.type === "ltm") {
           const data = res.data as { results?: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> };
           if (data.results && data.results.length > 0) {
             context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n`;
@@ -358,7 +334,33 @@ export class Orchestrator {
           }
         }
 
-        // KB 搜索由 AI 通过 tool-use 自主调用 kb_search，不再预注入
+        if (res.type === "kb") {
+          const data = res.data as { results?: Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string }> };
+          if (data.results && data.results.length > 0) {
+            // 编号引用，存储引用列表
+            this.lastKbReferences = data.results.map((r: any, i: number) => ({
+              index: i + 1,
+              docId: r.docId,
+              docName: r.docName,
+              chunkIndex: r.chunkIndex,
+              content: r.content,
+              score: r.score,
+              pageNumber: r.pageNumber ?? null,
+              bboxes: r.bboxes ?? null,
+            }));
+
+            const kbLines = this.lastKbReferences.map(
+              (r) => `[^${r.index}] 来源:《${r.docName}》第${r.chunkIndex + 1}段 — ${r.content.slice(0, 400)}${r.content.length > 400 ? "..." : ""}`
+            );
+            context += `\n\n## 相关知识（来自用户知识库）\n${kbLines.join("\n\n")}\n\n⚠️ 引用规则（必须严格遵守）：
+- **引用格式**：在回答中引用知识库内容时，**必须**在对应语句末尾使用 [^编号] 标注来源，如"该项目要求供应商具备XX资质[^1]"
+- 每条引用的编号对应上方的知识库条目编号
+- 仅当知识库内容与用户问题**确实相关**时才引用
+- 如果以上知识库结果与用户问题**不相关**（主题不匹配），则**忽略这些结果**，不要引用
+- 禁止基于不相关的知识库内容编造关联关系
+- 如果知识库中没有直接相关的信息，明确告知用户"知识库中未找到相关信息"，然后再用其他方式回答`;
+          }
+        }
       }
     } catch {
       // 静默失败
@@ -409,13 +411,12 @@ export class Orchestrator {
         this.truncateHistory(userId, 2);
       }
       const enrichedInput = await this.buildEnrichedInput(input);
-      // Override deepThink based on AI's strategy decision
-      if (decision.needsDeepThink) {
-        enrichedInput.context = { ...enrichedInput.context, deepThink: true };
-      }
       switch (decision.level) {
         case "simple":
           result = await this.runSimple(enrichedInput);
+          break;
+        case "team":
+          result = await this.runTeam(enrichedInput, decision);
           break;
         default:
           result = await this.runReact(enrichedInput);
@@ -467,10 +468,6 @@ export class Orchestrator {
     }
 
     const enrichedInput = await this.buildEnrichedInput(input);
-    // Override deepThink based on AI's strategy decision
-    if (decision.needsDeepThink) {
-      enrichedInput.context = { ...enrichedInput.context, deepThink: true };
-    }
 
     yield {
       event: "strategy_selected",
@@ -480,9 +477,14 @@ export class Orchestrator {
       },
     };
 
-    const stream = decision.level === "simple"
-      ? this.runSimpleStream(enrichedInput)
-      : this.runReactStream(enrichedInput);
+    let stream: AsyncGenerator<AgentStreamEvent>;
+    if (decision.level === "simple") {
+      stream = this.runSimpleStream(enrichedInput);
+    } else if (decision.level === "team") {
+      stream = this.runTeamStream(enrichedInput, decision);
+    } else {
+      stream = this.runReactStream(enrichedInput);
+    }
 
     for await (const event of stream) {
       if (event.event === "agent_done") {
@@ -523,24 +525,45 @@ ${skillNames || "（无）"}
 ### 级别
 - simple: 简单问答、闲聊、翻译、知识查询 — 不需要工具调用
 - react: 需要使用工具的单人任务 — 搜索、计算、数据库查询、记忆、图表生成等（绝大多数任务应使用此级别）
+- team: 多智能体协作任务 — 需要多个专家分工合作、并行分析、或复杂的协调流程
+
+### Team 协议选择指南
+当选择 team 级别时，根据任务特点选择协议：
+- HIERARCHICAL: 任务有明确的层次结构或管理关系（如：代码审查需要架构师→前端专家→后端专家）
+- SEQUENTIAL: 任务需要按顺序执行，后续任务依赖前面的结果（如：数据处理流水线：清洗→验证→分析→生成报告）
+- SWARM: 多个独立子任务可并行执行，最后汇聚结果（如：从多个来源搜索信息然后合成）
+- CONTRACT_NET: 任务分配时需要多个智能体竞争投标（如：多个专家评估同一个方案）
+- A2A: 点对点移交，智能体间需要协议协商（如：前端设计→后端实现→测试）
+- BLACKBOARD: 需要共享工作区协调多个智能体的异步工作（如：复杂系统设计，多个专家在黑板上更新进度）
+- MARKET_BASED: 基于资源和能力的经济博弈（如：任务分配时根据成本和能力分配资源）
 
 ## 输出格式（仅 JSON，无 markdown）
 {
-  "level": "simple|react",
+  "level": "simple|react|team",
   "reasoning": "一句话说明选择原因",
   "topicChange": false,
-  "needsDeepThink": false
+  "protocol": "HIERARCHICAL|SEQUENTIAL|SWARM|CONTRACT_NET|A2A|BLACKBOARD|MARKET_BASED（仅当 level=team 时必需）",
+  "team": {
+    "members": [{"role":"角色名","expertise":["领域1"],"personality":"人格描述"}],
+    "manager": {"role":"经理角色","expertise":["领域"],"personality":"人格描述"},
+    "pipelineSteps": ["步骤1","步骤2"]
+  }
 }
 
-## needsDeepThink 判断规则
-- true: 复杂分析、多步推理、专业领域问题、需要深入思考的任务
-- false: 简单问答、闲聊、直接查询、工具调用任务（默认false，大多数任务不需要）
+## Team 触发条件
+选择 team 级别仅当：
+- 任务包含多个独立子目标（如：分析文档同时生成摘要和数据可视化）
+- 明确涉及多角色协作（如：评审代码需要多个专家视角）
+- 需要并行分析或竞争选择（如：多个方案需要同时评估）
+- LLM 识别需要特定协议的情况
+
+否则优先选 react（更简洁高效）。
 
 ## 重要规则
 - 如果对话上下文中已经在进行某项任务（如数据库查询、数据分析），用户的后续追问（如"继续"、"详细分析"、"再查一下"等）**必须**选 react，延续已有任务
-- 需要工具的任务（查数据库、搜索、生成图表、文件操作等）一律选 react
+- 需要工具的单步任务（查数据库、搜索、生成图表、文件操作等）一律选 react
 - 只有纯粹的闲聊、问答、翻译才选 simple
-- 不确定时选 react（更安全）
+- Team 应谨慎使用，仅当任务确实需要多智能体协作时才使用
 
 ## 话题变化检测（topicChange）
 - 如果用户的新消息与最近对话上下文的话题**明显不同**，设置 topicChange=true
@@ -550,10 +573,9 @@ ${skillNames || "（无）"}
 
 
     try {
-      // 策略分析不使用 deepThink（快速决策，不需要深度思考）
       const response = await this.deps.provider.chat([
         { role: "user", content: prompt },
-      ], undefined, undefined);
+      ]);
 
       const content = response.content?.trim() ?? "{}";
       const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -646,13 +668,11 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
   }
 
   private buildDecision(parsed: any): StrategyDecision {
-    // 强制使用 react — simple 模式没有工具调用能力，会导致 user_confirm 等功能失效
-    const level = (parsed.level === "simple") ? "react" : (parsed.level ?? "react");
+    const level = parsed.level ?? "react";
     const decision: StrategyDecision = {
       level,
       reasoning: parsed.reasoning ?? "",
       topicChange: !!parsed.topicChange,
-      needsDeepThink: !!parsed.needsDeepThink,
     };
 
     if (level === "team" && parsed.protocol) {

@@ -5,6 +5,7 @@ import { join } from "path";
 import { existsSync, renameSync, mkdirSync } from "fs";
 import { ShortTermMemory } from "../memory/stm.js";
 import { FileLTMBackend } from "../memory/ltm.js";
+import { EnhancedLTMBackend } from "../memory/enhanced/enhanced-ltm-backend.js";
 import type { LTMBackend } from "../memory/ltm-backend.js";
 import type { EmbeddingProvider } from "../memory/embedding-provider.js";
 import type { MemoryConfig } from "../config/config-manager.js";
@@ -29,6 +30,7 @@ export class UserSessionManager {
   private baseLtmPath: string;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
+  private llmProvider: LLMProvider | null = null;
   private memoryConfig: MemoryConfig;
 
   constructor(baseLtmPath: string, memoryConfig?: MemoryConfig) {
@@ -46,6 +48,11 @@ export class UserSessionManager {
         session.ltm.setEmbeddingProvider(provider);
       }
     }
+  }
+
+  /** 设置 LLM provider，用于冲突检测、事实提取等增强能力 */
+  setLLMProvider(provider: LLMProvider): void {
+    this.llmProvider = provider;
   }
 
   /** 获取当前记忆后端类型 */
@@ -76,13 +83,16 @@ export class UserSessionManager {
 
   /** 根据配置创建对应的 LTM 后端 */
   private createLTMBackend(userId: string): LTMBackend {
-    // 默认: 文件后端
+    // 使用 EnhancedLTMBackend 包装 FileLTMBackend，自动获得版本链、遗忘管理、冲突检测能力
     const ltmPath = join(this.baseLtmPath, userId);
-    return new FileLTMBackend({
-      storePath: ltmPath,
-      archiveIntervalMs: 60 * 60 * 1000,
-      embeddingProvider: this.embeddingProvider ?? undefined,
-    });
+    return new EnhancedLTMBackend(
+      {
+        storePath: ltmPath,
+        archiveIntervalMs: 60 * 60 * 1000,
+        embeddingProvider: this.embeddingProvider ?? undefined,
+      },
+      this.llmProvider ?? undefined,
+    );
   }
 
   /** 为指定用户重建 AgentLoop */
