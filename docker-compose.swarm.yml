@@ -1,0 +1,234 @@
+# =============================================================================
+# RAOS Docker Swarm 集群部署配置
+# 支持华为云 SWR 镜像，水平扩展，负载均衡
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # 后端 API 服务 (可水平扩展)
+  # ===========================================================================
+  backend:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:latest
+    # 部署配置 - 集群模式
+    deploy:
+      mode: replicated
+      replicas: 2
+      # 滚动更新配置
+      update_config:
+        parallelism: 1
+        delay: 30s
+        failure_action: rollback
+        order: start-first
+      # 回滚配置
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+      # 资源限制
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      # 放置约束
+      placement:
+        constraints:
+          - node.labels.raos.backend == true
+        preferences:
+          - spread: node.id
+      # 重启策略
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      # 健康检查
+      healthcheck:
+        test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 60s
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # 数据库配置
+      MYSQL_PRIMARY_HOST: mysql-primary
+      MYSQL_PRIMARY_PORT: 3306
+      MYSQL_REPLICA_HOSTS: mysql-replica:3306
+      MYSQL_USER: raos
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_DATABASE: raos
+      # Redis 配置
+      REDIS_HOSTS: redis:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      # Qdrant 配置
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      # RabbitMQ 配置
+      RABBITMQ_URL_FILE: /run/secrets/rabbitmq_url
+      # MinIO 配置
+      MINIO_ENDPOINT: minio
+      MINIO_USER: raos
+      MINIO_PASSWORD_FILE: /run/secrets/minio_password
+      # JWT 密钥
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+    secrets:
+      - mysql_password
+      - redis_password
+      - rabbitmq_url
+      - minio_password
+      - jwt_secret
+    networks:
+      - raos-backend
+    # 端口不暴露，通过 Traefik/Nginx 负载均衡
+    # 如需直接访问可取消下面注释
+    # ports:
+    #   - target: 3000
+    #     published: 3000
+    #     mode: host
+
+  # ===========================================================================
+  # 队列消费者服务 (可独立扩展)
+  # ===========================================================================
+  workers:
+    image: swr.cn-north-4.myhuaweicloud.com/raos/raos-backend:latest
+    command: npm run worker:start
+    deploy:
+      mode: replicated
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 20s
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      placement:
+        constraints:
+          - node.labels.raos.worker == true
+    environment:
+      NODE_ENV: production
+      MYSQL_PRIMARY_HOST: mysql-primary
+      MYSQL_USER: raos
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      REDIS_HOSTS: redis:6379
+      QDRANT_HOST: qdrant
+      RABBITMQ_URL_FILE: /run/secrets/rabbitmq_url
+    secrets:
+      - mysql_password
+      - redis_password
+      - rabbitmq_url
+    networks:
+      - raos-backend
+
+  # ===========================================================================
+  # 前端 Web 服务 (可水平扩展)
+  # ===========================================================================
+  frontend:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:latest
+    deploy:
+      mode: replicated
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 20s
+        order: start-first
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+      placement:
+        constraints:
+          - node.labels.raos.frontend == true
+    networks:
+      - raos-backend
+      - raos-public
+
+  # ===========================================================================
+  # Traefik 负载均衡器 (入口网关)
+  # ===========================================================================
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.network=raos-public"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@raos.dev"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--accesslog=true"
+      - "--metrics.prometheus=true"
+    ports:
+      - target: 80
+        published: 80
+        mode: host
+      - target: 443
+        published: 443
+        mode: host
+      - target: 8080
+        published: 8080
+        mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    deploy:
+      mode: global  # 每个节点运行一个
+      placement:
+        constraints:
+          - node.labels.traefik-public.traefik-public-certificates == true
+      update_config:
+        parallelism: 1
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.api.rule=Host(`traefik.raos.local`)"
+        - "traefik.http.routers.api.service=api@internal"
+        - "traefik.http.routers.api.middlewares=auth"
+        - "traefik.http.middlewares.auth.basicauth.users=admin:$$apr1$$H6uskkkW$$IgXLP6ewTrSuBkTrqE8wj/"
+    networks:
+      - raos-public
+
+# =============================================================================
+# 密钥配置 (Docker Secrets)
+# =============================================================================
+secrets:
+  mysql_password:
+    external: true
+  redis_password:
+    external: true
+  rabbitmq_url:
+    external: true
+  minio_password:
+    external: true
+  jwt_secret:
+    external: true
+
+# =============================================================================
+# 网络配置
+# =============================================================================
+networks:
+  raos-backend:
+    driver: overlay
+    attachable: true
+    internal: true  # 仅内部访问，不暴露到外部
+  raos-public:
+    driver: overlay
+    attachable: true
+    # 外部可访问
+
+# =============================================================================
+# 数据卷
+# =============================================================================
+volumes:
+  traefik_certs:
+    driver: local
