@@ -32,11 +32,13 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
+    "@qdrant/qdrant-js": "^1.17.0",
     "better-sqlite3": "^12.8.0",
     "docx": "^9.6.1",
+    "ioredis": "^5.10.1",
     "mammoth": "^1.12.0",
     "marked": "^17.0.4",
-    "mysql2": "^3.19.1",
+    "mysql2": "^3.22.0",
     "p-limit": "^7.3.0",
     "pdf-parse": "^1.1.1",
     "pdf2pic": "^3.2.0",
