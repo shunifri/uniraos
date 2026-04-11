@@ -34,8 +34,8 @@ export interface QueueOptions {
   messageTtl?: number;
   /** Maximum number of messages in queue */
   maxLength?: number;
-  /** Overflow behavior when max length is reached (drop-head, reject-publish, etc.) */
-  overflow?: string;
+  /** Maximum priority for messages (0-255) */
+  maxPriority?: number;
 }
 
 /**

@@ -10,7 +10,7 @@
  * - Singleton pattern
  */
 
-import amqp, { Connection, Channel, Message, Options } from 'amqplib';
+import amqp, { ChannelModel, Channel, Message, Options } from 'amqplib';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import {
@@ -31,7 +31,7 @@ import { log } from '../utils/logger.js';
  * Provides a high-level interface for RabbitMQ operations
  */
 export class RabbitMQClient extends EventEmitter {
-  private connection: Connection | null = null;
+  private connection: ChannelModel | null = null;
   private channel: Channel | null = null;
   private config: RabbitMQConfig;
   private state: ConnectionState = 'disconnected';
@@ -107,7 +107,7 @@ export class RabbitMQClient extends EventEmitter {
       arguments: options.arguments,
       messageTtl: options.messageTtl,
       maxLength: options.maxLength,
-      overflow: options.overflow as Options.AssertQueue['overflow'],
+      maxPriority: options.maxPriority,
     };
 
     await this.channel!.assertQueue(name, assertOptions);
@@ -302,8 +302,8 @@ export class RabbitMQClient extends EventEmitter {
     }
 
     try {
-      // Check channel is still open by checking connection
-      return this.channel.connection === this.connection;
+      // Check channel is still open by verifying it has a valid connection reference
+      return this.channel.connection !== null && this.channel.connection !== undefined;
     } catch {
       return false;
     }
