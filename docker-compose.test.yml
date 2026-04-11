@@ -1,0 +1,35 @@
+# 快速测试配置
+version: '3.8'
+
+services:
+  backend-test:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:test
+    container_name: raos-backend-test
+    command: sh -c "echo 'Backend test service running' && sleep 3600"
+    ports:
+      - "3000:3000"
+    networks:
+      - test-network
+
+  frontend-test:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
+    container_name: raos-frontend-test
+    command: sh -c "echo 'Frontend test service running' && nginx -g 'daemon off;'"
+    ports:
+      - "8081:80"
+    networks:
+      - test-network
+
+  # 压力测试工具
+  load-test:
+    image: williamyeh/wrk:latest
+    container_name: raos-load-test
+    command: sh -c "echo 'Load test ready' && sleep 3600"
+    depends_on:
+      - backend-test
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge

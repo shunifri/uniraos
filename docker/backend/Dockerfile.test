@@ -1,0 +1,24 @@
+# 轻量级测试镜像
+FROM node:20-alpine
+
+WORKDIR /app
+
+# 复制源码
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# 安装依赖（包含 devDependencies）
+RUN npm install
+
+# 复制源码
+COPY src ./src
+COPY web ./web
+
+# 构建
+RUN npm run build
+
+# 暴露端口
+EXPOSE 3000
+
+# 启动
+CMD ["npm", "run", "dev"]

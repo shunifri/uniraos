@@ -288,9 +288,9 @@ services:
   
   # RAOS 前端 Web 服务
   # 前端 Web 服务
-  raos-frontend:test
-    # 华为云 SWR 镜像: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
-    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
+  raos-frontend:
+    # 华为云 SWR 镜像: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:latest
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:latest
     build:
       context: ./web
       dockerfile: ../docker/frontend/Dockerfile
@@ -392,6 +392,6 @@ networks:
   raos-backend:test
     driver: bridge
     internal: false
-  raos-frontend:test
+  raos-frontend:
     driver: bridge
     internal: false
