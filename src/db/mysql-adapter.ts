@@ -249,10 +249,9 @@ export class MySQLAdapter {
       return this.primaryPool;
     }
 
-    const pool = this.replicaPools[this.replicaIndex];
-    this.replicaIndex = (this.replicaIndex + 1) % this.replicaPools.length;
-
-    return pool;
+    // Atomic increment with modulo for thread-safe round-robin selection
+    const index = (this.replicaIndex++) % this.replicaPools.length;
+    return this.replicaPools[index];
   }
 
   /**
