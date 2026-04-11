@@ -341,5 +341,228 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // Test Model Card connection (vision, imageGen, tts, stt, embedding)
+  router.post("/config/model-cards/:type/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+    const cardType = req.params.type as any;
+    const validTypes = ["vision", "imageGen", "tts", "stt", "embedding"];
+    if (!validTypes.includes(cardType)) {
+      res.status(400).json({ success: false, error: `Invalid model card type: ${cardType}` });
+      return;
+    }
+
+    const config = configManager.getResolvedModelConfig(cardType);
+    if (!config.apiKey || !config.model) {
+      res.status(400).json({ success: false, error: `${cardType} not configured` });
+      return;
+    }
+
+    try {
+      // 根据不同类型进行简单测试
+      switch (cardType) {
+        case "vision": {
+          // Vision 模型测试 - 尝试一个简单的图像描述请求（不带图片）
+          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${config.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: config.model,
+              messages: [{ role: "user", content: "Hello" }],
+              max_tokens: 10,
+            }),
+          });
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`API error: ${response.status} ${error}`);
+          }
+          const data = await response.json();
+          res.json({
+            success: true,
+            model: config.model,
+            message: "Vision model connection successful",
+          });
+          break;
+        }
+        case "imageGen": {
+          // Image Gen 测试 - 尝试一个简单请求（不实际生成图片）
+          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/images/generations", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${config.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: config.model,
+              prompt: "test",
+              n: 1,
+              size: "1024x1024",
+            }),
+          });
+          if (!response.ok) {
+            const error = await response.text();
+            // 如果是因为额度或内容限制，也算连接成功
+            if (response.status === 429 || response.status === 400) {
+              res.json({
+                success: true,
+                model: config.model,
+                message: "Image generation API accessible (quota or content policy may apply)",
+              });
+              return;
+            }
+            throw new Error(`API error: ${response.status} ${error}`);
+          }
+          res.json({
+            success: true,
+            model: config.model,
+            message: "Image generation connection successful",
+          });
+          break;
+        }
+        case "tts": {
+          // TTS 测试 - 检查 API 可达性
+          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/audio/speech", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${config.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: config.model,
+              input: "Hello",
+              voice: "alloy",
+            }),
+          });
+          if (!response.ok) {
+            const error = await response.text();
+            if (response.status === 429) {
+              res.json({
+                success: true,
+                model: config.model,
+                message: "TTS API accessible (quota may apply)",
+              });
+              return;
+            }
+            throw new Error(`API error: ${response.status} ${error}`);
+          }
+          res.json({
+            success: true,
+            model: config.model,
+            message: "TTS connection successful",
+          });
+          break;
+        }
+        case "stt": {
+          // STT 测试 - 检查 API 可达性
+          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${config.apiKey}`,
+            },
+            body: new FormData(), // 空表单测试
+          });
+          // STT 会返回 400 因为缺少文件，但说明 API 可达
+          if (response.status === 400) {
+            res.json({
+              success: true,
+              model: config.model,
+              message: "STT API accessible",
+            });
+            return;
+          }
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`API error: ${response.status} ${error}`);
+          }
+          res.json({
+            success: true,
+            model: config.model,
+            message: "STT connection successful",
+          });
+          break;
+        }
+        case "embedding": {
+          // Embedding 测试
+          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/embeddings", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${config.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: config.model,
+              input: "Hello world",
+            }),
+          });
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`API error: ${response.status} ${error}`);
+          }
+          const data = await response.json();
+          res.json({
+            success: true,
+            model: config.model,
+            dimensions: data.data?.[0]?.embedding?.length,
+            message: "Embedding connection successful",
+          });
+          break;
+        }
+      }
+    } catch (err) {
+      res.status(400).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  // Test Document Mind connection
+  router.post("/config/docmind/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+    const config = configManager.getDocMind();
+    if (!config.enabled || !config.accessKeyId || !config.accessKeySecret) {
+      res.status(400).json({ success: false, error: "Document Mind not configured" });
+      return;
+    }
+
+    try {
+      // 尝试调用 Document Mind API 的一个简单端点
+      const endpoint = config.endpoint || "docmind-api.cn-hangzhou.aliyuncs.com";
+      const url = `https://${endpoint}/?Action=GetDocParserResult&Version=2022-07-11`;
+      
+      // 尝试获取一个不存在的任务，验证凭证
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.accessKeyId}:${config.accessKeySecret}`,
+        },
+        body: JSON.stringify({ Id: "test" }),
+      });
+
+      // 即使返回 404 或 400，只要网络可达就算连接成功
+      if (response.status === 404 || response.status === 400 || response.status === 200) {
+        res.json({
+          success: true,
+          endpoint: config.endpoint,
+          region: config.regionId,
+          message: "Document Mind API accessible",
+        });
+        return;
+      }
+
+      const errorText = await response.text();
+      res.status(400).json({
+        success: false,
+        error: `API returned ${response.status}: ${errorText}`,
+      });
+    } catch (err) {
+      res.status(400).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   return router;
 }

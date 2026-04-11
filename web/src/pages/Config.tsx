@@ -75,14 +75,14 @@ function ModelCardForm({
   initialValues,
   onSave,
   isLLM,
-  testLLM,
+  testModel,
   testLoading,
 }: {
   def: CardDef;
   initialValues?: any;
   onSave: (type: ModelCardType, values: any) => Promise<void>;
   isLLM: boolean;
-  testLLM?: () => void;
+  testModel?: () => void;
   testLoading?: boolean;
 }) {
   const t = useI18nStore((s) => s.t);
@@ -187,8 +187,8 @@ function ModelCardForm({
             <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
               {t("save")}
             </Button>
-            {isLLM && testLLM && (
-              <Button onClick={testLLM} loading={testLoading}>
+            {testModel && (
+              <Button onClick={testModel} loading={testLoading}>
                 {t("test_connection")}
               </Button>
             )}
@@ -211,7 +211,7 @@ export default function ConfigPage() {
   const [docMindForm] = Form.useForm();
 
   const [cardConfigs, setCardConfigs] = useState<Record<string, any>>({});
-  const [testLoading, setTestLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState<Record<string, boolean>>({});
   const [peers, setPeers] = useState<Array<{ endpoint: string; name?: string }>>([]);
   const [newPeer, setNewPeer] = useState({ endpoint: "", name: "" });
   const [docMindConfig, setDocMindConfig] = useState<any>({});
@@ -269,17 +269,39 @@ export default function ConfigPage() {
     } catch (e: any) { message.error(e.message); }
   };
 
-  const testLLM = async () => {
-    setTestLoading(true);
+  const testModelCard = async (type: ModelCardType) => {
+    setTestLoading((prev) => ({ ...prev, [type]: true }));
     try {
-      const data = await api.post<any>("/api/llm/test", {});
+      if (type === "llm") {
+        const data = await api.post<any>("/api/llm/test", {});
+        if (data.success) {
+          message.success(`LLM Connected! Model: ${data.model}`);
+        } else {
+          message.error(data.error);
+        }
+      } else {
+        const data = await api.post<any>(`/api/config/model-cards/${type}/test`, {});
+        if (data.success) {
+          message.success(`${type} test passed: ${data.message || "Connected"}`);
+        } else {
+          message.error(data.error);
+        }
+      }
+    } catch (e: any) { message.error(e.message); }
+    setTestLoading((prev) => ({ ...prev, [type]: false }));
+  };
+
+  const testDocMind = async () => {
+    setTestLoading((prev) => ({ ...prev, docmind: true }));
+    try {
+      const data = await api.post<any>("/api/config/docmind/test", {});
       if (data.success) {
-        message.success(`Connected! Model: ${data.model}`);
+        message.success(`Document Mind connected! Endpoint: ${data.endpoint}`);
       } else {
         message.error(data.error);
       }
     } catch (e: any) { message.error(e.message); }
-    setTestLoading(false);
+    setTestLoading((prev) => ({ ...prev, docmind: false }));
   };
 
   const saveAgent = async (values: any) => {
@@ -384,8 +406,8 @@ export default function ConfigPage() {
                     initialValues={cardConfigs[def.key]}
                     onSave={saveModelCard}
                     isLLM={def.key === "llm"}
-                    testLLM={def.key === "llm" ? testLLM : undefined}
-                    testLoading={testLoading}
+                    testModel={() => testModelCard(def.key)}
+                    testLoading={testLoading[def.key]}
                   />
                 </Col>
               ))}
@@ -471,9 +493,18 @@ export default function ConfigPage() {
                   <InputNumber min={1} max={30} addonAfter="秒" style={{ width: 150 }} />
                 </Form.Item>
                 <Form.Item>
-                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
-                    {t("save")}
-                  </Button>
+                  <Space>
+                    <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
+                      {t("save")}
+                    </Button>
+                    <Button 
+                      onClick={testDocMind} 
+                      loading={testLoading["docmind"]}
+                      icon={<ApiOutlined />}
+                    >
+                      测试连接
+                    </Button>
+                  </Space>
                 </Form.Item>
               </Form>
             </Card>
