@@ -10,7 +10,7 @@
  * - Singleton pattern
  */
 
-import amqp, { ChannelModel, Channel, Message, Options } from 'amqplib';
+import { connect as amqpConnect, ChannelModel, Channel, Message, Options } from 'amqplib';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import {
@@ -60,7 +60,7 @@ export class RabbitMQClient extends EventEmitter {
     try {
       log('info', 'rabbitmq_connecting', { url: this.maskUrl(this.config.url) });
 
-      this.connection = await amqp.connect(this.config.url, {
+      this.connection = await amqpConnect(this.config.url, {
         timeout: this.config.connectionTimeout,
         heartbeat: this.config.heartbeat,
       });
@@ -478,12 +478,12 @@ export class RabbitMQClient extends EventEmitter {
     const oldConsumers = new Map(this.consumers);
     this.consumers.clear();
 
-    for (const [, { queue, handler }] of oldConsumers) {
+    for (const entry of Array.from(oldConsumers.values())) {
       try {
-        await this.consume(queue, handler);
+        await this.consume(entry.queue, entry.handler);
       } catch (error) {
         log('error', 'rabbitmq_consumer_restore_failed', {
-          queue,
+          queue: entry.queue,
           error: (error as Error).message,
         });
       }

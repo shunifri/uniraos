@@ -183,7 +183,7 @@ describe('RabbitMQClient', () => {
         autoDelete: true,
         messageTtl: 5000,
         maxLength: 1000,
-        overflow: 'drop-head',
+        maxPriority: 10,
         arguments: { 'x-custom-arg': 'value' },
       });
       
@@ -192,7 +192,7 @@ describe('RabbitMQClient', () => {
         autoDelete: true,
         messageTtl: 5000,
         maxLength: 1000,
-        overflow: 'drop-head',
+        maxPriority: 10,
         arguments: { 'x-custom-arg': 'value' },
       });
     });
