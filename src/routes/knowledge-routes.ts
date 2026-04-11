@@ -166,5 +166,60 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // SSE: 文档解析进度流
+  router.get("/knowledge/documents/:docId/stream", requireAuth, (req, res) => {
+    const owner = req.user!.id;
+    const docId = String(req.params.docId);
+
+    // 设置 SSE 头
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // 获取解析队列
+    const { getParsingQueue } = require("../services/parsing-queue.js");
+    const queue = getParsingQueue();
+
+    if (!queue) {
+      res.write(`data: ${JSON.stringify({ status: 'failed', error: '解析队列未初始化' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // 获取当前任务状态
+    const task = queue.getTask(docId);
+    if (!task || task.owner !== owner) {
+      res.write(`data: ${JSON.stringify({ status: 'failed', error: '任务不存在' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // 订阅进度更新
+    const unsubscribe = queue.subscribe(docId, (update) => {
+      res.write(`data: ${JSON.stringify(update)}\n\n`);
+      
+      // 如果任务完成或失败，关闭连接
+      if (update.status === 'success' || update.status === 'failed') {
+        res.end();
+      }
+    });
+
+    // 客户端断开时取消订阅
+    req.on('close', () => {
+      unsubscribe();
+    });
+
+    // 发送初始状态
+    res.write(`data: ${JSON.stringify({
+      docId,
+      status: task.status,
+      progress: task.progress,
+      processedSegments: task.processedSegments,
+      totalSegments: task.totalSegments,
+      canPreview: task.processedSegments > 0,
+      canSearch: task.processedSegments > 0,
+    })}\n\n`);
+  });
+
   return router;
 }

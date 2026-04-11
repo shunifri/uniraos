@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Flex,
   Card,
@@ -48,6 +48,11 @@ interface KBDocument {
   shared?: boolean;
   vectorized?: number;
   vectorTotal?: number;
+  // Document Mind 解析状态
+  parsingStatus?: 'pending' | 'processing' | 'success' | 'failed';
+  parsingProgress?: number;
+  mediaType?: 'document' | 'video' | 'audio' | 'text';
+  durationMs?: number;
 }
 
 interface SearchResult {
@@ -180,6 +185,56 @@ export default function KnowledgePage() {
     return () => clearInterval(timer);
   }, [documents, loadDocuments, loadStats]);
 
+  // SSE 订阅：实时获取 Document Mind 解析进度
+  useEffect(() => {
+    const processingDocs = documents.filter(d => d.parsingStatus === 'processing');
+    if (processingDocs.length === 0) return;
+
+    const eventSources: EventSource[] = [];
+    
+    for (const doc of processingDocs) {
+      const es = new EventSource(`/api/knowledge/documents/${doc.id}/stream`);
+      
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          // 更新文档进度
+          setDocuments(prev => prev.map(d => {
+            if (d.id === doc.id) {
+              return {
+                ...d,
+                parsingStatus: data.status,
+                parsingProgress: data.progress,
+              };
+            }
+            return d;
+          }));
+          
+          // 如果解析完成，刷新文档列表
+          if (data.status === 'success' || data.status === 'failed') {
+            loadDocuments();
+            loadStats();
+          }
+        } catch (e) {
+          console.error('SSE parse error:', e);
+        }
+      };
+      
+      es.onerror = () => {
+        console.error(`SSE error for doc ${doc.id}`);
+        es.close();
+      };
+      
+      eventSources.push(es);
+    }
+    
+    return () => {
+      for (const es of eventSources) {
+        es.close();
+      }
+    };
+  }, [documents.map(d => d.parsingStatus).join(','), loadDocuments, loadStats]);
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
@@ -297,9 +352,33 @@ export default function KnowledgePage() {
       title: t("kb_chunks"),
       dataIndex: "chunkCount",
       key: "chunkCount",
-      width: 100,
+      width: 120,
       align: "center" as const,
-      render: (count: number) => count === 0 ? <Tag icon={<LoadingOutlined />} color="processing">解析中</Tag> : count,
+      render: (count: number, record: KBDocument) => {
+        // Document Mind 解析状态显示
+        if (record.parsingStatus === 'processing' || (count === 0 && record.parsingStatus !== 'failed')) {
+          const progress = record.parsingProgress ?? 0;
+          return (
+            <div style={{ minWidth: 80 }}>
+              <Tag icon={<LoadingOutlined />} color="processing">
+                {progress > 0 ? `${Math.round(progress)}%` : '解析中'}
+              </Tag>
+              {progress > 0 && (
+                <div style={{ marginTop: 4, height: 3, background: '#f0f0f0', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{ width: `${progress}%`, height: '100%', background: '#1890ff', transition: 'width 0.3s' }} />
+                </div>
+              )}
+            </div>
+          );
+        }
+        if (record.parsingStatus === 'failed') {
+          return <Tag color="error">解析失败</Tag>;
+        }
+        if (record.parsingStatus === 'pending') {
+          return <Tag icon={<LoadingOutlined />} color="default">等待中</Tag>;
+        }
+        return count;
+      },
     },
     {
       title: t("kb_vector_status"),

@@ -20,8 +20,9 @@
  *   kb_share     — 设置文档共享状态
  *   kb_shared    — 列出/检索所有共享文档
  */
-import { defineSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import type { UserSessionManager } from "../user/user-session.js";
 import type { EmbeddingProvider } from "../memory/embedding-provider.js";
 import { LocalEmbeddingProvider, cosineSimilarity } from "../memory/embedding-provider.js";
 import { parseDocument, type VisionModelConfig, type PageResult, type OCRBlock } from "../services/doc-parser.js";
@@ -36,7 +37,7 @@ import { getCurrentUserId } from "../user/request-context.js";
 
 // ===== 知识库核心 =====
 
-class KnowledgeBase {
+export class KnowledgeBase {
   private db: Database.Database;
   private embeddingProvider: EmbeddingProvider;
   private vectorCache: Map<number, number[]> = new Map();
@@ -118,6 +119,46 @@ class KnowledgeBase {
     } catch { /* 列已存在 */ }
     try {
       this.db.exec("ALTER TABLE kb_chunks ADD COLUMN bbox_data TEXT DEFAULT '[]'");
+    } catch { /* 列已存在 */ }
+
+    // 迁移：Document Mind 相关字段
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN layouts_json TEXT DEFAULT '[]'");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN segments_json TEXT DEFAULT '[]'");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN doc_mind_task_id TEXT");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN parsing_status TEXT DEFAULT 'success'");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN parsing_progress REAL DEFAULT 100");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN media_type TEXT DEFAULT 'document'");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_documents ADD COLUMN duration_ms INTEGER");
+    } catch { /* 列已存在 */ }
+
+    // 迁移：kb_chunks 音视频相关字段
+    try {
+      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN segment_index INTEGER");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN time_range TEXT");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN frame_url TEXT");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN asr_text TEXT");
+    } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN content_type TEXT DEFAULT 'text'");
     } catch { /* 列已存在 */ }
   }
 
@@ -516,8 +557,14 @@ class KnowledgeBase {
     this.vectorCacheDirty = false;
   }
 
-  /** 列出文档 */
-  listDocuments(opts?: { query?: string; tags?: string[]; sharedOnly?: boolean; limit?: number }): any[] {
+  /** 列出文档（增强版筛选） */
+  listDocuments(opts?: { 
+    query?: string; 
+    tags?: string[]; 
+    sharedOnly?: boolean; 
+    limit?: number;
+    format?: string;  // 文件格式筛选，如 "pdf", "docx", "md"
+  }): any[] {
     const limit = opts?.limit ?? 100;
     let sql = "SELECT * FROM kb_documents";
     const conditions: string[] = [];
@@ -530,6 +577,10 @@ class KnowledgeBase {
     if (opts?.sharedOnly) {
       conditions.push("shared = 1");
     }
+    if (opts?.format) {
+      conditions.push("(name LIKE ? OR name LIKE ?)");
+      params.push(`%.${opts.format}`, `%.${opts.format.toUpperCase()}`);
+    }
 
     if (conditions.length > 0) sql += " WHERE " + conditions.join(" AND ");
     sql += " ORDER BY ingested_at DESC LIMIT ?";
@@ -540,6 +591,7 @@ class KnowledgeBase {
     return rows
       .map((r: any) => {
         const vs = this.getDocVectorStatus(r.doc_id);
+        const tags = JSON.parse(r.tags ?? "[]");
         return {
           docId: r.doc_id,
           id: r.doc_id,
@@ -550,16 +602,56 @@ class KnowledgeBase {
           ingestedAt: r.ingested_at,
           updatedAt: r.updated_at,
           version: r.version,
-          tags: JSON.parse(r.tags ?? "[]"),
+          tags,
           shared: r.shared === 1,
           vectorized: vs.vectorized,
           vectorTotal: vs.total,
+          format: this.getFileFormat(r.name),
         };
       })
       .filter((doc: any) => {
+        // 标签筛选（后过滤，因为 tags 是 JSON 存储）
         if (!opts?.tags || opts.tags.length === 0) return true;
         return opts.tags.some((t) => doc.tags.includes(t));
       });
+  }
+
+  /** 获取文件格式 */
+  private getFileFormat(filename: string): string {
+    const match = filename.match(/\.([^.]+)$/);
+    return match ? match[1].toLowerCase() : "unknown";
+  }
+
+  /** 获取所有标签及其使用次数（按次数降序） */
+  getAllTags(): Array<{ tag: string; count: number }> {
+    const rows = this.db.prepare("SELECT tags FROM kb_documents").all() as any[];
+    const tagCount = new Map<string, number>();
+    
+    for (const row of rows) {
+      const tags: string[] = JSON.parse(row.tags ?? "[]");
+      for (const tag of tags) {
+        tagCount.set(tag, (tagCount.get(tag) || 0) + 1);
+      }
+    }
+
+    return Array.from(tagCount.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  /** 获取所有文件格式及其数量 */
+  getAllFormats(): Array<{ format: string; count: number }> {
+    const rows = this.db.prepare("SELECT name FROM kb_documents").all() as any[];
+    const formatCount = new Map<string, number>();
+    
+    for (const row of rows) {
+      const format = this.getFileFormat(row.name);
+      formatCount.set(format, (formatCount.get(format) || 0) + 1);
+    }
+
+    return Array.from(formatCount.entries())
+      .map(([format, count]) => ({ format, count }))
+      .sort((a, b) => b.count - a.count);
   }
 
   /** 获取文档解析内容 */
@@ -641,6 +733,154 @@ class KnowledgeBase {
   setEmbeddingProvider(provider: EmbeddingProvider): void {
     this.embeddingProvider = provider;
     this.vectorCacheDirty = true;
+  }
+
+  /** 获取 embedding provider */
+  getEmbeddingProvider(): EmbeddingProvider {
+    return this.embeddingProvider;
+  }
+
+  // ===== Document Mind 相关方法 =====
+
+  /** 更新文档解析状态 */
+  updateParsingStatus(
+    docId: string,
+    status: {
+      parsingStatus?: string;
+      parsingProgress?: number;
+      docMindTaskId?: string;
+      mediaType?: string;
+      durationMs?: number;
+    }
+  ): void {
+    const fields: string[] = [];
+    const values: any[] = [];
+    
+    if (status.parsingStatus !== undefined) {
+      fields.push('parsing_status = ?');
+      values.push(status.parsingStatus);
+    }
+    if (status.parsingProgress !== undefined) {
+      fields.push('parsing_progress = ?');
+      values.push(status.parsingProgress);
+    }
+    if (status.docMindTaskId !== undefined) {
+      fields.push('doc_mind_task_id = ?');
+      values.push(status.docMindTaskId);
+    }
+    if (status.mediaType !== undefined) {
+      fields.push('media_type = ?');
+      values.push(status.mediaType);
+    }
+    if (status.durationMs !== undefined) {
+      fields.push('duration_ms = ?');
+      values.push(status.durationMs);
+    }
+    
+    if (fields.length > 0) {
+      values.push(docId);
+      this.db.prepare(`UPDATE kb_documents SET ${fields.join(', ')} WHERE doc_id = ?`).run(...values);
+    }
+  }
+
+  /** 获取文档解析状态 */
+  getParsingStatus(docId: string): {
+    parsingStatus: string;
+    parsingProgress: number;
+    docMindTaskId: string | null;
+    mediaType: string;
+    durationMs: number | null;
+  } | null {
+    const row = this.db.prepare(
+      "SELECT parsing_status, parsing_progress, doc_mind_task_id, media_type, duration_ms FROM kb_documents WHERE doc_id = ?"
+    ).get(docId) as any;
+    
+    if (!row) return null;
+    
+    return {
+      parsingStatus: row.parsing_status || 'success',
+      parsingProgress: row.parsing_progress || 100,
+      docMindTaskId: row.doc_mind_task_id || null,
+      mediaType: row.media_type || 'document',
+      durationMs: row.duration_ms || null,
+    };
+  }
+
+  /** 保存版面数据（增量） */
+  saveLayouts(docId: string, layouts: any[], append: boolean = false): void {
+    if (append) {
+      const existing = this.db.prepare("SELECT layouts_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
+      const existingLayouts = existing ? JSON.parse(existing.layouts_json || '[]') : [];
+      const allLayouts = [...existingLayouts, ...layouts];
+      this.db.prepare("UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ?")
+        .run(JSON.stringify(allLayouts), docId);
+    } else {
+      this.db.prepare("UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ?")
+        .run(JSON.stringify(layouts), docId);
+    }
+  }
+
+  /** 获取版面数据 */
+  getLayouts(docId: string): any[] {
+    const row = this.db.prepare("SELECT layouts_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
+    return row ? JSON.parse(row.layouts_json || '[]') : [];
+  }
+
+  /** 保存音视频切片数据（增量） */
+  saveSegments(docId: string, segments: any[], append: boolean = false): void {
+    if (append) {
+      const existing = this.db.prepare("SELECT segments_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
+      const existingSegments = existing ? JSON.parse(existing.segments_json || '[]') : [];
+      const allSegments = [...existingSegments, ...segments];
+      this.db.prepare("UPDATE kb_documents SET segments_json = ? WHERE doc_id = ?")
+        .run(JSON.stringify(allSegments), docId);
+    } else {
+      this.db.prepare("UPDATE kb_documents SET segments_json = ? WHERE doc_id = ?")
+        .run(JSON.stringify(segments), docId);
+    }
+  }
+
+  /** 获取音视频切片数据 */
+  getSegments(docId: string): any[] {
+    const row = this.db.prepare("SELECT segments_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
+    return row ? JSON.parse(row.segments_json || '[]') : [];
+  }
+
+  /** 保存音视频分块（带 segment 信息） */
+  insertMediaChunk(
+    docId: string,
+    chunkIndex: number,
+    content: string,
+    vector: number[] | null,
+    metadata: {
+      segmentIndex: number;
+      timeRange: { start: number; end: number };
+      frameUrl?: string;
+      asrText?: string;
+      contentType?: string;
+    }
+  ): number {
+    const vectorBlob = vector ? Buffer.from(new Float32Array(vector).buffer) : null;
+    const timeRangeStr = JSON.stringify(metadata.timeRange);
+    
+    const result = this.db.prepare(
+      `INSERT INTO kb_chunks 
+       (doc_id, chunk_index, content, tokens, vector, segment_index, time_range, frame_url, asr_text, content_type) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      docId,
+      chunkIndex,
+      content,
+      this.estimateTokens(content),
+      vectorBlob,
+      metadata.segmentIndex,
+      timeRangeStr,
+      metadata.frameUrl || null,
+      metadata.asrText || null,
+      metadata.contentType || 'video_segment'
+    );
+    
+    return result.lastInsertRowid as number;
   }
 
   // ===== 工具方法 =====
@@ -846,7 +1086,7 @@ async function searchShared(
   query: string,
   excludeOwner: string,
   limit: number,
-): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; owner: string }>> {
+): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; owner: string; source: "shared" }>> {
   const tenants = getAllTenants().filter((t) => t !== excludeOwner);
   const allResults: any[] = [];
 
@@ -873,12 +1113,12 @@ function simpleHash(str: string): string {
 
 // ===== 注册 Skills =====
 
-export function createKnowledgeSkills(registry: SkillRegistry): void {
+export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: UserSessionManager): void {
   const WORKSPACE_BASE = resolve(process.cwd(), ".raos", "workspace");
   mkdirSync(KB_BASE, { recursive: true });
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_ingest",
       description:
         "将文件或文本导入知识库（同名文档自动更新）。参数: content?(string), path?(string, workspace路径), name?(string, 文档名), tags?(string[]), shared?(boolean, 是否共享), owner?(string, 所属用户, 默认 default), chunkSize?(number, 默认500), chunkOverlap?(number, 默认50)",
@@ -919,8 +1159,11 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
           const rawFileHash = createHash("md5").update(readFileSync(fullPath)).digest("hex");
           (params as any)._fileHash = rawFileHash;
 
-          // 使用 parseDocument 统一解析（支持视觉 OCR + 自动标签提取）
-          const parseResult = await parseDocument(fullPath, globalVisionConfig);
+          // 获取已有标签列表，避免 AI 重复生成
+          const existingTags = kb.getAllTags().map(t => t.tag);
+
+          // 使用 parseDocument 统一解析（支持视觉 OCR + 自动标签提取，传入已有标签）
+          const parseResult = await parseDocument(fullPath, globalVisionConfig, existingTags);
           if (parseResult.success) {
             content = parseResult.content;
             // 保存页面图片（用于双视图查看）
@@ -982,6 +1225,52 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
           if (pageImages && pageImages.length > 0 && result.docId) {
             try { saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
           }
+
+          // 将文档同步到知识图谱（非致命）
+          if (sessionManager && result.docId) {
+            try {
+              const session = sessionManager.getOrCreate(owner);
+              const graphManager = (session as any).graphManager;
+              if (graphManager) {
+                // 1. 同步文档节点
+                await graphManager.onFactStored({
+                  id: `kb_doc_${result.docId}`,
+                  key: `kb:${docName}`,
+                  value: `Knowledge base document: ${docName}`,
+                  tags: ['kb_document', (docName!.split('.').pop() || 'doc')],
+                });
+
+                // 2. 同步版面数据（Document Mind）
+                const layouts = kb.getLayouts(result.docId);
+                if (layouts.length > 0) {
+                  for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
+                    await graphManager.onFactStored({
+                      id: `kb_layout_${layout.id || layout.uniqueId}`,
+                      key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
+                      value: (layout.content || layout.text || '').slice(0, 200),
+                      tags: ['kb_layout', layout.type, layout.subType, ...(params.tags || [])].filter(Boolean),
+                      relation: `kb:${docName}`,
+                    });
+                  }
+                }
+
+                // 3. 同步音视频切片数据
+                const segments = kb.getSegments(result.docId);
+                if (segments.length > 0) {
+                  for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
+                    await graphManager.onFactStored({
+                      id: `kb_seg_${result.docId}_${segment.index}`,
+                      key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
+                      value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
+                      tags: ['kb_segment', params.media_type || 'video', ...(params.tags || [])].filter(Boolean),
+                      relation: `kb:${docName}`,
+                    });
+                  }
+                }
+              }
+            } catch { /* 图谱同步失败不影响入库结果 */ }
+          }
+
           return {
             success: true,
             data: {
@@ -1001,7 +1290,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_search",
       description:
         "在知识库中检索。参数: query(string), limit?(number, 默认5), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true)",
@@ -1041,13 +1330,30 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
             sharedResults = await searchShared(query, owner, Math.ceil(limit / 2));
           }
 
-          // 合并结果，自己的优先
+          // 合并结果，自己的优先，添加来源标记
           const combined = [
-            ...ownResults.map((r) => ({ ...r, owner })),
-            ...sharedResults,
+            ...ownResults.map((r) => ({ ...r, owner, source: "own" as const })),
+            ...sharedResults.map((r) => ({ ...r, source: "shared" as const })),
           ]
             .sort((a, b) => b.score - a.score)
             .slice(0, limit);
+
+          // 将搜索结果同步到知识图谱（非致命）
+          if (sessionManager && combined.length > 0) {
+            try {
+              const session = sessionManager.getOrCreate(owner);
+              if ((session as any).graphManager) {
+                for (const result of combined.slice(0, 5)) {
+                  await (session as any).graphManager.onFactStored({
+                    id: `kb_${result.docId}_${result.chunkIndex}`,
+                    key: `kb:${result.docName}:chunk${result.chunkIndex}`,
+                    value: result.content.slice(0, 200),
+                    tags: ['kb_document', (result.docName.split('.').pop() || 'doc')],
+                  });
+                }
+              }
+            } catch { /* 图谱同步失败不影响搜索结果 */ }
+          }
 
           return {
             success: true,
@@ -1067,13 +1373,14 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_list",
-      description: "列出知识库中的文档。参数: query?(string), tags?(string[]), owner?(string, 默认 default), sharedOnly?(boolean), limit?(number, 默认100)",
+      description: "列出知识库中的文档。支持多维度筛选：名称模糊查询、标签筛选、文件格式筛选。参数: query?(string, 名称模糊查询), tags?(string[], 标签筛选), format?(string, 文件格式如 pdf/docx/md), owner?(string, 默认 current), sharedOnly?(boolean), limit?(number, 默认100)",
       paramSchema: {
         properties: {
-          query: { type: "string", description: "Filter documents by name or source" },
+          query: { type: "string", description: "Filter documents by name (fuzzy search)" },
           tags: { type: "array", description: "Filter by tags", items: { type: "string" } },
+          format: { type: "string", description: "Filter by file format: pdf, docx, md, txt, etc." },
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
           sharedOnly: { type: "boolean", description: "If true, return only shared documents" },
           limit: { type: "number", description: "Maximum number of documents to return (default: 100)" },
@@ -1085,6 +1392,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
         const docs = kb.listDocuments({
           query: params.query as string | undefined,
           tags: params.tags as string[] | undefined,
+          format: params.format as string | undefined,
           sharedOnly: params.sharedOnly as boolean | undefined,
           limit: (params.limit as number) ?? 100,
         });
@@ -1095,7 +1403,43 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
+      name: "kb_tags",
+      description: "获取知识库中所有标签及其使用次数，按使用次数降序排列。参数: owner?(string, 默认 current)",
+      paramSchema: {
+        properties: {
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+      },
+      handler: async (params) => {
+        const owner = (params.owner as string) || getCurrentUserId();
+        const kb = getKnowledgeBase(owner);
+        const tags = kb.getAllTags();
+        return { success: true, data: { owner, tags, total: tags.length } };
+      },
+    }),
+  );
+
+  registry.register(
+    defineSystemSkill({
+      name: "kb_formats",
+      description: "获取知识库中所有文件格式及其数量，按数量降序排列。参数: owner?(string, 默认 current)",
+      paramSchema: {
+        properties: {
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+      },
+      handler: async (params) => {
+        const owner = (params.owner as string) || getCurrentUserId();
+        const kb = getKnowledgeBase(owner);
+        const formats = kb.getAllFormats();
+        return { success: true, data: { owner, formats, total: formats.length } };
+      },
+    }),
+  );
+
+  registry.register(
+    defineSystemSkill({
       name: "kb_delete",
       description: "从知识库中删除文档。参数: docId(string), owner?(string, 默认 default)",
       paramSchema: {
@@ -1122,7 +1466,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_share",
       description: "设置文档的共享状态。参数: docId(string), shared(boolean), owner?(string, 默认 default)",
       handler: async (params) => {
@@ -1145,7 +1489,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_shared",
       description: "列出所有用户共享的文档或搜索共享知识。参数: query?(string, 搜索查询), limit?(number, 默认20)",
       handler: async (params) => {
@@ -1172,7 +1516,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_vectorize",
       description: "对指定文档执行向量化（处理未向量化的 chunks）。参数: docId(string), owner?(string)",
       timeout: 300000,
@@ -1193,7 +1537,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_stats",
       description: "获取知识库统计信息。参数: owner?(string, 默认 default)",
       handler: async (params) => {
@@ -1205,7 +1549,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "kb_rebuild",
       description: "重建知识库向量索引。参数: owner?(string, 默认 default)",
       timeout: 300000,
@@ -1225,7 +1569,7 @@ export function createKnowledgeSkills(registry: SkillRegistry): void {
     }),
   );
 
-  console.log("   Knowledge base skills registered (kb_ingest/kb_search/kb_list/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)");
+  console.log("   Knowledge base skills registered (kb_ingest/kb_search/kb_list/kb_tags/kb_formats/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)");
 }
 
 
