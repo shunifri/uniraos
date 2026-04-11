@@ -37,8 +37,14 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       },
       engine: config.engine,
       agent: config.agent,
+      docMind: config.docMind ? {
+        ...config.docMind,
+        accessKeyId: config.docMind.accessKeyId ? "***" + config.docMind.accessKeyId.slice(-4) : "",
+        accessKeySecret: config.docMind.accessKeySecret ? "***" + config.docMind.accessKeySecret.slice(-4) : "",
+      } : undefined,
       isLLMConfigured: configManager.isLLMConfigured(),
       isMultimodalConfigured: configManager.isMultimodalConfigured(),
+      isDocMindConfigured: configManager.isDocMindConfigured(),
     });
   });
 
@@ -254,6 +260,45 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     configManager.setEvolution(updates as any);
     evolutionEngine.updateConfig(updates as any);
     res.json({ success: true, config: configManager.getEvolution() });
+  });
+
+  // ===== Document Mind Config APIs =====
+
+  router.get("/config/docmind", requireAuth, requirePermission("config.read"), (_req, res) => {
+    const cfg = configManager.getDocMind();
+    res.json({
+      success: true,
+      config: {
+        ...cfg,
+        accessKeyId: cfg.accessKeyId ? "***" + cfg.accessKeyId.slice(-4) : "",
+        accessKeySecret: cfg.accessKeySecret ? "***" + cfg.accessKeySecret.slice(-4) : "",
+      },
+    });
+  });
+
+  router.post("/config/docmind", requireAuth, requirePermission("config.write"), (req, res) => {
+    const { enabled, accessKeyId, accessKeySecret, endpoint, regionId, multimediaMode, maxPollingMinutes, pollingIntervalSeconds } = req.body;
+    
+    const existing = configManager.getDocMind();
+    const resolvedAccessKeyId = (!accessKeyId || accessKeyId.startsWith("***")) ? existing.accessKeyId : accessKeyId;
+    const resolvedAccessKeySecret = (!accessKeySecret || accessKeySecret.startsWith("***")) ? existing.accessKeySecret : accessKeySecret;
+    
+    configManager.setDocMind({
+      enabled: enabled ?? existing.enabled ?? false,
+      accessKeyId: resolvedAccessKeyId || "",
+      accessKeySecret: resolvedAccessKeySecret || "",
+      endpoint: endpoint || existing.endpoint || "docmind-api.cn-hangzhou.aliyuncs.com",
+      regionId: regionId || existing.regionId || "cn-hangzhou",
+      multimediaMode: multimediaMode || existing.multimediaMode || "advance",
+      maxPollingMinutes: maxPollingMinutes ?? existing.maxPollingMinutes ?? 30,
+      pollingIntervalSeconds: pollingIntervalSeconds ?? existing.pollingIntervalSeconds ?? 3,
+    });
+
+    res.json({
+      success: true,
+      message: "Document Mind config saved",
+      isConfigured: configManager.isDocMindConfigured(),
+    });
   });
 
   // Full config
