@@ -3,7 +3,7 @@
  * Supports connection pooling for primary (write) and replicas (read)
  */
 
-import mysql from 'mysql2/promise';
+import * as mysql from 'mysql2/promise';
 import { dbConfig } from '../config/db-config.js';
 import { log } from '../utils/logger.js';
 
