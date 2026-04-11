@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # MySQL Primary (Write)
+  mysql-primary:
+    image: mysql:8.0
+    container_name: raos-mysql-primary
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: raos
+      MYSQL_USER: ${MYSQL_USER:-raos}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-raospassword}
+    volumes:
+      - mysql_primary_data:/var/lib/mysql
+      - ./mysql/primary.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    ports:
+      - "3306:3306"
+    command: >
+      --server-id=1
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --innodb-buffer-pool-size=1G
+      --max-connections=200
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-network
+
+  # MySQL Replica (Read)
+  mysql-replica:
+    image: mysql:8.0
+    container_name: raos-mysql-replica
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+    volumes:
+      - mysql_replica_data:/var/lib/mysql
+      - ./mysql/replica.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    ports:
+      - "3307:3306"
+    command: >
+      --server-id=2
+      --read-only=1
+      --innodb-buffer-pool-size=1G
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-network
+
+  # Redis Cluster (simplified - single node for dev)
+  redis:
+    image: redis:7-alpine
+    container_name: raos-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - raos-network
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: raos-qdrant
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-network
+
+  # RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: raos-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-raos}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-raospassword}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-network
+
+  # MinIO (S3-compatible object storage)
+  minio:
+    image: minio/minio:latest
+    container_name: raos-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-raos}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-raospassword}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-network
+
+volumes:
+  mysql_primary_data:
+  mysql_replica_data:
+  redis_data:
+  qdrant_storage:
+  rabbitmq_data:
+  minio_data:
+
+networks:
+  raos-network:
+    driver: bridge
