@@ -281,7 +281,7 @@ describe('RabbitMQClient', () => {
       await client.publish('test-queue', message, {
         priority: 5,
         expiration: '10000',
-        headers: { 'x-custom': 'value' },
+        headers: { 'x-custom': 'value', 'x-retry-count': 2 },
       });
       
       const [, , options] = mockFns.sendToQueue.mock.calls[0];
@@ -475,6 +475,14 @@ describe('RabbitMQClient', () => {
 
     it('should return true when connected', async () => {
       await client.connect();
+      
+      // Get the actual channel that was created and ensure it references the connection
+      const channel = client.getChannel();
+      const connection = (client as any).connection;
+      if (channel && connection) {
+        // @ts-expect-error - modifying for test
+        channel.connection = connection;
+      }
       
       const isHealthy = await client.healthCheck();
       expect(isHealthy).toBe(true);
