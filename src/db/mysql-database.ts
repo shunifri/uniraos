@@ -225,6 +225,7 @@ async function removeVersion(version: number): Promise<void> {
 
 /**
  * Initialize MySQL database by running all pending migrations
+ * Each migration is wrapped in a transaction for atomicity
  */
 export async function initMySQLDatabase(): Promise<void> {
   const adapter = getMySQLAdapter();
@@ -241,17 +242,24 @@ export async function initMySQLDatabase(): Promise<void> {
           name: migration.name 
         });
 
-        // Split and execute each statement
-        const statements = migration.up
-          .split(';')
-          .map(s => s.trim())
-          .filter(s => s.length > 0);
+        // Execute migration within a transaction for atomicity
+        await adapter.transaction(async (conn) => {
+          // Split and execute each statement
+          const statements = migration.up
+            .split(';')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
 
-        for (const statement of statements) {
-          await adapter.execute(`${statement};`);
-        }
+          for (const statement of statements) {
+            await conn.execute(`${statement};`);
+          }
 
-        await recordVersion(migration.version, migration.name);
+          // Record version in the same transaction
+          await conn.execute(
+            'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+            [migration.version, migration.name]
+          );
+        });
 
         log('info', 'mysql_database_migration_complete', { 
           version: migration.version, 
@@ -343,44 +351,111 @@ export async function migrateToVersion(targetVersion: number): Promise<void> {
     return;
   }
 
-  if (targetVersion > currentVersion) {
-    // Migrate up
-    for (const migration of MIGRATIONS) {
-      if (migration.version > currentVersion && migration.version <= targetVersion) {
-        const statements = migration.up
-          .split(';')
-          .map(s => s.trim())
-          .filter(s => s.length > 0);
-
-        for (const statement of statements) {
-          await adapter.execute(`${statement};`);
-        }
-
-        await recordVersion(migration.version, migration.name);
-        log('info', 'mysql_database_migrated_up', { version: migration.version });
-      }
-    }
-  } else {
-    // Migrate down
-    for (const migration of [...MIGRATIONS].reverse()) {
-      if (migration.version <= currentVersion && migration.version > targetVersion) {
-        const statements = migration.down
-          .split(';')
-          .map(s => s.trim())
-          .filter(s => s.length > 0);
-
-        for (const statement of statements) {
+  try {
+    if (targetVersion > currentVersion) {
+      // Migrate up
+      for (const migration of MIGRATIONS) {
+        if (migration.version > currentVersion && migration.version <= targetVersion) {
           try {
-            await adapter.execute(`${statement};`);
+            log('info', 'mysql_database_migration_up_start', { 
+              version: migration.version, 
+              name: migration.name 
+            });
+
+            // Execute migration within a transaction for atomicity
+            await adapter.transaction(async (conn) => {
+              const statements = migration.up
+                .split(';')
+                .map(s => s.trim())
+                .filter(s => s.length > 0);
+
+              for (const statement of statements) {
+                await conn.execute(`${statement};`);
+              }
+
+              // Record version in the same transaction
+              await conn.execute(
+                'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+                [migration.version, migration.name]
+              );
+            });
+
+            log('info', 'mysql_database_migrated_up', { 
+              version: migration.version,
+              name: migration.name 
+            });
           } catch (error) {
-            log('debug', 'mysql_database_downgrade_statement_skipped');
+            log('error', 'mysql_database_migration_up_failed', { 
+              version: migration.version, 
+              name: migration.name,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            throw error;
           }
         }
+      }
+    } else {
+      // Migrate down
+      for (const migration of [...MIGRATIONS].reverse()) {
+        if (migration.version <= currentVersion && migration.version > targetVersion) {
+          try {
+            log('info', 'mysql_database_migration_down_start', { 
+              version: migration.version, 
+              name: migration.name 
+            });
 
-        await removeVersion(migration.version);
-        log('info', 'mysql_database_migrated_down', { version: migration.version });
+            // Execute migration within a transaction for atomicity
+            await adapter.transaction(async (conn) => {
+              const statements = migration.down
+                .split(';')
+                .map(s => s.trim())
+                .filter(s => s.length > 0);
+
+              for (const statement of statements) {
+                try {
+                  await conn.execute(`${statement};`);
+                } catch (error) {
+                  // Ignore errors during rollback (tables might not exist)
+                  log('debug', 'mysql_database_downgrade_statement_skipped', {
+                    statement: statement.substring(0, 100)
+                  });
+                }
+              }
+
+              // Remove version record in the same transaction
+              await conn.execute(
+                'DELETE FROM schema_version WHERE version = ?',
+                [migration.version]
+              );
+            });
+
+            log('info', 'mysql_database_migrated_down', { 
+              version: migration.version,
+              name: migration.name 
+            });
+          } catch (error) {
+            log('error', 'mysql_database_migration_down_failed', { 
+              version: migration.version, 
+              name: migration.name,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            throw error;
+          }
+        }
       }
     }
+
+    log('info', 'mysql_database_migrate_to_version_complete', { 
+      fromVersion: currentVersion, 
+      toVersion: targetVersion 
+    });
+  } catch (error) {
+    log('error', 'mysql_database_migrate_to_version_failed', { 
+      fromVersion: currentVersion, 
+      targetVersion,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
   }
 }
 
