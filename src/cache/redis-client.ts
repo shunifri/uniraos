@@ -3,7 +3,7 @@
  * Supports both Cluster and Standalone modes
  */
 
-import Redis, { Cluster, RedisOptions } from 'ioredis';
+import { Redis, Cluster, RedisOptions } from 'ioredis';
 import { dbConfig } from '../config/db-config.js';
 import { log } from '../utils/logger.js';
 
@@ -50,7 +50,7 @@ export class RedisClient {
       log('info', 'redis_client_connected');
     });
 
-    this.client.on('error', (err) => {
+    this.client.on('error', (err: Error) => {
       log('error', 'redis_client_error', { error: err.message });
     });
 
@@ -202,7 +202,7 @@ export class RedisClient {
       const fullPattern = this.getKey(pattern);
       const keys = await this.client.keys(fullPattern);
       // Remove prefix from results
-      return keys.map(k => k.startsWith(this.keyPrefix) ? k.slice(this.keyPrefix.length) : k);
+      return keys.map((k: string) => k.startsWith(this.keyPrefix) ? k.slice(this.keyPrefix.length) : k);
     } catch (error) {
       log('error', 'redis_keys_error', { pattern, error: (error as Error).message });
       return [];

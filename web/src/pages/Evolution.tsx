@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { useI18nStore } from "@/i18n";
 import { Card, Flex, Button, Typography } from "antd";
 import {
   ReconciliationOutlined,
   BranchesOutlined,
   WarningOutlined,
   CheckCircleOutlined,
-  SliderOutlined,
+  SettingOutlined,
   RedEnvelopeOutlined,
 } from "@ant-design/icons";
 import EvolutionOverview from "@/components/evolution/EvolutionOverview";
@@ -27,43 +28,44 @@ const panels: Array<{
 }> = [
   {
     key: "overview",
-    label: "Evolution Overview",
+    label: "evolution_overview",
     icon: <ReconciliationOutlined />,
     component: EvolutionOverview,
   },
   {
     key: "genealogy",
-    label: "Skill Genealogy",
+    label: "skill_genealogy",
     icon: <BranchesOutlined />,
     component: SkillGenealogy,
   },
   {
     key: "emergence",
-    label: "Emergence Monitor",
+    label: "emergence_monitor",
     icon: <WarningOutlined />,
     component: EmergenceMonitor,
   },
   {
     key: "pending",
-    label: "Pending Actions",
+    label: "pending_actions",
     icon: <CheckCircleOutlined />,
     component: PendingActions,
   },
   {
     key: "lifecycle",
-    label: "Lifecycle",
-    icon: <SliderOutlined />,
+    label: "lifecycle",
+    icon: <SettingOutlined />,
     component: LifecycleView,
   },
   {
     key: "redlines",
-    label: "Redlines",
+    label: "redlines",
     icon: <RedEnvelopeOutlined />,
     component: RedlinesView,
   },
 ];
 
 export default function EvolutionPage() {
+  const t = useI18nStore((s) => s.t);
   const [activePanel, setActivePanel] = useState<PanelKey>("overview");
 
   const activeComponent = panels.find((p) => p.key === activePanel)?.component;
@@ -77,7 +79,7 @@ export default function EvolutionPage() {
         title={
           <Flex align="center" gap={8}>
             <ReconciliationOutlined />
-            <span>Evolution</span>
+            <span>{t("evolution")}</span>
           </Flex>
         }
         style={{
@@ -110,10 +112,10 @@ export default function EvolutionPage() {
                 height: 40,
                 borderRadius: 0,
               }}
-              title={panel.label}
+              title={t(panel.label)}
             >
               <Text ellipsis style={{ fontSize: 12 }}>
-                {panel.label}
+                {t(panel.label)}
               </Text>
             </Button>
           ))}

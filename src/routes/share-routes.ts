@@ -2,28 +2,27 @@
  * 共享规则 API 路由
  */
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
-import { getUserRoles } from "../db/user-repository.js";
-import { getDb } from "../db/database.js";
+import { requireAuth, requireAdmin } from "../db/auth-middleware.js";
+import { getUserRoles, getUserById } from "../db/user-repository.js";
+import { getDepartmentById } from "../db/department-repository.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { RouteDependencies } from "./index.js";
 
 export function createShareRoutes(deps: RouteDependencies & { shareRepository: ShareRepository }): Router {
   const router = Router();
   const repo = deps.shareRepository;
+  const registry = deps.registry;
 
   /** 获取用户的部门路径 */
-  function getUserDeptPath(userId: string): string {
-    const row = getDb().prepare(`
-      SELECT d.path FROM users u
-      LEFT JOIN departments d ON d.id = u.department_id
-      WHERE u.id = ?
-    `).get(userId) as { path: string | null } | undefined;
-    return row?.path ?? "";
+  async function getUserDeptPath(userId: string): Promise<string> {
+    const user = await getUserById(userId);
+    if (!user?.departmentId) return "/";
+    const dept = await getDepartmentById(user.departmentId);
+    return dept?.path ?? "/";
   }
 
   // POST /api/share — 创建共享规则
-  router.post("/share", requireAuth, (req, res) => {
+  router.post("/share", requireAuth, async (req, res) => {
     try {
       const { resourceType, resourceId, scope, targetId, permission } = req.body;
       if (!resourceType || !resourceId || !scope) {
@@ -51,7 +50,34 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
         return;
       }
 
-      const rule = repo.create({
+      // ===== 权限检查 =====
+      
+      // 1. Skill 分享需要 owner 验证
+      if (resourceType === "skill") {
+        const skill = registry.lookup(resourceId);
+        if (!skill) {
+          res.status(404).json({ success: false, error: "Skill not found" });
+          return;
+        }
+        
+        // 系统 Skill 不允许分享（除非管理员）
+        if (skill.isSystem) {
+          const userPermissions = await getUserRoles(req.user!.id);
+          const isAdmin = userPermissions.some(r => r.name === "admin");
+          if (!isAdmin) {
+            res.status(403).json({ success: false, error: "System skills can only be shared by administrators" });
+            return;
+          }
+        }
+        
+        // 非 owner 不能分享
+        if (skill.owner && skill.owner !== req.user!.id) {
+          res.status(403).json({ success: false, error: "Only skill owner can share this skill" });
+          return;
+        }
+      }
+
+      const rule = await repo.create({
         resourceType,
         resourceId,
         ownerId: req.user!.id,
@@ -66,10 +92,10 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // DELETE /api/share/:id — 撤销共享
-  router.delete("/share/:id", requireAuth, (req, res) => {
+  router.delete("/share/:id", requireAuth, async (req, res) => {
     try {
       const id = req.params.id as string;
-      const rule = repo.getById(id);
+      const rule = await repo.getById(id);
       if (!rule) {
         res.status(404).json({ success: false, error: "Share rule not found" });
         return;
@@ -79,7 +105,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
         res.status(403).json({ success: false, error: "Only the owner can delete a share rule" });
         return;
       }
-      repo.delete(id);
+      await repo.delete(id);
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -87,9 +113,9 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // GET /api/share/my — 我创建的共享
-  router.get("/share/my", requireAuth, (req, res) => {
+  router.get("/share/my", requireAuth, async (req, res) => {
     try {
-      const rules = repo.getByOwner(req.user!.id);
+      const rules = await repo.getByOwner(req.user!.id);
       res.json({ success: true, data: rules });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -97,13 +123,13 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // GET /api/share/to-me — 共享给我的资源
-  router.get("/share/to-me", requireAuth, (req, res) => {
+  router.get("/share/to-me", requireAuth, async (req, res) => {
     try {
       const userId = req.user!.id;
-      const roles = getUserRoles(userId);
+      const roles = await getUserRoles(userId);
       const roleIds = roles.map(r => r.id);
-      const deptPath = getUserDeptPath(userId);
-      const rules = repo.getSharedToUser(userId, roleIds, deptPath);
+      const deptPath = await getUserDeptPath(userId);
+      const rules = await repo.getSharedToUser(userId, roleIds, deptPath);
       res.json({ success: true, data: rules });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -111,10 +137,10 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // PUT /api/share/:id — 修改共享规则
-  router.put("/share/:id", requireAuth, (req, res) => {
+  router.put("/share/:id", requireAuth, async (req, res) => {
     try {
       const id = req.params.id as string;
-      const rule = repo.getById(id);
+      const rule = await repo.getById(id);
       if (!rule) {
         res.status(404).json({ success: false, error: "Share rule not found" });
         return;
@@ -124,12 +150,12 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
         return;
       }
       const { scope, targetId, permission } = req.body;
-      const updated = repo.update(id, { scope, targetId, permission });
+      const updated = await repo.update(id, { scope, targetId, permission });
       if (!updated) {
         res.status(400).json({ success: false, error: "No valid fields to update" });
         return;
       }
-      const updatedRule = repo.getById(id);
+      const updatedRule = await repo.getById(id);
       res.json({ success: true, data: updatedRule });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });

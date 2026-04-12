@@ -13,6 +13,7 @@ import SkillsPage from "@/pages/Skills";
 import ConfigPage from "@/pages/Config";
 import MemoryPage from "@/pages/Memory";
 import KnowledgePage from "@/pages/Knowledge";
+import KnowledgeGraphPage from "@/pages/KnowledgeGraph";
 import AdminPage from "@/pages/Admin";
 import FilesPage from "@/pages/Files";
 import EvolutionPage from "@/pages/Evolution";
@@ -73,6 +74,7 @@ export default function App() {
               <Route path="config" element={<ConfigPage />} />
               <Route path="memory" element={<MemoryPage />} />
               <Route path="knowledge" element={<KnowledgePage />} />
+              <Route path="knowledge-graph" element={<KnowledgeGraphPage />} />
               <Route path="files" element={<FilesPage />} />
               <Route path="admin" element={<AdminPage />} />
               <Route path="evolution" element={<EvolutionPage />} />

@@ -19,6 +19,7 @@ import {
   EyeOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text, Paragraph } = Typography;
 
@@ -34,6 +35,7 @@ interface Recommendation {
 
 export default function RecommendationsPanel() {
   const { message, modal } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -59,17 +61,17 @@ export default function RecommendationsPanel() {
 
   const handleAccept = (id: string, skillName: string) => {
     modal.confirm({
-      title: "Accept Recommendation",
-      content: `Accept recommendation for skill "${skillName}"?`,
-      okText: "Accept",
-      cancelText: "Cancel",
+      title: t("accept"),
+      content: `${t("accept_recommendation_confirm")} "${skillName}"?`,
+      okText: t("accept"),
+      cancelText: t("cancel"),
       onOk: async () => {
         try {
           await api.post(`/api/federation/accept-recommendation/${id}`);
-          message.success("Recommendation accepted");
+          message.success(t("recommendation_accepted"));
           await loadRecommendations();
         } catch (e: any) {
-          message.error(e.message || "Failed to accept recommendation");
+          message.error(e.message || t("failed_to_accept_recommendation"));
         }
       },
     });
@@ -77,17 +79,17 @@ export default function RecommendationsPanel() {
 
   const handleIgnore = (id: string, skillName: string) => {
     modal.confirm({
-      title: "Ignore Recommendation",
-      content: `Ignore recommendation for skill "${skillName}"?`,
-      okText: "Ignore",
+      title: t("ignore"),
+      content: `${t("ignore_recommendation_confirm")} "${skillName}"?`,
+      okText: t("ignore"),
       cancelText: "Cancel",
       onOk: async () => {
         try {
           await api.post(`/api/federation/ignore-recommendation/${id}`);
-          message.success("Recommendation ignored");
+          message.success(t("recommendation_ignored"));
           await loadRecommendations();
         } catch (e: any) {
-          message.error(e.message || "Failed to ignore recommendation");
+          message.error(e.message || t("failed_to_ignore_recommendation"));
         }
       },
     });
@@ -157,9 +159,9 @@ export default function RecommendationsPanel() {
           onClick={loadRecommendations}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
-        <Empty description="No recommendations" />
+        <Empty description={t("no_recommendations")} />
       </Flex>
     );
   }
@@ -190,7 +192,7 @@ export default function RecommendationsPanel() {
                   icon={<EyeOutlined />}
                   onClick={() => handleViewDetails(rec)}
                 >
-                  Details
+                  {t("details")}
                 </Button>
                 <Button
                   type="text"
@@ -199,7 +201,7 @@ export default function RecommendationsPanel() {
                   style={{ color: "#52c41a" }}
                   onClick={() => handleAccept(rec.id, rec.skillName)}
                 >
-                  Accept
+                  {t("accept")}
                 </Button>
                 <Button
                   type="text"
@@ -208,7 +210,7 @@ export default function RecommendationsPanel() {
                   icon={<CloseCircleOutlined />}
                   onClick={() => handleIgnore(rec.id, rec.skillName)}
                 >
-                  Ignore
+                  {t("ignore")}
                 </Button>
               </Space>
             }

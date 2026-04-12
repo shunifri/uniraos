@@ -53,7 +53,7 @@ export async function readinessCheck(): Promise<{ ready: boolean; reason?: strin
     return { ready: true };
   } catch (error) {
     const reason = (error as Error).message;
-    log('Readiness check failed', { reason });
+    log('error', 'Readiness check failed', { reason });
     return { ready: false, reason };
   }
 }

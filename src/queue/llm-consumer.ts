@@ -27,20 +27,20 @@ export class LLMConsumer {
       await this.processRequest(message as QueueMessage<LLMRequest>);
     });
 
-    log('LLM consumer started');
+    log('info', 'LLM consumer started');
   }
 
   async stop(): Promise<void> {
     this.isRunning = false;
     await this.rabbit.close();
-    log('LLM consumer stopped');
+    log('info', 'LLM consumer stopped');
   }
 
   private async processRequest(message: QueueMessage<LLMRequest>): Promise<void> {
     const { id: taskId, payload: request } = message;
 
     try {
-      log('Processing LLM request', { taskId, conversationId: request.conversationId });
+      log('info', 'Processing LLM request', { taskId, conversationId: request.conversationId });
 
       // Update status to processing
       await this.producer.updateStatus(taskId, { status: 'processing' });
@@ -61,10 +61,10 @@ export class LLMConsumer {
         result,
       }));
 
-      log('LLM request completed', { taskId });
+      log('info', 'LLM request completed', { taskId });
     } catch (error) {
       const errorMsg = (error as Error).message;
-      log('LLM request failed', { taskId, error: errorMsg });
+      log('error', 'LLM request failed', { taskId, error: errorMsg });
 
       await this.producer.updateStatus(taskId, {
         status: 'failed',

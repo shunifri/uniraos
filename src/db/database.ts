@@ -1,6 +1,6 @@
 /**
  * 数据库初始化与 Schema 管理
- * 使用 better-sqlite3（WAL 模式，高并发读）
+ * 支持 SQLite (better-sqlite3) 和 MySQL 切换
  *
  * 完整 schema：departments → users → roles → user_roles → resources → permissions → role_permissions → department_resources → sessions
  */
@@ -10,14 +10,38 @@ import { mkdirSync } from "fs";
 
 let db: Database.Database | null = null;
 
-/** 获取数据库实例（单例） */
+/** 数据库类型 */
+export type DatabaseType = 'sqlite' | 'mysql';
+
+/** 获取当前数据库类型 */
+export function getDatabaseType(): DatabaseType {
+  return process.env.USE_MYSQL === 'true' ? 'mysql' : 'sqlite';
+}
+
+/** 检查是否使用 MySQL */
+export function isMySQL(): boolean {
+  return getDatabaseType() === 'mysql';
+}
+
+/** 检查是否使用 SQLite */
+export function isSQLite(): boolean {
+  return getDatabaseType() === 'sqlite';
+}
+
+/** 获取数据库实例（单例）- SQLite 模式 */
 export function getDb(): Database.Database {
+  if (isMySQL()) {
+    throw new Error("MySQL mode is active. Use getMySQLAdapter() from mysql-adapter.js instead.");
+  }
   if (!db) throw new Error("Database not initialized. Call initDatabase() first.");
   return db;
 }
 
 /** 初始化数据库 */
 export function initDatabase(dbPath?: string): Database.Database {
+  if (isMySQL()) {
+    throw new Error("MySQL mode is active. Use initDatabaseAsync() instead.");
+  }
   if (db) return db;
 
   const finalPath = dbPath ?? join(process.cwd(), ".raos", "raos.db");
@@ -35,6 +59,19 @@ export function initDatabase(dbPath?: string): Database.Database {
   runMigrations(db);
 
   return db;
+}
+
+/** 异步初始化数据库（支持 MySQL） */
+export async function initDatabaseAsync(dbPath?: string): Promise<void> {
+  if (isMySQL()) {
+    // MySQL 初始化 - 从 mysql-database.ts 导入
+    const { initMySQLDatabase } = await import('./mysql-database.js');
+    await initMySQLDatabase();
+    console.log('   MySQL database initialized');
+  } else {
+    // SQLite 初始化
+    initDatabase(dbPath);
+  }
 }
 
 /** 关闭数据库 */
@@ -402,7 +439,8 @@ function runMigrations(db: Database.Database): void {
           );
       `);
 
-      // role_user Skill 权限（安全的 skills）
+      // role_user Skill 权限（从配置文件加载）
+      // 注意：这里保留硬编码列表以支持独立的 migration，但生产代码应使用 skill-permissions.ts
       const userAllowedSkills = [
         // 知识库
         'kb_search', 'kb_ingest', 'kb_list', 'kb_delete', 'kb_share',
@@ -464,6 +502,78 @@ function runMigrations(db: Database.Database): void {
       for (const skill of anonAllowedSkills) {
         insertAnonSkill.run(`skill:${skill}.execute`);
       }
+    },
+    // v8: 新增权限资源类型 - knowledge, files, conversation, system
+    () => {
+      // 1. 新增资源
+      const newResources = [
+        { id: 'res_knowledge', name: 'knowledge', type: 'api', description: '知识库管理' },
+        { id: 'res_files', name: 'files', type: 'api', description: '文件管理' },
+        { id: 'res_conversation', name: 'conversation', type: 'api', description: '对话管理' },
+        { id: 'res_system', name: 'system', type: 'api', description: '系统管理' },
+      ];
+      
+      const insertResource = db.prepare(`
+        INSERT OR IGNORE INTO resources (id, name, type, description) VALUES (?, ?, ?, ?)
+      `);
+      for (const res of newResources) {
+        insertResource.run(res.id, res.name, res.type, res.description);
+      }
+
+      // 2. 新增权限
+      const newPermissions = [
+        // Knowledge
+        { id: 'perm_knowledge_read', name: 'knowledge.read', resource_id: 'res_knowledge', action: 'read', desc: '查看知识库' },
+        { id: 'perm_knowledge_write', name: 'knowledge.write', resource_id: 'res_knowledge', action: 'write', desc: '导入/删除文档' },
+        { id: 'perm_knowledge_manage', name: 'knowledge.manage', resource_id: 'res_knowledge', action: 'manage', desc: '重建索引等管理' },
+        // Files
+        { id: 'perm_files_read', name: 'files.read', resource_id: 'res_files', action: 'read', desc: '查看/下载文件' },
+        { id: 'perm_files_write', name: 'files.write', resource_id: 'res_files', action: 'write', desc: '上传/删除/移动文件' },
+        // Conversation
+        { id: 'perm_conversation_read', name: 'conversation.read', resource_id: 'res_conversation', action: 'read', desc: '查看对话历史' },
+        { id: 'perm_conversation_write', name: 'conversation.write', resource_id: 'res_conversation', action: 'write', desc: '创建/删除对话' },
+        // System
+        { id: 'perm_system_manage', name: 'system.manage', resource_id: 'res_system', action: 'manage', desc: 'WAL操作等系统管理' },
+      ];
+      
+      const insertPermission = db.prepare(`
+        INSERT OR IGNORE INTO permissions (id, name, description, resource_id, action) VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const perm of newPermissions) {
+        insertPermission.run(perm.id, perm.name, perm.desc, perm.resource_id, perm.action);
+      }
+
+      // 3. 分配给根部门
+      const assignToRoot = db.prepare(`
+        INSERT OR IGNORE INTO department_resources (department_id, resource_id) VALUES ('dept_root', ?)
+      `);
+      for (const res of newResources) {
+        assignToRoot.run(res.id);
+      }
+
+      // 4. 分配权限给角色
+      // admin: 所有新权限
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_admin', id FROM permissions 
+          WHERE name IN ('knowledge.read', 'knowledge.write', 'knowledge.manage', 'files.read', 'files.write', 
+                         'conversation.read', 'conversation.write', 'system.manage');
+      `);
+      
+      // user: knowledge + files + conversation
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_user', id FROM permissions 
+          WHERE name IN ('knowledge.read', 'knowledge.write', 'files.read', 'files.write', 
+                         'conversation.read', 'conversation.write');
+      `);
+      
+      // anonymous: 只读
+      db.exec(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_viewer', id FROM permissions 
+          WHERE name IN ('knowledge.read', 'files.read', 'conversation.read');
+      `);
     },
   ];
 

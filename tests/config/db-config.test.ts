@@ -19,6 +19,11 @@ describe("db-config", () => {
 
   describe("MySQLConfig", () => {
     it("should load with default values", async () => {
+      // Clear env to test defaults
+      const originalEnv = { ...process.env };
+      delete process.env.MYSQL_PRIMARY_PORT;
+      delete process.env.MYSQL_PASSWORD;
+      
       // Import module fresh to get default values
       const { dbConfig } = await import("../../src/config/db-config.js");
 
@@ -28,6 +33,9 @@ describe("db-config", () => {
       expect(dbConfig.mysql.primary.password).toBe("password");
       expect(dbConfig.mysql.primary.database).toBe("raos");
       expect(dbConfig.mysql.primary.connectionLimit).toBe(20);
+      
+      // Restore env
+      Object.assign(process.env, originalEnv);
     });
 
     it("should load with custom env values", async () => {
@@ -95,12 +103,22 @@ describe("db-config", () => {
 
   describe("QdrantConfig", () => {
     it("should load with default values", async () => {
+      // Clear env to test defaults
+      const originalPort = process.env.QDRANT_PORT;
+      const originalGrpcPort = process.env.QDRANT_GRPC_PORT;
+      delete process.env.QDRANT_PORT;
+      delete process.env.QDRANT_GRPC_PORT;
+      
       const { dbConfig } = await import("../../src/config/db-config.js");
 
       expect(dbConfig.qdrant.host).toBe("localhost");
       expect(dbConfig.qdrant.port).toBe(6333);
       expect(dbConfig.qdrant.grpcPort).toBe(6334);
       expect(dbConfig.qdrant.apiKey).toBeUndefined();
+      
+      // Restore env
+      if (originalPort) process.env.QDRANT_PORT = originalPort;
+      if (originalGrpcPort) process.env.QDRANT_GRPC_PORT = originalGrpcPort;
     });
 
     it("should load with custom env values", async () => {
@@ -120,6 +138,10 @@ describe("db-config", () => {
 
   describe("RedisConfig", () => {
     it("should load with default values", async () => {
+      // Clear env to test defaults
+      const originalHosts = process.env.REDIS_HOSTS;
+      delete process.env.REDIS_HOSTS;
+      
       const { dbConfig } = await import("../../src/config/db-config.js");
 
       expect(dbConfig.redis.nodes).toHaveLength(1);
@@ -127,6 +149,9 @@ describe("db-config", () => {
       expect(dbConfig.redis.nodes[0].port).toBe(6379);
       expect(dbConfig.redis.password).toBeUndefined();
       expect(dbConfig.redis.keyPrefix).toBe("raos:");
+      
+      // Restore env
+      if (originalHosts) process.env.REDIS_HOSTS = originalHosts;
     });
 
     it("should load with custom env values", async () => {

@@ -21,6 +21,7 @@ import {
   ZoomInOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -45,6 +46,7 @@ const statusConfig: Record<
 
 export default function LifecycleView() {
   const { message, modal } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [skills, setSkills] = useState<SkillLifecycle[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -70,13 +72,13 @@ export default function LifecycleView() {
 
   const handleCanary = (skill: SkillLifecycle) => {
     modal.confirm({
-      title: "Enable Canary",
-      content: `Enable canary deployment for "${skill.name}"?`,
+      title: t("canary"),
+      content: `${t("enable_canary_confirm")} "${skill.name}"?`,
       onOk: async () => {
         try {
           setActionLoading(true);
           await api.post(`/api/lifecycle/canary/${skill.name}`);
-          message.success(`Canary deployment enabled for "${skill.name}"`);
+          message.success(`${t("canary_deployment_enabled")} "${skill.name}"`);
           loadLifecycle();
         } catch (e: any) {
           message.error(e.message);
@@ -89,14 +91,14 @@ export default function LifecycleView() {
 
   const handleDeprecate = (skill: SkillLifecycle) => {
     modal.confirm({
-      title: "Deprecate Skill",
-      content: `Mark "${skill.name}" as deprecated? It will be transitioned to retired.`,
+      title: t("deprecate"),
+      content: t("mark_deprecated_confirm"),
       okType: "warning",
       onOk: async () => {
         try {
           setActionLoading(true);
           await api.post(`/api/lifecycle/deprecate/${skill.name}`);
-          message.success(`Skill "${skill.name}" marked as deprecated`);
+          message.success(`${t("skill_deprecated")}: "${skill.name}"`);
           loadLifecycle();
         } catch (e: any) {
           message.error(e.message);
@@ -127,7 +129,7 @@ export default function LifecycleView() {
           {skill.lastUsed && (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Last Used
+                {t("last_used")}
               </Text>
               <br />
               <Text>{new Date(skill.lastUsed).toLocaleString()}</Text>
@@ -137,7 +139,7 @@ export default function LifecycleView() {
           {skill.usageCount !== undefined && (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Usage Count
+                {t("usage_count")}
               </Text>
               <br />
               <Text>{skill.usageCount}</Text>
@@ -147,7 +149,7 @@ export default function LifecycleView() {
           {skill.createdAt && (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Created At
+                {t("created_at")}
               </Text>
               <br />
               <Text>{new Date(skill.createdAt).toLocaleString()}</Text>
@@ -157,7 +159,7 @@ export default function LifecycleView() {
           {skill.deprecatedAt && (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Deprecated At
+                {t("deprecated_at")}
               </Text>
               <br />
               <Text>{new Date(skill.deprecatedAt).toLocaleString()}</Text>
@@ -170,26 +172,26 @@ export default function LifecycleView() {
 
   const columns = [
     {
-      title: "Name",
+      title: t("name"),
       dataIndex: "name",
       key: "name",
       width: 200,
       ellipsis: true,
     },
     {
-      title: "Status",
+      title: t("status"),
       dataIndex: "status",
       key: "status",
       width: 120,
       render: (status: string) => (
         <Badge
           status={statusConfig[status]?.badge}
-          text={status.toUpperCase()}
+          text={t(status)}
         />
       ),
     },
     {
-      title: "Last Used",
+      title: t("last_used"),
       dataIndex: "lastUsed",
       key: "lastUsed",
       width: 150,
@@ -197,14 +199,14 @@ export default function LifecycleView() {
         time ? new Date(time).toLocaleString() : "-",
     },
     {
-      title: "Usage",
+      title: t("usage"),
       dataIndex: "usageCount",
       key: "usageCount",
       width: 80,
       render: (count: number) => count || 0,
     },
     {
-      title: "Actions",
+      title: t("actions"),
       key: "actions",
       width: 250,
       render: (_, record: SkillLifecycle) => (
@@ -216,7 +218,7 @@ export default function LifecycleView() {
               onClick={() => handleCanary(record)}
               loading={actionLoading}
             >
-              Canary
+              {t("canary")}
             </Button>
           )}
           {record.status === "active" && (
@@ -226,7 +228,7 @@ export default function LifecycleView() {
               onClick={() => handleDeprecate(record)}
               loading={actionLoading}
             >
-              Deprecate
+              {t("deprecate")}
             </Button>
           )}
           <Button
@@ -234,7 +236,7 @@ export default function LifecycleView() {
             icon={<FileTextOutlined />}
             onClick={() => handleViewConfig(record)}
           >
-            Config
+            {t("config")}
           </Button>
         </Space>
       ),
@@ -247,16 +249,16 @@ export default function LifecycleView() {
       <Card size="small">
         <Flex gap={8}>
           <Select
-            placeholder="Filter by status"
+            placeholder={t("filter_by_status")}
             value={statusFilter}
             onChange={setStatusFilter}
             style={{ width: 150 }}
             options={[
-              { label: "All", value: "all" },
-              { label: "Active", value: "active" },
-              { label: "Canary", value: "canary" },
-              { label: "Deprecated", value: "deprecated" },
-              { label: "Retired", value: "retired" },
+              { label: t("all"), value: "all" },
+              { label: t("active"), value: "active" },
+              { label: t("canary"), value: "canary" },
+              { label: t("deprecated"), value: "deprecated" },
+              { label: t("retired"), value: "retired" },
             ]}
             size="small"
           />
@@ -268,7 +270,7 @@ export default function LifecycleView() {
             loading={loading}
             type="primary"
           >
-            Refresh
+            {t("refresh")}
           </Button>
         </Flex>
       </Card>
@@ -276,12 +278,12 @@ export default function LifecycleView() {
       {/* Table */}
       <Card
         size="small"
-        title="Skill Lifecycle"
+        title={t("skill_lifecycle")}
         style={{ flex: 1, display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto" } }}
       >
         {skills.length === 0 ? (
-          <Empty description="No skills found" />
+          <Empty description={t("no_skills_found")} />
         ) : (
           <Table
             dataSource={skills}

@@ -16,6 +16,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 interface SkillMetric {
   skillName: string;
@@ -29,6 +30,7 @@ interface SkillMetric {
 
 export default function MetricsComparison() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [metrics, setMetrics] = useState<SkillMetric[]>([]);
   const [loading, setLoading] = useState(false);
   const [interval, setInterval] = useState("1h");
@@ -42,7 +44,7 @@ export default function MetricsComparison() {
       );
       setMetrics(data);
     } catch (e: any) {
-      message.error(e.message || "Failed to load metrics");
+      message.error(e.message || t("failed_to_load_metrics"));
     } finally {
       setLoading(false);
     }
@@ -68,14 +70,14 @@ export default function MetricsComparison() {
 
   const columns = [
     {
-      title: "Skill Name",
+      title: t("skill_name"),
       dataIndex: "skillName",
       key: "skillName",
       width: 150,
       render: (text: string) => <span>{text}</span>,
     },
     {
-      title: "Local Success Rate",
+      title: t("local_success_rate"),
       dataIndex: "localSuccessRate",
       key: "localSuccessRate",
       width: 120,
@@ -86,7 +88,7 @@ export default function MetricsComparison() {
       ),
     },
     ...allPeerIds.map((peerId) => ({
-      title: `${peerId} Success Rate`,
+      title: `${peerId} ${t("success_rate")}`,
       key: `peer-${peerId}`,
       width: 120,
       render: (_: any, record: SkillMetric) => {
@@ -100,7 +102,7 @@ export default function MetricsComparison() {
       },
     })),
     {
-      title: "Best Source",
+      title: t("best_source"),
       dataIndex: "bestSource",
       key: "bestSource",
       width: 120,
@@ -114,7 +116,7 @@ export default function MetricsComparison() {
     <Flex vertical gap={16}>
       <Flex gap={8} wrap>
         <Input
-          placeholder="Search skills..."
+          placeholder={t("search_skills")}
           prefix={<SearchOutlined />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
@@ -125,10 +127,10 @@ export default function MetricsComparison() {
           onChange={setInterval}
           style={{ width: 100 }}
           options={[
-            { label: "1 Hour", value: "1h" },
-            { label: "1 Day", value: "1d" },
-            { label: "1 Week", value: "1w" },
-            { label: "1 Month", value: "1m" },
+            { label: t("time_1h"), value: "1h" },
+            { label: t("time_1d"), value: "1d" },
+            { label: t("time_1w"), value: "1w" },
+            { label: t("time_1m"), value: "1m" },
           ]}
         />
         <Button
@@ -136,12 +138,12 @@ export default function MetricsComparison() {
           onClick={loadMetrics}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
       {sortedMetrics.length === 0 ? (
-        <Empty description="No metrics found" />
+        <Empty description={t("no_metrics")} />
       ) : (
         <div style={{ overflow: "auto" }}>
           <Table

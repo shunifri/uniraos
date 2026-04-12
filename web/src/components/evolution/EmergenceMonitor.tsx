@@ -17,6 +17,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 import dayjs from "dayjs";
 
 const { Text } = Typography;
@@ -33,6 +34,7 @@ interface EmergencePattern {
 
 export default function EmergenceMonitor() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [patterns, setPatterns] = useState<EmergencePattern[]>([]);
   const [loading, setLoading] = useState(false);
   const [severity, setSeverity] = useState<string>("all");
@@ -106,7 +108,7 @@ export default function EmergenceMonitor() {
       <Card size="small">
         <Flex gap={12} wrap>
           <Select
-            placeholder="Severity"
+            placeholder={t("severity")}
             value={severity}
             onChange={setSeverity}
             style={{ width: 120 }}
@@ -134,7 +136,7 @@ export default function EmergenceMonitor() {
             loading={loading}
             type="primary"
           >
-            Filter
+            {t("filter")}
           </Button>
 
           <Button
@@ -144,7 +146,7 @@ export default function EmergenceMonitor() {
               setDateRange(null);
             }}
           >
-            Reset
+            {t("reset")}
           </Button>
         </Flex>
       </Card>
@@ -155,14 +157,14 @@ export default function EmergenceMonitor() {
         title={
           <Flex align="center" gap={8}>
             <WarningOutlined />
-            <span>Emergence Patterns ({patterns.length})</span>
+            <span>{t("emergence_patterns")} ({patterns.length})</span>
           </Flex>
         }
         style={{ flex: 1, display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto" } }}
       >
         {patterns.length === 0 ? (
-          <Empty description="No emergence patterns detected" />
+          <Empty description={t("no_emergence_patterns")} />
         ) : (
           <Table
             dataSource={patterns}

@@ -14,6 +14,7 @@ import {
   Empty,
   Collapse,
   Badge,
+  Radio,
 } from "antd";
 import {
   PlayCircleOutlined,
@@ -22,7 +23,12 @@ import {
   EyeOutlined,
   EyeInvisibleOutlined,
   ShareAltOutlined,
+  UserOutlined,
+  CodeOutlined,
+  TeamOutlined,
+  AppstoreOutlined,
 } from "@ant-design/icons";
+import { useAuthStore } from "@/store/auth";
 import { useI18nStore } from "@/i18n";
 import { api } from "@/api";
 import CodeEditor from "@/components/CodeEditor";
@@ -54,7 +60,10 @@ interface SkillInfo {
   paramSchema?: ParamSchema | null;
   isSystem?: boolean;
   owner?: string;
+  source?: "own" | "role" | "shared";
 }
+
+type SkillFilter = "all" | "own" | "system" | "shared";
 
 const autonomyColors: Record<string, string> = {
   MANUAL: "green",
@@ -66,8 +75,10 @@ const autonomyColors: Record<string, string> = {
 export default function SkillsPage() {
   const t = useI18nStore((s) => s.t);
   const { message } = App.useApp();
+  const user = useAuthStore((s) => s.user);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<SkillFilter>("all");
   const [selected, setSelected] = useState<SkillInfo | null>(null);
   const [params, setParams] = useState("{}");
   const [executing, setExecuting] = useState(false);
@@ -89,11 +100,25 @@ export default function SkillsPage() {
     }
   };
 
-  const filtered = skills.filter(
-    (s) =>
+  const filtered = skills.filter((s) => {
+    // 搜索过滤
+    const matchesSearch =
       s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.description?.toLowerCase().includes(search.toLowerCase()),
-  );
+      s.description?.toLowerCase().includes(search.toLowerCase());
+    if (!matchesSearch) return false;
+
+    // 类型过滤
+    switch (filter) {
+      case "own":
+        return s.owner === user?.id;
+      case "system":
+        return s.isSystem || !s.owner;
+      case "shared":
+        return s.source === "shared";
+      default:
+        return true;
+    }
+  });
 
   const execute = async () => {
     if (!selected) return;
@@ -144,6 +169,21 @@ export default function SkillsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             allowClear
+          />
+          <Radio.Group
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            size="small"
+            style={{ marginTop: 8 }}
+            block
+            optionType="button"
+            buttonStyle="solid"
+            options={[
+              { value: "all", label: <><AppstoreOutlined /> {t("all")}</> },
+              { value: "own", label: <><UserOutlined /> {t("my_skills")}</> },
+              { value: "system", label: <><CodeOutlined /> {t("system")}</> },
+              { value: "shared", label: <><TeamOutlined /> {t("shared")}</> },
+            ]}
           />
         </div>
         <List

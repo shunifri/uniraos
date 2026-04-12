@@ -13,21 +13,21 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Auth Routes =====
 
-  router.post("/auth/login", (req, res) => {
+  router.post("/auth/login", async (req, res) => {
     const { username, password } = req.body as { username: string; password: string };
     if (!username || !password) {
       res.status(400).json({ success: false, error: "username and password are required" });
       return;
     }
 
-    const user = userRepo.authenticate(username, password);
+    const user = await userRepo.authenticate(username, password);
     if (!user) {
       res.status(401).json({ success: false, error: "Invalid credentials" });
       return;
     }
 
-    const session = createSession(user.id);
-    const details = userRepo.getUserWithDetails(user.id);
+    const session = await createSession(user.id);
+    const details = await userRepo.getUserWithDetails(user.id);
 
     res.json({
       success: true,
@@ -38,7 +38,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
   });
 
   // POST /api/auth/anonymous — 匿名登录（通过手机号标识）
-  router.post("/auth/anonymous", (req, res) => {
+  router.post("/auth/anonymous", async (req, res) => {
     try {
       const { phone } = req.body as { phone?: string };
 
@@ -49,12 +49,12 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       }
 
       // 检查手机号是否已注册过匿名用户
-      let user = userRepo.getUserByPhone(phone);
+      let user = await userRepo.getUserByPhone(phone);
 
       if (user) {
         // 已有用户，直接创建新 session
-        const session = createSession(user.id);
-        const details = userRepo.getUserWithDetails(user.id);
+        const session = await createSession(user.id);
+        const details = await userRepo.getUserWithDetails(user.id);
         res.json({
           success: true,
           token: session.token,
@@ -66,7 +66,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
       // 创建新匿名用户
       const anonUsername = `guest_${phone.slice(-4)}_${randomUUID().slice(0, 4)}`;
-      user = userRepo.createUser({
+      user = await userRepo.createUser({
         username: anonUsername,
         password: randomUUID(), // 随机密码，匿名用户不需要密码登录
         displayName: `游客${phone.slice(-4)}`,
@@ -74,8 +74,8 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
         roleIds: ["role_viewer"],
       });
 
-      const session = createSession(user.id);
-      const details = userRepo.getUserWithDetails(user.id);
+      const session = await createSession(user.id);
+      const details = await userRepo.getUserWithDetails(user.id);
 
       res.json({
         success: true,
@@ -88,16 +88,16 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/auth/logout", requireAuth, (req, res) => {
+  router.post("/auth/logout", requireAuth, async (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
-      destroySession(authHeader.slice(7));
+      await destroySession(authHeader.slice(7));
     }
     res.json({ success: true });
   });
 
-  router.get("/auth/me", requireAuth, (req, res) => {
-    const details = userRepo.getUserWithDetails(req.user!.id);
+  router.get("/auth/me", requireAuth, async (req, res) => {
+    const details = await userRepo.getUserWithDetails(req.user!.id);
     if (!details) {
       res.status(404).json({ success: false, error: "User not found" });
       return;
@@ -107,10 +107,10 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== User management API (admin) =====
 
-  router.get("/users", requireAuth, requireAdmin, (req, res) => {
+  router.get("/users", requireAuth, requireAdmin, async (req, res) => {
     const userId = req.query.id as string | undefined;
     if (userId) {
-      const details = userRepo.getUserWithDetails(userId);
+      const details = await userRepo.getUserWithDetails(userId);
       if (!details) {
         res.status(404).json({ success: false, error: "User not found" });
         return;
@@ -118,53 +118,53 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       res.json({ success: true, user: details });
       return;
     }
-    const users = userRepo.listUsers();
+    const users = await userRepo.listUsers();
     // Enrich each user with roles for the list view
-    const enriched = users.map((u) => {
-      const roles = userRepo.getUserRoles(u.id);
+    const enriched = await Promise.all(users.map(async (u) => {
+      const roles = await userRepo.getUserRoles(u.id);
       return { ...u, roles };
-    });
+    }));
     res.json({ success: true, users: enriched });
   });
 
-  router.post("/users", requireAuth, requireAdmin, (req, res) => {
+  router.post("/users", requireAuth, requireAdmin, async (req, res) => {
     const { username, password, displayName, departmentId, phone, email, roleIds } = req.body;
     if (!username || !password) {
       res.status(400).json({ success: false, error: "username and password are required" });
       return;
     }
     try {
-      const user = userRepo.createUser({ username, password, displayName, departmentId, phone, email, roleIds });
-      const details = userRepo.getUserWithDetails(user.id);
+      const user = await userRepo.createUser({ username, password, displayName, departmentId, phone, email, roleIds });
+      const details = await userRepo.getUserWithDetails(user.id);
       res.json({ success: true, user: details });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  router.put("/users/:id", requireAuth, requireAdmin, (req, res) => {
+  router.put("/users/:id", requireAuth, requireAdmin, async (req, res) => {
     const { displayName, avatar, status, departmentId, phone, email, roleIds } = req.body;
     const id = req.params.id as string;
-    const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId, phone, email, roleIds });
+    const user = await userRepo.updateUser(id, { displayName, avatar, status, departmentId, phone, email, roleIds });
     if (!user) {
       res.status(404).json({ success: false, error: "User not found" });
       return;
     }
-    const details = userRepo.getUserWithDetails(id);
+    const details = await userRepo.getUserWithDetails(id);
     res.json({ success: true, user: details });
   });
 
-  router.delete("/users/:id", requireAuth, requireAdmin, (req, res) => {
+  router.delete("/users/:id", requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     if (id === req.user!.id) {
       res.status(400).json({ success: false, error: "Cannot delete yourself" });
       return;
     }
-    const deleted = userRepo.deleteUser(id);
+    const deleted = await userRepo.deleteUser(id);
     res.json({ success: true, deleted });
   });
 
-  router.post("/users/:id/roles", requireAuth, requireAdmin, (req, res) => {
+  router.post("/users/:id/roles", requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
     if (!roleId || !action) {
@@ -172,22 +172,22 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       return;
     }
     if (action === "assign") {
-      userRepo.assignRole(id, roleId);
+      await userRepo.assignRole(id, roleId);
     } else {
-      userRepo.removeRole(id, roleId);
+      await userRepo.removeRole(id, roleId);
     }
-    const roles = userRepo.getUserRoles(id);
+    const roles = await userRepo.getUserRoles(id);
     res.json({ success: true, roles });
   });
 
-  router.post("/users/:id/password", requireAuth, requireAdmin, (req, res) => {
+  router.post("/users/:id/password", requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     const { password } = req.body as { password: string };
     if (!password) {
       res.status(400).json({ success: false, error: "password is required" });
       return;
     }
-    const changed = userRepo.changePassword(id, password);
+    const changed = await userRepo.changePassword(id, password);
     res.json({ success: true, changed });
   });
 
@@ -282,8 +282,8 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Role permission management API (admin) =====
 
-  router.get("/roles", requireAuth, requireAdmin, (_req, res) => {
-    const roles = userRepo.listRoles();
+  router.get("/roles", requireAuth, requireAdmin, async (_req, res) => {
+    const roles = await userRepo.listRoles();
     res.json({ success: true, roles });
   });
 
@@ -314,24 +314,24 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, permissions });
   });
 
-  router.post("/roles", requireAuth, requireAdmin, (req, res) => {
+  router.post("/roles", requireAuth, requireAdmin, async (req, res) => {
     const { name, description } = req.body as { name: string; description?: string };
     if (!name) {
       res.status(400).json({ success: false, error: "name is required" });
       return;
     }
     try {
-      const role = userRepo.createRole({ name, description });
+      const role = await userRepo.createRole({ name, description });
       res.json({ success: true, role });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  router.delete("/roles/:id", requireAuth, requireAdmin, (req, res) => {
+  router.delete("/roles/:id", requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     try {
-      const ok = userRepo.deleteRole(id);
+      const ok = await userRepo.deleteRole(id);
       if (!ok) {
         res.status(404).json({ success: false, error: "Role not found" });
         return;

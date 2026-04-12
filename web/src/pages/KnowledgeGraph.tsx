@@ -23,6 +23,7 @@ import {
 } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Title, Text } = Typography;
 
@@ -75,6 +76,7 @@ const NODE_TYPE_COLOR: Record<string, string> = {
 
 export default function KnowledgeGraphPage() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
 
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] });
@@ -99,7 +101,7 @@ export default function KnowledgeGraphPage() {
       const data = await api.get<{ nodes: GraphNode[]; edges: GraphEdge[] }>("/api/graph/data");
       setGraphData(data);
     } catch (err) {
-      message.error("Failed to load graph data");
+      message.error(t("error"));
     } finally {
       setLoading(false);
     }
@@ -118,7 +120,7 @@ export default function KnowledgeGraphPage() {
       await loadStats();
       await loadGraphData();
     } catch (err) {
-      message.error("Sync failed");
+      message.error(t("error"));
     } finally {
       setSyncing(false);
     }
@@ -127,11 +129,11 @@ export default function KnowledgeGraphPage() {
   const handleRebuildCommunities = async () => {
     try {
       await api.post("/api/graph/communities");
-      message.success("Communities rebuilt");
+      message.success(t("success"));
       await loadStats();
       await loadGraphData();
     } catch {
-      message.error("Failed to rebuild communities");
+      message.error(t("error"));
     }
   };
 
@@ -146,7 +148,7 @@ export default function KnowledgeGraphPage() {
       });
       setQueryResults(result);
     } catch {
-      message.error("Query failed");
+      message.error(t("error"));
     } finally {
       setQuerying(false);
     }
@@ -254,19 +256,19 @@ export default function KnowledgeGraphPage() {
 
   const nodeColumns = [
     {
-      title: "Label",
+      title: t("label"),
       dataIndex: "label",
       key: "label",
       render: (v: string) => <Text strong>{v}</Text>,
     },
     {
-      title: "Type",
+      title: t("type"),
       dataIndex: "type",
       key: "type",
       render: (v: string) => <Tag color={NODE_TYPE_COLOR[v] ?? "default"}>{v}</Tag>,
     },
     {
-      title: "Community",
+      title: t("community"),
       dataIndex: "communityId",
       key: "communityId",
       render: (v: number | undefined) =>
@@ -277,13 +279,13 @@ export default function KnowledgeGraphPage() {
         ),
     },
     {
-      title: "Degree",
+      title: t("degree"),
       dataIndex: "degree",
       key: "degree",
       render: (v: number | undefined) => v ?? 0,
     },
     {
-      title: "Tags",
+      title: t("tags"),
       dataIndex: "tags",
       key: "tags",
       render: (tags: string[] | undefined) =>
@@ -296,7 +298,7 @@ export default function KnowledgeGraphPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <NodeIndexOutlined style={{ fontSize: 24, color: "#5470c6" }} />
         <Title level={3} style={{ margin: 0 }}>
-          Knowledge Graph
+          {t("knowledge_graph")}
         </Title>
       </div>
 
@@ -305,7 +307,7 @@ export default function KnowledgeGraphPage() {
         <Col xs={12} sm={6}>
           <Card size="small" className="glass-card">
             <Statistic
-              title="Nodes"
+              title={t("nodes")}
               value={stats?.nodeCount ?? 0}
               prefix={<NodeIndexOutlined />}
             />
@@ -314,7 +316,7 @@ export default function KnowledgeGraphPage() {
         <Col xs={12} sm={6}>
           <Card size="small" className="glass-card">
             <Statistic
-              title="Edges"
+              title={t("edges")}
               value={stats?.edgeCount ?? 0}
             />
           </Card>
@@ -322,7 +324,7 @@ export default function KnowledgeGraphPage() {
         <Col xs={12} sm={6}>
           <Card size="small" className="glass-card">
             <Statistic
-              title="Communities"
+              title={t("communities")}
               value={stats?.communityCount ?? 0}
               prefix={<ClusterOutlined />}
             />
@@ -331,7 +333,7 @@ export default function KnowledgeGraphPage() {
         <Col xs={12} sm={6}>
           <Card size="small" className="glass-card">
             <Statistic
-              title="God Nodes"
+              title={t("god_nodes")}
               value={stats?.godNodeCount ?? 0}
             />
           </Card>
@@ -347,30 +349,30 @@ export default function KnowledgeGraphPage() {
             loading={syncing}
             type="primary"
           >
-            Sync from LTM
+            {t("sync_from_ltm")}
           </Button>
           <Button
             icon={<ClusterOutlined />}
             onClick={handleRebuildCommunities}
           >
-            Rebuild Communities
+            {t("rebuild_communities")}
           </Button>
           <Button
             icon={<ReloadOutlined />}
             onClick={() => { loadStats(); loadGraphData(); setQueryResults(null); }}
           >
-            Refresh
+            {t("refresh")}
           </Button>
           <Input.Search
-            placeholder="Query knowledge graph (BFS)..."
+            placeholder={t("query_knowledge_graph")}
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
             onSearch={handleQuery}
-            enterButton={<Button icon={<SearchOutlined />} loading={querying}>Query</Button>}
+            enterButton={<Button icon={<SearchOutlined />} loading={querying}>{t("query")}</Button>}
             style={{ width: 360 }}
           />
           {queryResults && (
-            <Button onClick={() => setQueryResults(null)}>Clear Query</Button>
+            <Button onClick={() => setQueryResults(null)}>{t("clear_query")}</Button>
           )}
         </Space>
       </Card>
@@ -382,16 +384,16 @@ export default function KnowledgeGraphPage() {
           <Space>
             <NodeIndexOutlined />
             {queryResults
-              ? `Query Results — ${displayNodes.length} nodes, ${displayEdges.length} edges`
-              : `Full Graph — ${displayNodes.length} nodes, ${displayEdges.length} edges`}
+              ? `${t("query_results")} — ${displayNodes.length} ${t("nodes")}, ${displayEdges.length} ${t("edges")}`
+              : `${t("full_graph")} — ${displayNodes.length} ${t("nodes")}, ${displayEdges.length} ${t("edges")}`}
           </Space>
         }
         style={{ marginBottom: 16 }}
         extra={
           <Space>
-            <Tag color="blue">Solid = EXTRACTED</Tag>
-            <Tag color="orange">Dashed = INFERRED</Tag>
-            <Tag color="gray">Dotted = TEMPORAL</Tag>
+            <Tag color="blue">{t("solid_extracted")}</Tag>
+            <Tag color="orange">{t("dashed_inferred")}</Tag>
+            <Tag color="gray">{t("dotted_temporal")}</Tag>
           </Space>
         }
       >
@@ -416,7 +418,7 @@ export default function KnowledgeGraphPage() {
 
       {/* Node Table */}
       {displayNodes.length > 0 && (
-        <Card title="Nodes" size="small" className="glass-card">
+        <Card title={t("nodes")} size="small" className="glass-card">
           <Table
             dataSource={displayNodes}
             columns={nodeColumns}

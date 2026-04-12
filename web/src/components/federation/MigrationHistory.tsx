@@ -12,6 +12,7 @@ import {
 } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 import dayjs from "dayjs";
 
 interface Migration {
@@ -24,6 +25,7 @@ interface Migration {
 
 export default function MigrationHistory() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [migrations, setMigrations] = useState<Migration[]>([]);
   const [loading, setLoading] = useState(false);
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
@@ -39,7 +41,7 @@ export default function MigrationHistory() {
       );
       setMigrations(data);
     } catch (e: any) {
-      message.error(e.message || "Failed to load migration history");
+      message.error(e.message || t("failed_to_load_migration_history"));
     } finally {
       setLoading(false);
     }
@@ -59,19 +61,19 @@ export default function MigrationHistory() {
 
   const columns = [
     {
-      title: "Skill Name",
+      title: t("skill_name"),
       dataIndex: "skillName",
       key: "skillName",
       render: (text: string) => <span>{text}</span>,
     },
     {
-      title: "Source Instance",
+      title: t("source_instance"),
       dataIndex: "sourceInstance",
       key: "sourceInstance",
       render: (text: string) => <Tag>{text}</Tag>,
     },
     {
-      title: "Migration Time",
+      title: t("migration_time"),
       dataIndex: "migrationTime",
       key: "migrationTime",
       render: (text: string) => (
@@ -79,7 +81,7 @@ export default function MigrationHistory() {
       ),
     },
     {
-      title: "Status",
+      title: t("status"),
       dataIndex: "status",
       key: "status",
       render: (status: string) => {
@@ -87,11 +89,11 @@ export default function MigrationHistory() {
         if (status === "success") color = "success";
         else if (status === "failed") color = "error";
         else if (status === "pending") color = "processing";
-        return <Badge status={color} text={status} />;
+        return <Badge status={color} text={t(status)} />;
       },
     },
     {
-      title: "Success Rate Change",
+      title: t("success_rate_change"),
       dataIndex: "successRateChange",
       key: "successRateChange",
       render: (change: number) => (
@@ -111,19 +113,19 @@ export default function MigrationHistory() {
           style={{ flex: 1 }}
         />
         <Button type="primary" onClick={handleApplyFilter}>
-          Apply Filter
+          {t("apply_filter")}
         </Button>
         <Button
           icon={<ReloadOutlined />}
           onClick={loadMigrations}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
       {migrations.length === 0 ? (
-        <Empty description="No migrations found" />
+        <Empty description={t("no_migrations")} />
       ) : (
         <Table
           columns={columns}

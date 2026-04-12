@@ -41,7 +41,7 @@ export class ReactAgent implements Agent {
   async run(input: AgentInput): Promise<AgentOutput> {
     const startTime = Date.now();
     const steps: AgentStep[] = [];
-    const tools = this.getFilteredTools();
+    const tools = await this.getFilteredTools();
     const messages = this.buildMessages(input);
     const chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
 
@@ -133,7 +133,7 @@ export class ReactAgent implements Agent {
   }
 
   async *runStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
-    const tools = this.getFilteredTools();
+    const tools = await this.getFilteredTools();
     const messages = this.buildMessages(input);
     // deepThink 只在第一轮迭代使用，后续迭代不再触发深度思考
     let chatOptions: ChatOptions | undefined = input.context?.deepThink ? { deepThink: true } : undefined;
@@ -286,7 +286,7 @@ export class ReactAgent implements Agent {
     yield { event: "agent_done", agentRole: this.profile.role, data: { response: lastMsg?.content ?? "[max iterations]" } };
   }
 
-  private getFilteredTools(): ToolDefinition[] {
+  private async getFilteredTools(): Promise<ToolDefinition[]> {
     try {
       const userId = getCurrentUserId();
       if (!userId || userId === "default") {
@@ -295,7 +295,7 @@ export class ReactAgent implements Agent {
       }
 
       // 使用 SkillAccessService 获取可用 Skill（带缓存）
-      const accessResult = this.skillAccessService.getAccessibleSkills(userId, {
+      const accessResult = await this.skillAccessService.getAccessibleSkills(userId, {
         visibleOnly: true,
         allowedSkills: this.profile.allowedSkills.length > 0 ? this.profile.allowedSkills : undefined,
       });

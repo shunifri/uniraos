@@ -548,15 +548,16 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
 async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
   try {
     // @ts-ignore — 可选依赖
-    const Redis = (await import("ioredis")).default;
+    const RedisModule = await import("ioredis");
+    const Redis = RedisModule.default || RedisModule.Redis;
 
-    const clients = new Map<string, InstanceType<typeof Redis>>();
+    const clients = new Map<any, any>();
 
     function getClient(config: { host?: string; port?: number; password?: string; db?: number }) {
       const key = `${config.host ?? "localhost"}:${config.port ?? 6379}/${config.db ?? 0}`;
       if (clients.has(key)) return clients.get(key)!;
 
-      const client = new Redis({
+      const client = new (Redis as any)({
         host: config.host ?? "localhost",
         port: config.port ?? 6379,
         password: config.password,

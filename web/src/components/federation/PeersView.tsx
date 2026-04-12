@@ -21,6 +21,7 @@ import {
   EyeOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 interface Peer {
   instanceId: string;
@@ -32,7 +33,9 @@ interface Peer {
 }
 
 export default function PeersView() {
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
+  const [modal] = Modal.useModal();
+  const t = useI18nStore((s) => s.t);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [loading, setLoading] = useState(false);
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
@@ -44,7 +47,7 @@ export default function PeersView() {
       const data = await api.get<Peer[]>("/api/federation/peers");
       setPeers(data);
     } catch (e: any) {
-      message.error(e.message || "Failed to load peers");
+      message.error(e.message || t("failed_to_load_peers"));
     } finally {
       setLoading(false);
     }
@@ -63,29 +66,29 @@ export default function PeersView() {
         instanceId: values.instanceId,
         endpoint: values.endpoint,
       });
-      message.success("Peer added successfully");
+      message.success(t("peer_added"));
       setIsAddModalVisible(false);
       form.resetFields();
       await loadPeers();
     } catch (e: any) {
-      message.error(e.message || "Failed to add peer");
+      message.error(e.message || t("failed_to_add_peer"));
     }
   };
 
   const handleRemovePeer = (peerId: string) => {
     modal.confirm({
-      title: "Remove Peer",
-      content: "Are you sure you want to remove this peer?",
-      okText: "Remove",
-      cancelText: "Cancel",
+      title: t("remove_peer"),
+      content: t("remove_peer_confirm"),
+      okText: t("remove"),
+      cancelText: t("cancel"),
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await api.del(`/api/federation/peers/${peerId}`);
-          message.success("Peer removed successfully");
+          message.success(t("peer_removed"));
           await loadPeers();
         } catch (e: any) {
-          message.error(e.message || "Failed to remove peer");
+          message.error(e.message || t("failed_to_remove_peer"));
         }
       },
     });
@@ -93,24 +96,24 @@ export default function PeersView() {
 
   const handleViewDetails = (peer: Peer) => {
     modal.info({
-      title: `Peer Details: ${peer.instanceId}`,
+      title: `${t("peer_details")}: ${peer.instanceId}`,
       content: (
         <div>
           <p>
-            <strong>Endpoint:</strong> {peer.endpoint}
+            <strong>{t("endpoint")}:</strong> {peer.endpoint}
           </p>
           <p>
-            <strong>Version:</strong> {peer.version}
+            <strong>{t("version")}:</strong> {peer.version}
           </p>
           <p>
-            <strong>Skill Count:</strong> {peer.skillCount}
+            <strong>{t("skill_count")}:</strong> {peer.skillCount}
           </p>
           <p>
-            <strong>Last Heartbeat:</strong>{" "}
+            <strong>{t("last_heartbeat")}:</strong>{" "}
             {new Date(peer.lastHeartbeat).toLocaleString()}
           </p>
           <p>
-            <strong>Status:</strong> {peer.status}
+            <strong>{t("status")}:</strong> {peer.status}
           </p>
         </div>
       ),
@@ -119,13 +122,13 @@ export default function PeersView() {
 
   const columns = [
     {
-      title: "Instance ID",
+      title: t("instance_id"),
       dataIndex: "instanceId",
       key: "instanceId",
       render: (text: string) => <span>{text}</span>,
     },
     {
-      title: "Endpoint",
+      title: t("endpoint"),
       dataIndex: "endpoint",
       key: "endpoint",
       render: (text: string) => (
@@ -137,19 +140,19 @@ export default function PeersView() {
       ),
     },
     {
-      title: "Version",
+      title: t("version"),
       dataIndex: "version",
       key: "version",
       render: (text: string) => <Tag>{text}</Tag>,
     },
     {
-      title: "Skills",
+      title: t("skills"),
       dataIndex: "skillCount",
       key: "skillCount",
       render: (count: number) => <Badge count={count} />,
     },
     {
-      title: "Last Heartbeat",
+      title: t("last_heartbeat"),
       dataIndex: "lastHeartbeat",
       key: "lastHeartbeat",
       render: (text: string) => (
@@ -157,7 +160,7 @@ export default function PeersView() {
       ),
     },
     {
-      title: "Status",
+      title: t("status"),
       dataIndex: "status",
       key: "status",
       render: (status: string) => {
@@ -165,11 +168,11 @@ export default function PeersView() {
         if (status === "online") color = "success";
         else if (status === "offline") color = "error";
         else if (status === "unreachable") color = "warning";
-        return <Badge status={color} text={status} />;
+        return <Badge status={color} text={t(status)} />;
       },
     },
     {
-      title: "Actions",
+      title: t("actions"),
       key: "actions",
       render: (_: any, record: Peer) => (
         <Space size="small">
@@ -200,20 +203,20 @@ export default function PeersView() {
             icon={<PlusOutlined />}
             onClick={() => setIsAddModalVisible(true)}
           >
-            Add Peer
+            {t("add_peer")}
           </Button>
           <Button
             icon={<ReloadOutlined />}
             onClick={loadPeers}
             loading={loading}
           >
-            Refresh
+            {t("refresh")}
           </Button>
         </Flex>
-        <Empty description="No peers found" />
+        <Empty description={t("no_peers")} />
 
         <Modal
-          title="Add Peer"
+          title={t("add_peer")}
           open={isAddModalVisible}
           onOk={handleAddPeer}
           onCancel={() => {
@@ -227,14 +230,14 @@ export default function PeersView() {
               name="instanceId"
               rules={[{ required: true, message: "Please enter instance ID" }]}
             >
-              <Input placeholder="e.g., instance-001" />
+              <Input placeholder={t("peer_name_example")} />
             </Form.Item>
             <Form.Item
               label="Endpoint"
               name="endpoint"
               rules={[{ required: true, message: "Please enter endpoint" }]}
             >
-              <Input placeholder="e.g., http://localhost:8000" />
+              <Input placeholder={t("peer_endpoint_example")} />
             </Form.Item>
           </Form>
         </Modal>
@@ -250,14 +253,14 @@ export default function PeersView() {
           icon={<PlusOutlined />}
           onClick={() => setIsAddModalVisible(true)}
         >
-          Add Peer
+          {t("add_peer")}
         </Button>
         <Button
           icon={<ReloadOutlined />}
           onClick={loadPeers}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
@@ -270,7 +273,7 @@ export default function PeersView() {
       />
 
       <Modal
-        title="Add Peer"
+        title={t("add_peer")}
         open={isAddModalVisible}
         onOk={handleAddPeer}
         onCancel={() => {
@@ -284,14 +287,14 @@ export default function PeersView() {
             name="instanceId"
             rules={[{ required: true, message: "Please enter instance ID" }]}
           >
-            <Input placeholder="e.g., instance-001" />
+            <Input placeholder={t("peer_name_example")} />
           </Form.Item>
           <Form.Item
             label="Endpoint"
             name="endpoint"
             rules={[{ required: true, message: "Please enter endpoint" }]}
           >
-            <Input placeholder="e.g., http://localhost:8000" />
+            <Input placeholder={t("peer_endpoint_example")} />
           </Form.Item>
         </Form>
       </Modal>

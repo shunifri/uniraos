@@ -1,0 +1,64 @@
+version: '3.8'
+
+# =============================================================================
+# RAOS 本地测试环境 - 全部使用华为云 SWR 镜像
+# 端口映射到非标准端口，避免与本地服务冲突
+# =============================================================================
+
+services:
+  mysql-primary:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/mysql:8.0
+    container_name: raos-mysql-primary
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: raos
+      MYSQL_USER: raos
+      MYSQL_PASSWORD: raospassword
+    volumes:
+      - mysql_primary_data:/var/lib/mysql
+    ports:
+      - "3307:3306"    # 改为 3307，避免与本地 MySQL 冲突
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+  redis:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/redis:7-alpine
+    container_name: raos-redis
+    ports:
+      - "6380:6379"    # 改为 6380，避免与本地 Redis 冲突
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+  rabbitmq:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/rabbitmq:3.12-management-alpine
+    container_name: raos-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: raos
+      RABBITMQ_DEFAULT_PASS: raospassword
+    ports:
+      - "5673:5672"    # AMQP 端口改为 5673
+      - "15673:15672"  # Management 端口改为 15673
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+  qdrant:
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/qdrant:v1.9.0
+    container_name: raos-qdrant
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    ports:
+      - "6334:6333"    # 改为 6334，避免与本地 Qdrant 冲突
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+volumes:
+  mysql_primary_data:
+  qdrant_storage:
+
+networks:
+  raos-backend:
+    driver: bridge

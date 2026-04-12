@@ -43,7 +43,7 @@ export class QueryCache {
     const cached = await this.redis.get<{ data: T[]; timestamp: number }>(key);
 
     if (cached) {
-      log('Query cache hit', { key: key.slice(0, 20) });
+      log('info', 'Query cache hit', { key: key.slice(0, 20) });
       return cached.data;
     }
 
@@ -56,7 +56,7 @@ export class QueryCache {
   async set<T>(sql: string, params: any[], data: T[]): Promise<void> {
     if (!this.config.enabled) return;
     if (data.length > this.config.maxResults) {
-      log('Query result too large for cache', { 
+      log('warn', 'Query result too large for cache', { 
         size: data.length, 
         max: this.config.maxResults 
       });
@@ -70,7 +70,7 @@ export class QueryCache {
       this.config.ttlSeconds
     );
 
-    log('Query cached', { key: key.slice(0, 20), rows: data.length });
+    log('info', 'Query cached', { key: key.slice(0, 20), rows: data.length });
   }
 
   /**
@@ -100,7 +100,7 @@ export class QueryCache {
   async invalidateTable(tableName: string): Promise<void> {
     // Note: This is a simplified implementation
     // In production, you might want to track which queries touch which tables
-    log('Cache invalidation requested', { table: tableName });
+    log('info', 'Cache invalidation requested', { table: tableName });
   }
 
   /**
@@ -111,7 +111,7 @@ export class QueryCache {
     const keys = await client.keys('query:*');
     if (keys.length > 0) {
       await client.del(...keys);
-      log('Query cache cleared', { keys: keys.length });
+      log('info', 'Query cache cleared', { keys: keys.length });
     }
   }
 

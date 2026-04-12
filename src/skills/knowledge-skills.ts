@@ -30,6 +30,7 @@ import Database from "better-sqlite3";
 import { join, resolve, dirname } from "path";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
+import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } from "../kb-graph-sync.js";
 
 /** 解析器版本号 — 每次解析逻辑有重大变更时递增，强制已有文档重新入库 */
 const PARSER_VERSION = 2;
@@ -660,6 +661,12 @@ export class KnowledgeBase {
     return row?.parsed_content || null;
   }
 
+  /** 获取文档基本信息 */
+  getDocument(docId: string): { doc_id: string; name: string; shared: number } | null {
+    const row = this.db.prepare("SELECT doc_id, name, shared FROM kb_documents WHERE doc_id = ?").get(docId) as any;
+    return row || null;
+  }
+
   /** 设置文档共享状态 */
   setShared(docId: string, shared: boolean): boolean {
     const result = this.db.prepare("UPDATE kb_documents SET shared = ? WHERE doc_id = ?").run(shared ? 1 : 0, docId);
@@ -1038,7 +1045,7 @@ export function getKnowledgeBase(owner: string): KnowledgeBase {
 }
 
 /** 获取所有租户列表 */
-function getAllTenants(): string[] {
+export function getAllTenants(): string[] {
   mkdirSync(KB_BASE, { recursive: true });
   try {
     return readdirSync(KB_BASE).filter((name) => {
@@ -1248,7 +1255,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                       id: `kb_layout_${layout.id || layout.uniqueId}`,
                       key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
                       value: (layout.content || layout.text || '').slice(0, 200),
-                      tags: ['kb_layout', layout.type, layout.subType, ...(params.tags || [])].filter(Boolean),
+                      tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                       relation: `kb:${docName}`,
                     });
                   }
@@ -1262,7 +1269,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                       id: `kb_seg_${result.docId}_${segment.index}`,
                       key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
                       value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
-                      tags: ['kb_segment', params.media_type || 'video', ...(params.tags || [])].filter(Boolean),
+                      tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                       relation: `kb:${docName}`,
                     });
                   }
@@ -1455,7 +1462,18 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
+        
+        // Get document info before deletion for graph sync
+        const doc = kb.getDocument(docId);
+        const docName = doc?.name || docId;
+        
         const deleted = kb.deleteDocument(docId);
+        
+        // Remove from all users' knowledge graphs
+        if (deleted && sessionManager) {
+          await removeKBFromAllGraphs(docId, docName, owner, sessionManager);
+        }
+        
         return {
           success: deleted,
           data: { deleted, docId, owner },
@@ -1479,6 +1497,16 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
         const updated = kb.setShared(docId, shared);
+        
+        // Sync to knowledge graphs when sharing
+        if (updated && shared && sessionManager) {
+          const doc = kb.getDocument(docId);
+          if (doc) {
+            const targetUsers = getSharedKBTargetUsers(owner);
+            await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
+          }
+        }
+        
         return {
           success: updated,
           data: { docId, shared, owner },

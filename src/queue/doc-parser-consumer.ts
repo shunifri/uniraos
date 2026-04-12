@@ -27,12 +27,12 @@ export class DocParserConsumer {
       await this.processRequest(message as QueueMessage<DocParserRequest>);
     });
 
-    log('Doc parser consumer started');
+    log('info', 'Doc parser consumer started');
   }
 
   async stop(): Promise<void> {
     this.isRunning = false;
-    log('Doc parser consumer stopped');
+    log('info', 'Doc parser consumer stopped');
   }
 
   private async processRequest(message: QueueMessage<DocParserRequest>): Promise<void> {
@@ -40,7 +40,7 @@ export class DocParserConsumer {
     const { docId, filePath, fileType } = request;
 
     try {
-      log('Starting document parsing', { taskId, docId, fileType });
+      log('info', 'Starting document parsing', { taskId, docId, fileType });
 
       // Update status to parsing
       await this.producer.updateProgress(taskId, 10, 'extracting_text');
@@ -56,10 +56,10 @@ export class DocParserConsumer {
         pageCount: Math.floor(Math.random() * 20) + 5,
       });
 
-      log('Document parsing completed', { taskId, docId });
+      log('info', 'Document parsing completed', { taskId, docId });
     } catch (error) {
       const errorMsg = (error as Error).message;
-      log('Document parsing failed', { taskId, docId, error: errorMsg });
+      log('error', 'Document parsing failed', { taskId, docId, error: errorMsg });
       await this.producer.fail(taskId, errorMsg);
       throw error;
     }

@@ -1,15 +1,16 @@
 import { Router } from "express";
 import { createReadStream } from "fs";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
 import type { RouteDependencies } from "./index.js";
+import type { ParsingUpdate } from "../services/parsing-queue.js";
 
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
   const router = Router();
 
-  router.get("/knowledge/documents", requireAuth, async (req, res) => {
+  router.get("/knowledge/documents", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
     try {
       const result = await engine.execute("kb_list", {
         query: req.query.q || undefined,
@@ -23,7 +24,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/ingest", requireAuth, async (req, res) => {
+  router.post("/knowledge/ingest", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
     try {
       const { name, content, path, tags } = req.body;
       if (!name || (!content && !path)) {
@@ -80,7 +81,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/search", requireAuth, async (req, res) => {
+  router.get("/knowledge/search", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
     try {
       const result = await engine.execute("kb_search", {
         query: String(req.query.q || ""),
@@ -94,7 +95,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/documents/:docId/content", requireAuth, (req, res) => {
+  router.get("/knowledge/documents/:docId/content", requireAuth, requirePermission("knowledge.read"), (req, res) => {
     try {
       const kb = getKnowledgeBase(req.user!.id);
       const content = kb.getDocumentContent(req.params.docId as string);
@@ -108,7 +109,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/documents/:docId/pages", requireAuth, (req, res) => {
+  router.get("/knowledge/documents/:docId/pages", requireAuth, requirePermission("knowledge.read"), (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
     const page = req.query.page ? String(req.query.page) : undefined;
@@ -129,7 +130,42 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, pages });
   });
 
-  router.delete("/knowledge/documents/:docId", requireAuth, async (req, res) => {
+  // GET /api/knowledge/documents/:docId/layouts — Get document layouts and media items
+  router.get("/knowledge/documents/:docId/layouts", requireAuth, requirePermission("knowledge.read"), (req, res) => {
+    try {
+      const owner = req.user!.id;
+      const docId = String(req.params.docId);
+      const kb = getKnowledgeBase(owner);
+      
+      // Get document data using existing KB methods
+      const layouts = kb.getLayouts(docId);
+      const segments = kb.getSegments(docId);
+      const parsingStatus = kb.getParsingStatus(docId);
+      
+      // Check if document exists (getParsingStatus returns null if not found)
+      if (!parsingStatus) {
+        res.status(404).json({ success: false, error: "Document not found" });
+        return;
+      }
+
+      // Return basic layout info from document metadata
+      const mediaItems = { images: [], tables: [] };
+      const mediaType = parsingStatus.mediaType || 'document';
+      const pageCount = layouts.length || 0;
+
+      res.json({ 
+        success: true, 
+        layouts,
+        mediaItems,
+        mediaType,
+        pageCount,
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  router.delete("/knowledge/documents/:docId", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
     try {
       const result = await engine.execute("kb_delete", { docId: req.params.docId, owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -138,7 +174,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/stats", requireAuth, async (req, res) => {
+  router.get("/knowledge/stats", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
     try {
       const result = await engine.execute("kb_stats", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -147,7 +183,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/rebuild", requireAuth, async (req, res) => {
+  router.post("/knowledge/rebuild", requireAuth, requirePermission("knowledge.manage"), async (req, res) => {
     try {
       const result = await engine.execute("kb_rebuild", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -156,7 +192,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/share", requireAuth, async (req, res) => {
+  router.post("/knowledge/share", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
     try {
       const { docId, shared } = req.body;
       const result = await engine.execute("kb_share", { docId, shared: !!shared, owner: req.user!.id });
@@ -167,7 +203,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   });
 
   // SSE: 文档解析进度流
-  router.get("/knowledge/documents/:docId/stream", requireAuth, (req, res) => {
+  router.get("/knowledge/documents/:docId/stream", requireAuth, requirePermission("knowledge.read"), (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
 
@@ -195,7 +231,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
 
     // 订阅进度更新
-    const unsubscribe = queue.subscribe(docId, (update) => {
+    const unsubscribe = queue.subscribe(docId, (update: ParsingUpdate) => {
       res.write(`data: ${JSON.stringify(update)}\n\n`);
       
       // 如果任务完成或失败，关闭连接

@@ -17,28 +17,39 @@ import {
   LogoutOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
-interface InstanceProfile {
-  instanceId: string;
-  version: string;
-  skillCount: number;
-  status: "joined" | "idle";
-}
-
 interface FederationStatus {
-  instanceProfile: InstanceProfile;
-  federationCount: number;
-  running: boolean;
-  heartbeatInterval: number;
-  peerCount: number;
-  recommendationCount: number;
-  migratedSkillCount: number;
+  instanceId: string;
+  evolution: {
+    running: boolean;
+    cycleCount: number;
+    lastCycleAt: number;
+    pendingActions: number;
+    executedActions: number;
+    strategies: string[];
+    executors: string[];
+    config: {
+      cycleIntervalMs: number;
+      maxActionsPerCycle: number;
+      autoExecute: boolean;
+      skipApprovalRequired: boolean;
+    };
+  };
+  federation: {
+    peers: number;
+    recommendations: number;
+  };
+  migration: {
+    historyCount: number;
+  };
 }
 
 export default function FederationOverview() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [status, setStatus] = useState<FederationStatus | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -48,7 +59,7 @@ export default function FederationOverview() {
       const data = await api.get<FederationStatus>("/api/federation/status");
       setStatus(data);
     } catch (e: any) {
-      message.error(e.message || "Failed to load federation status");
+      message.error(e.message || t("error"));
     } finally {
       setLoading(false);
     }
@@ -62,66 +73,51 @@ export default function FederationOverview() {
 
   const toggleFederation = async () => {
     try {
-      if (status?.instanceProfile.status === "joined") {
+      if (status?.evolution?.running) {
         await api.post("/api/federation/leave");
-        setStatus((s) =>
-          s
-            ? {
-                ...s,
-                instanceProfile: { ...s.instanceProfile, status: "idle" },
-              }
-            : null
-        );
-        message.success("Left federation");
+        message.success(t("left_federation"));
       } else {
         await api.post("/api/federation/join");
-        setStatus((s) =>
-          s
-            ? {
-                ...s,
-                instanceProfile: { ...s.instanceProfile, status: "joined" },
-              }
-            : null
-        );
-        message.success("Joined federation");
+        message.success(t("joined_federation"));
       }
+      loadStatus();
     } catch (e: any) {
-      message.error(e.message || "Failed to toggle federation");
+      message.error(e.message || t("error"));
     }
   };
 
-  if (!status) {
-    return <Empty description="Loading..." />;
+  if (!status?.instanceId) {
+    return <Empty description={t("loading")} />;
   }
 
-  const isJoined = status.instanceProfile.status === "joined";
+  const isJoined = status.evolution?.running || false;
 
   return (
     <Flex vertical gap={16}>
       {/* Instance Profile */}
-      <Card size="small" title="Instance Profile">
+      <Card size="small" title={t("instance_profile")}>
         <Flex vertical gap={12}>
           <Flex gap={12}>
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Instance ID
+                {t("instance_id")}
               </Text>
               <br />
-              <Text strong>{status.instanceProfile.instanceId}</Text>
+              <Text strong>{status.instanceId}</Text>
             </div>
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Version
+                {t("version")}
               </Text>
               <br />
-              <Text>{status.instanceProfile.version}</Text>
+              <Text>1.0.0</Text>
             </div>
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 Skills
               </Text>
               <br />
-              <Text>{status.instanceProfile.skillCount}</Text>
+              <Text>0</Text>
             </div>
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -130,7 +126,7 @@ export default function FederationOverview() {
               <br />
               <Badge
                 status={isJoined ? "success" : "default"}
-                text={isJoined ? "Joined" : "Idle"}
+                text={isJoined ? t("joined") : t("idle")}
               />
             </div>
           </Flex>
@@ -138,7 +134,7 @@ export default function FederationOverview() {
       </Card>
 
       {/* Federation Status */}
-      <Card size="small" title="Federation Status">
+      <Card size="small" title={t("federation_status")}>
         <Flex vertical gap={12}>
           <Flex gap={16} wrap>
             <div>
@@ -147,8 +143,8 @@ export default function FederationOverview() {
               </Text>
               <br />
               <Badge
-                status={status.running ? "success" : "default"}
-                text={status.running ? "Yes" : "No"}
+                status={status.evolution?.running ? "success" : "default"}
+                text={status.evolution?.running ? t("yes") : t("no")}
               />
             </div>
             <div>
@@ -156,7 +152,7 @@ export default function FederationOverview() {
                 Heartbeat Interval
               </Text>
               <br />
-              <Text>{status.heartbeatInterval}s</Text>
+              <Text>60s</Text>
             </div>
           </Flex>
 
@@ -168,7 +164,7 @@ export default function FederationOverview() {
               loading={loading}
               type={isJoined ? "default" : "primary"}
             >
-              {isJoined ? "Leave Federation" : "Join Federation"}
+              {isJoined ? t("leave_federation") : t("join_federation")}
             </Button>
             <Button
               size="small"
@@ -176,40 +172,40 @@ export default function FederationOverview() {
               onClick={loadStatus}
               loading={loading}
             >
-              Refresh
+              {t("refresh")}
             </Button>
           </Flex>
         </Flex>
       </Card>
 
       {/* Quick Stats */}
-      <Card size="small" title="Quick Statistics">
+      <Card size="small" title={t("quick_statistics")}>
         <Flex gap={16} wrap>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Peer Instances"
-              value={status.peerCount}
+              title={t("peer_instances")}
+              value={status.federation?.peers || 0}
               valueStyle={{ color: "#1677ff" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Recommendations"
-              value={status.recommendationCount}
+              title={t("recommendations")}
+              value={status.federation?.recommendations || 0}
               valueStyle={{ color: "#52c41a" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Migrated Skills"
-              value={status.migratedSkillCount}
+              title={t("migrated_skills")}
+              value={status.migration?.historyCount || 0}
               valueStyle={{ color: "#faad14" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Federated Networks"
-              value={status.federationCount}
+              title={t("federated_networks")}
+              value={0}
               valueStyle={{ color: "#f5222d" }}
             />
           </Card>

@@ -17,6 +17,7 @@ import {
   EyeOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -33,6 +34,7 @@ interface GenealogyNode {
 
 export default function SkillGenealogy() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [treeData, setTreeData] = useState<GenealogyNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedNode, setSelectedNode] = useState<GenealogyNode | null>(null);
@@ -56,7 +58,7 @@ export default function SkillGenealogy() {
   const renderTreeTitle = (node: GenealogyNode) => (
     <Flex gap={8} align="center">
       <Text strong>{node.title}</Text>
-      <Tag>Gen {node.generation}</Tag>
+      <Tag>{t("generation")} {node.generation}</Tag>
       {node.status && (
         <Badge
           status={
@@ -86,20 +88,20 @@ export default function SkillGenealogy() {
           onClick={loadGenealogy}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
       {loading ? (
         <Spin />
       ) : treeData.length === 0 ? (
-        <Empty description="No genealogy data" />
+        <Empty description={t("no_genealogy_data")} />
       ) : (
         <Flex gap={16} style={{ flex: 1, overflow: "auto" }}>
           {/* Tree View */}
           <Card
             size="small"
-            title="Skill Family Tree"
+            title={t("skill_family_tree")}
             style={{ flex: 1 }}
             styles={{ body: { overflow: "auto" } }}
           >

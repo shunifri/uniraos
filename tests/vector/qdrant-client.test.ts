@@ -89,7 +89,7 @@ describe("QdrantVectorClient", () => {
     it("should insert vectors successfully", async () => {
       const points: VectorPoint[] = [
         {
-          id: "test-1",
+          id: "550e8400-e29b-41d4-a716-446655440001",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "doc-1",
@@ -98,7 +98,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "test-2",
+          id: "550e8400-e29b-41d4-a716-446655440002",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "doc-1",
@@ -116,7 +116,7 @@ describe("QdrantVectorClient", () => {
 
     it("should update existing vectors", async () => {
       const point: VectorPoint = {
-        id: "test-update",
+        id: "550e8400-e29b-41d4-a716-446655440003",
         vector: normalizeVector(createVector(1536)),
         payload: {
           doc_id: "doc-update",
@@ -130,6 +130,7 @@ describe("QdrantVectorClient", () => {
       // Update with new chunk_index
       const updatedPoint: VectorPoint = {
         ...point,
+        id: "550e8400-e29b-41d4-a716-446655440003",  // Same ID for update
         payload: { ...point.payload, chunk_index: 1 },
       };
       await client.upsertVectors([updatedPoint]);
@@ -151,7 +152,7 @@ describe("QdrantVectorClient", () => {
       const baseVector = normalizeVector(createVector(1536));
       const points: VectorPoint[] = [
         {
-          id: "search-1",
+          id: "550e8400-e29b-41d4-a716-446655440010",
           vector: baseVector,
           payload: {
             doc_id: "search-doc",
@@ -160,7 +161,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "search-2",
+          id: "550e8400-e29b-41d4-a716-446655440011",
           vector: normalizeVector(
             baseVector.map((v) => v + 0.1)
           ), // Similar vector
@@ -172,7 +173,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "search-3",
+          id: "550e8400-e29b-41d4-a716-446655440012",
           vector: normalizeVector(createVector(1536)), // Different vector
           payload: {
             doc_id: "other-doc",
@@ -253,7 +254,7 @@ describe("QdrantVectorClient", () => {
     beforeEach(async () => {
       const points: VectorPoint[] = [
         {
-          id: "del-1",
+          id: "550e8400-e29b-41d4-a716-446655440020",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "delete-doc",
@@ -262,7 +263,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "del-2",
+          id: "550e8400-e29b-41d4-a716-446655440021",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "delete-doc",
@@ -271,7 +272,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "del-3",
+          id: "550e8400-e29b-41d4-a716-446655440022",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "keep-doc",
@@ -315,7 +316,7 @@ describe("QdrantVectorClient", () => {
     it("should return correct point count", async () => {
       const points: VectorPoint[] = [
         {
-          id: "stats-1",
+          id: "550e8400-e29b-41d4-a716-446655440030",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "stats-doc",
@@ -324,7 +325,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "stats-2",
+          id: "550e8400-e29b-41d4-a716-446655440031",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "stats-doc",
@@ -351,7 +352,7 @@ describe("QdrantVectorClient", () => {
     beforeEach(async () => {
       const points: VectorPoint[] = [
         {
-          id: "count-1",
+          id: "550e8400-e29b-41d4-a716-446655440040",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "doc-a",
@@ -360,7 +361,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "count-2",
+          id: "550e8400-e29b-41d4-a716-446655440041",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "doc-a",
@@ -369,7 +370,7 @@ describe("QdrantVectorClient", () => {
           },
         },
         {
-          id: "count-3",
+          id: "550e8400-e29b-41d4-a716-446655440042",
           vector: normalizeVector(createVector(1536)),
           payload: {
             doc_id: "doc-b",

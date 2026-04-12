@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: Required<Omit<QdrantConfig, 'apiKey'>> = {
   collectionName: "kb_chunks",
   vectorDimension: 1536,
   distance: "Cosine",
-  replicationFactor: 2,
+  replicationFactor: 1,  // Single node deployment default
 };
 
 /** Qdrant Vector Client for managing vector embeddings */

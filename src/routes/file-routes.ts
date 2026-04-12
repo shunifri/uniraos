@@ -2,13 +2,15 @@ import { Router } from "express";
 import express from "express";
 import { join, dirname } from "path";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream } from "fs";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { getDb } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
 import { extractPptxStyle } from "../services/pptx-style-extractor.js";
 import { getKnowledgeBase } from "../skills/knowledge-skills.js";
 import { ShareRepository } from "../db/share-repository.js";
-import { getUserRoles } from "../db/user-repository.js";
+import { getUserRoles, getUserById } from "../db/user-repository.js";
+import { getDepartmentById } from "../db/department-repository.js";
+import { isMySQL } from "../db/database.js";
 import type { RouteDependencies } from "./index.js";
 
 const WS_BASE = join(process.cwd(), ".raos", "workspace");
@@ -560,7 +562,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
 
   // ===== File upload API =====
 
-  router.post("/upload", requireAuth, express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  router.post("/upload", requireAuth, requirePermission("files.write"), express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
     try {
       const contentType = req.headers["content-type"] as string;
       const boundaryMatch = contentType?.match(/boundary=(.+)/);
@@ -612,7 +614,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // File parse status
-  router.get("/upload/parse-status", requireAuth, (req, res) => {
+  router.get("/upload/parse-status", requireAuth, requirePermission("files.read"), (req, res) => {
     const path = req.query.path as string;
     if (!path) {
       res.status(400).json({ success: false, error: "path required" });
@@ -629,7 +631,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Parse images
-  router.get("/upload/parse-images", requireAuth, (req, res) => {
+  router.get("/upload/parse-images", requireAuth, requirePermission("files.read"), (req, res) => {
     const path = req.query.path as string;
     const page = req.query.page as string;
     if (!path) {
@@ -656,7 +658,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // List uploaded files
-  router.get("/upload", requireAuth, async (_req, res) => {
+  router.get("/upload", requireAuth, requirePermission("files.read"), async (_req, res) => {
     try {
       const result = await engine.execute("file_upload_list", {});
       res.json(result);
@@ -669,7 +671,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Delete uploaded file
-  router.delete("/upload/:filename", requireAuth, async (req, res) => {
+  router.delete("/upload/:filename", requireAuth, requirePermission("files.write"), async (req, res) => {
     try {
       const result = await engine.execute("file_upload_delete", { path: `uploads/${req.params.filename}` });
       res.json(result);
@@ -684,7 +686,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   // ===== File management API =====
 
   // File tree
-  router.get("/files/tree", requireAuth, (req, res) => {
+  router.get("/files/tree", requireAuth, requirePermission("files.read"), (req, res) => {
 
     interface TreeNode {
       key: string;
@@ -755,7 +757,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // List directory files
-  router.get("/files/list", requireAuth, (req, res) => {
+  router.get("/files/list", requireAuth, requirePermission("files.read"), (req, res) => {
     const dirPath = (req.query.path as string) || "";
     const absDir = join(WS_BASE, dirPath);
     if (!absDir.startsWith(WS_BASE)) {
@@ -810,7 +812,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // KB status for files
-  router.get("/files/kb-status", requireAuth, (req, res) => {
+  router.get("/files/kb-status", requireAuth, requirePermission("files.read"), (req, res) => {
     const userId = req.user?.id || "default";
     try {
       const kb = getKnowledgeBase(userId);
@@ -830,27 +832,23 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Shared files - 获取分享给我的文件列表
-  router.get("/files/shared", requireAuth, (req, res) => {
+  router.get("/files/shared", requireAuth, requirePermission("files.read"), async (req, res) => {
     try {
       const userId = req.user!.id;
-      const roles = getUserRoles(userId);
+      const roles = await getUserRoles(userId);
       const roleIds = roles.map((r) => r.id);
 
       // 获取用户部门路径
-      const userRow = getDb()
-        .prepare("SELECT department_id FROM users WHERE id = ?")
-        .get(userId) as { department_id: string } | undefined;
+      const user = await getUserById(userId);
       let deptPath = "/";
-      if (userRow?.department_id) {
-        const deptRow = getDb()
-          .prepare("SELECT path FROM departments WHERE id = ?")
-          .get(userRow.department_id) as { path: string } | undefined;
-        if (deptRow) deptPath = deptRow.path;
+      if (user?.departmentId) {
+        const dept = await getDepartmentById(user.departmentId);
+        if (dept) deptPath = dept.path;
       }
 
       // 查询分享给我的文件
-      const shareRepo = new ShareRepository(getDb());
-      const sharedFileIds = shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
 
       // 获取文件详情（从 upload_records 表或文件系统）
       const files: Array<{
@@ -905,7 +903,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Shared files tree - 用于前端展示"共享文件"虚拟文件夹
-  router.get("/files/tree-with-shared", requireAuth, (req, res) => {
+  router.get("/files/tree-with-shared", requireAuth, requirePermission("files.read"), async (req, res) => {
     interface TreeNode {
       key: string;
       title: string;
@@ -979,22 +977,18 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     // 添加"共享文件"虚拟文件夹
     try {
       const userId = req.user!.id;
-      const roles = getUserRoles(userId);
+      const roles = await getUserRoles(userId);
       const roleIds = roles.map((r) => r.id);
 
-      const userRow = getDb()
-        .prepare("SELECT department_id FROM users WHERE id = ?")
-        .get(userId) as { department_id: string } | undefined;
+      const user = await getUserById(userId);
       let deptPath = "/";
-      if (userRow?.department_id) {
-        const deptRow = getDb()
-          .prepare("SELECT path FROM departments WHERE id = ?")
-          .get(userRow.department_id) as { path: string } | undefined;
-        if (deptRow) deptPath = deptRow.path;
+      if (user?.departmentId) {
+        const dept = await getDepartmentById(user.departmentId);
+        if (dept) deptPath = dept.path;
       }
 
-      const shareRepo = new ShareRepository(getDb());
-      const sharedFileIds = shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
 
       if (sharedFileIds.length > 0) {
         const sharedChildren: TreeNode[] = [];
@@ -1039,7 +1033,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // User documents (aggregate uploads + KB status)
-  router.get("/files/user-documents", requireAuth, (req, res) => {
+  router.get("/files/user-documents", requireAuth, requirePermission("files.read"), (req, res) => {
     const userId = req.user!.id;
     const userUploadDir = join(WS_BASE, "uploads", userId);
 
@@ -1116,7 +1110,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Create directory
-  router.post("/files/mkdir", requireAuth, (req, res) => {
+  router.post("/files/mkdir", requireAuth, requirePermission("files.write"), (req, res) => {
     const { path: dirPath } = req.body as { path: string };
     if (!dirPath) {
       res.status(400).json({ success: false, error: "path required" });
@@ -1136,7 +1130,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Move/rename file
-  router.post("/files/move", requireAuth, (req, res) => {
+  router.post("/files/move", requireAuth, requirePermission("files.write"), (req, res) => {
     const { from, to } = req.body as { from: string; to: string };
     if (!from || !to) {
       res.status(400).json({ success: false, error: "from and to required" });
@@ -1158,7 +1152,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // Delete file/directory
-  router.delete("/files", requireAuth, (req, res) => {
+  router.delete("/files", requireAuth, requirePermission("files.write"), (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath) {
       res.status(400).json({ success: false, error: "path required" });
@@ -1178,7 +1172,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // AI file organizer
-  router.post("/files/organize", requireAuth, async (req, res) => {
+  router.post("/files/organize", requireAuth, requirePermission("files.write"), async (req, res) => {
     try {
       function collectFiles(dir: string, prefix: string): Array<{ name: string; path: string; size: number; ext: string }> {
         const result: Array<{ name: string; path: string; size: number; ext: string }> = [];
@@ -1273,7 +1267,7 @@ ${fileList}
 
   // ===== Markdown preview & conversion download API =====
 
-  router.get("/file/content", requireAuth, (req, res) => {
+  router.get("/file/content", requireAuth, requirePermission("files.read"), (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath) {
       res.status(400).json({ success: false, error: "path required" });
@@ -1294,7 +1288,7 @@ ${fileList}
   });
 
   // Markdown conversion download
-  router.get("/download/convert", requireAuth, async (req, res) => {
+  router.get("/download/convert", requireAuth, requirePermission("files.read"), async (req, res) => {
     const filePath = req.query.path as string;
     const format = req.query.format as string;
     if (!filePath || !format) {
@@ -1344,7 +1338,7 @@ ${fileList}
   });
 
   // PPTX themes list API
-  router.get("/pptx/themes", requireAuth, (req: any, res) => {
+  router.get("/pptx/themes", requireAuth, requirePermission("files.read"), (req: any, res) => {
     const builtIn = Object.values(PPTX_THEMES).map((t) => ({
       name: t.name, label: t.label, custom: false,
       preview: { bg: t.background, title: t.titleColor, accent: t.accentColor },
@@ -1370,7 +1364,7 @@ ${fileList}
   });
 
   // PPTX style learning
-  router.post("/pptx/themes/learn", requireAuth, express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  router.post("/pptx/themes/learn", requireAuth, requirePermission("files.write"), express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
     try {
       const contentType = req.headers["content-type"] as string;
       const boundaryMatch = contentType?.match(/boundary=(.+)/);
@@ -1418,7 +1412,7 @@ ${fileList}
   });
 
   // Delete custom PPTX theme
-  router.delete("/pptx/themes/:id", requireAuth, (req: any, res) => {
+  router.delete("/pptx/themes/:id", requireAuth, requirePermission("files.write"), (req: any, res) => {
     try {
       const themeId = req.params.id;
       const userId = req.user?.id;
@@ -1442,7 +1436,7 @@ ${fileList}
   // ===== File download API =====
 
   // Single file download
-  router.get("/download", requireAuth, (req, res) => {
+  router.get("/download", requireAuth, requirePermission("files.read"), (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath) {
       res.status(400).json({ success: false, error: "path required" });
@@ -1465,7 +1459,7 @@ ${fileList}
   });
 
   // Multi-file zip download
-  router.post("/download/zip", requireAuth, async (req, res) => {
+  router.post("/download/zip", requireAuth, requirePermission("files.read"), async (req, res) => {
     const { files } = req.body as { files: string[] };
     if (!files || !Array.isArray(files) || files.length === 0) {
       res.status(400).json({ success: false, error: "files array required" });

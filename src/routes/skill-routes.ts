@@ -10,11 +10,19 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   const router = Router();
 
   // List all Skills (filtered by user permissions for non-admin)
-  router.get("/skills", requireAuth, requirePermission("skills.read"), (req, res) => {
+  router.get("/skills", requireAuth, requirePermission("skills.read"), async (req, res) => {
     const userId = req.user!.id;
-    const permissions = getUserPermissions(userId);
+    const permissions = await getUserPermissions(userId);
     const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
     const allSkills = isAdmin ? registry.list() : registry.listByPermissions(permissions);
+    
+    // Determine source for each skill
+    const getSkillSource = (s: any): "own" | "role" | "system" => {
+      if (s.isSystem || !s.owner) return "system";
+      if (s.owner === userId) return "own";
+      return "role";
+    };
+    
     const skills = allSkills.map((s) => ({
       name: s.name,
       visible: s.visible,
@@ -24,14 +32,17 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       retry: s.retry,
       description: s.description,
       paramSchema: s.paramSchema ?? null,
+      owner: s.owner,
+      isSystem: s.isSystem ?? false,
+      source: getSkillSource(s),
     }));
     res.json(skills);
   });
 
   // List visible Skills (filtered by user permissions)
-  router.get("/skills/visible", requireAuth, requirePermission("skills.read"), (req, res) => {
+  router.get("/skills/visible", requireAuth, requirePermission("skills.read"), async (req, res) => {
     const userId = req.user!.id;
-    const permissions = getUserPermissions(userId);
+    const permissions = await getUserPermissions(userId);
     const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
     const allSkills = isAdmin ? registry.listVisible() : registry.listVisibleByPermissions(permissions);
     const skills = allSkills.map((s) => ({
@@ -52,7 +63,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
 
     // 检查用户是否有该 skill 的执行权限
     const userId = req.user!.id;
-    const permissions = getUserPermissions(userId);
+    const permissions = await getUserPermissions(userId);
     const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
     if (!isAdmin && !permissions.includes(`skill:${skillName}.execute`)) {
       res.status(403).json({ success: false, error: `无权执行技能: ${skillName}` });

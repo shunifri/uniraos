@@ -450,21 +450,21 @@ export default function ConfigPage() {
             <Alert
               type="info"
               showIcon
-              message="阿里云文档解析服务"
-              description="支持 PDF、Word、PPT、Excel、图片、音视频的智能解析。每月 3000 页免费额度。"
+              message={t("docmind_title")}
+              description={t("docmind_desc")}
               style={{ marginBottom: 8 }}
             />
             <Card size="small" className="glass-card" title={
               <Flex align="center" gap={8}>
                 <FileTextOutlined />
-                <span>API 配置</span>
+                <span>{t("api_config")}</span>
                 <Tag color={docMindConfig.enabled ? "success" : "default"} style={{ fontSize: 11 }}>
-                  {docMindConfig.enabled ? "已启用" : "未启用"}
+                  {docMindConfig.enabled ? t("enabled") : t("disabled")}
                 </Tag>
               </Flex>
             }>
               <Form form={docMindForm} layout="horizontal" labelCol={{ span: 7 }} onFinish={saveDocMind} size="small">
-                <Form.Item name="enabled" label="启用" valuePropName="checked">
+                <Form.Item name="enabled" label={t("enable")} valuePropName="checked">
                   <Switch />
                 </Form.Item>
                 <Form.Item name="accessKeyId" label="AccessKey ID" rules={[{ required: true }]}>
@@ -479,18 +479,18 @@ export default function ConfigPage() {
                 <Form.Item name="regionId" label="Region">
                   <Input placeholder="cn-hangzhou" />
                 </Form.Item>
-                <Divider orientation="left" style={{ fontSize: 13 }}>高级选项</Divider>
-                <Form.Item name="multimediaMode" label="音视频模式">
+                <Divider orientation="left" style={{ fontSize: 13 }}>{t("advanced_options")}</Divider>
+                <Form.Item name="multimediaMode" label={t("multimedia_mode")}>
                   <Select options={[
-                    { label: "基本识别 (Base)", value: "base" },
-                    { label: "剧情解析 (Advance)", value: "advance" },
+                    { label: t("base_recognition"), value: "base" },
+                    { label: t("advance_parsing"), value: "advance" },
                   ]} />
                 </Form.Item>
-                <Form.Item name="maxPollingMinutes" label="最大轮询时间">
-                  <InputNumber min={5} max={120} addonAfter="分钟" style={{ width: 150 }} />
+                <Form.Item name="maxPollingMinutes" label={t("max_polling_time")}>
+                  <InputNumber min={5} max={120} addonAfter={t("minutes")} style={{ width: 150 }} />
                 </Form.Item>
-                <Form.Item name="pollingIntervalSeconds" label="轮询间隔">
-                  <InputNumber min={1} max={30} addonAfter="秒" style={{ width: 150 }} />
+                <Form.Item name="pollingIntervalSeconds" label={t("polling_interval")}>
+                  <InputNumber min={1} max={30} addonAfter={t("seconds")} style={{ width: 150 }} />
                 </Form.Item>
                 <Form.Item>
                   <Space>
@@ -502,7 +502,7 @@ export default function ConfigPage() {
                       loading={testLoading["docmind"]}
                       icon={<ApiOutlined />}
                     >
-                      测试连接
+                      {t("test_connection")}
                     </Button>
                   </Space>
                 </Form.Item>

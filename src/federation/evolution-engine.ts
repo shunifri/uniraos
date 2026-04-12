@@ -426,9 +426,9 @@ export class EvolutionEngine {
         this.evolutionController.recordGeneration(action.skillName, "evolution-engine");
       }
 
-      // Consume budget after successful execution
-      if (result.success) {
-        this.evolutionController.consumeBudget(action.type);
+      // Consume budget after successful execution (if supported by controller)
+      if (result.success && 'consumeBudget' in this.evolutionController) {
+        (this.evolutionController as any).consumeBudget?.(action.type);
       }
 
       // 更新生命周期

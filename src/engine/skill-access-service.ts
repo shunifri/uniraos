@@ -13,9 +13,10 @@
  */
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
-import { getUserPermissions, getUserRoles } from "../db/user-repository.js";
+import { getUserPermissions, getUserRoles, getUserById } from "../db/user-repository.js";
+import { getDepartmentById } from "../db/department-repository.js";
 import { ShareRepository } from "../db/share-repository.js";
-import { getDb } from "../db/database.js";
+import { getDb, isMySQL } from "../db/database.js";
 
 export interface SkillAccessResult {
   /** 可用的 Skill 列表 */
@@ -46,7 +47,7 @@ export class SkillAccessService {
 
   constructor(registry: SkillRegistry) {
     this.registry = registry;
-    this.shareRepo = new ShareRepository(getDb());
+    this.shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
 
     // 监听 SkillRegistry 变更，清除相关缓存
     this.registry.onChange((event) => {
@@ -111,7 +112,7 @@ export class SkillAccessService {
    * @param useCache 是否使用缓存（默认 true）
    * @returns Skill 访问结果
    */
-  getAccessibleSkills(
+  async getAccessibleSkills(
     userId: string,
     options?: {
       /** 只返回可见的 Skill */
@@ -120,7 +121,7 @@ export class SkillAccessService {
       allowedSkills?: string[];
     },
     useCache = true
-  ): SkillAccessResult {
+  ): Promise<SkillAccessResult> {
     // 生成缓存键
     const cacheKey = `${userId}:${options?.visibleOnly ?? true}:${options?.allowedSkills?.join(",") ?? "all"}`;
 
@@ -132,7 +133,7 @@ export class SkillAccessService {
     const sourceMap = new Map<string, "own" | "role" | "shared">();
 
     // 1. 获取用户权限
-    const permissions = getUserPermissions(userId);
+    const permissions = await getUserPermissions(userId);
     const isAdmin = permissions.some((p) => p === "users.manage" || p === "roles.manage");
 
     // 管理员返回所有 Skill
@@ -158,7 +159,7 @@ export class SkillAccessService {
     });
 
     // 2.2 分享给我的 Skill
-    const sharedSkillNames = this.getSharedSkillNames(userId);
+    const sharedSkillNames = await this.getSharedSkillNames(userId);
     sharedSkillNames.forEach((name) => {
       if (!accessibleNames.has(name)) {
         accessibleNames.add(name);
@@ -197,16 +198,16 @@ export class SkillAccessService {
   /**
    * 刷新用户的 Skill 列表（自建 Skill 或收到分享后调用）
    */
-  refresh(userId: string): SkillAccessResult {
+  async refresh(userId: string): Promise<SkillAccessResult> {
     this.invalidate(userId);
-    return this.getAccessibleSkills(userId, undefined, false);
+    return await this.getAccessibleSkills(userId, undefined, false);
   }
 
   /**
    * 快速检查单个 Skill 是否可用
    */
-  canAccess(userId: string, skillName: string): boolean {
-    const permissions = getUserPermissions(userId);
+  async canAccess(userId: string, skillName: string): Promise<boolean> {
+    const permissions = await getUserPermissions(userId);
     const isAdmin = permissions.some((p) => p === "users.manage" || p === "roles.manage");
 
     if (isAdmin) return true;
@@ -216,7 +217,7 @@ export class SkillAccessService {
     if (hasRolePermission) return true;
 
     // 检查分享
-    const sharedNames = this.getSharedSkillNames(userId);
+    const sharedNames = await this.getSharedSkillNames(userId);
     if (sharedNames.includes(skillName)) return true;
 
     // 检查所有权
@@ -229,16 +230,16 @@ export class SkillAccessService {
   /**
    * 获取 Skill 的来源
    */
-  getSkillSource(userId: string, skillName: string): "own" | "role" | "shared" | null {
+  async getSkillSource(userId: string, skillName: string): Promise<"own" | "role" | "shared" | null> {
     const skill = this.registry.lookup(skillName);
     if (!skill) return null;
 
     if (skill.owner === userId) return "own";
 
-    const permissions = getUserPermissions(userId);
+    const permissions = await getUserPermissions(userId);
     if (permissions.includes(`skill:${skillName}.execute`)) return "role";
 
-    const sharedNames = this.getSharedSkillNames(userId);
+    const sharedNames = await this.getSharedSkillNames(userId);
     if (sharedNames.includes(skillName)) return "shared";
 
     return null;
@@ -252,21 +253,18 @@ export class SkillAccessService {
     return skills;
   }
 
-  private getSharedSkillNames(userId: string): string[] {
+  private async getSharedSkillNames(userId: string): Promise<string[]> {
     try {
-      const roles = getUserRoles(userId);
+      const roles = await getUserRoles(userId);
       const roleIds = roles.map((r) => r.id);
 
-      const userRow = getDb()
-        .prepare("SELECT department_id FROM users WHERE id = ?")
-        .get(userId) as { department_id: string } | undefined;
+      // Use user-repository instead of direct DB access for MySQL compatibility
+      const user = await getUserById(userId);
 
       let deptPath = "/";
-      if (userRow?.department_id) {
-        const deptRow = getDb()
-          .prepare("SELECT path FROM departments WHERE id = ?")
-          .get(userRow.department_id) as { path: string } | undefined;
-        if (deptRow) deptPath = deptRow.path;
+      if (user?.departmentId) {
+        const dept = await getDepartmentById(user.departmentId);
+        if (dept) deptPath = dept.path;
       }
 
       return this.shareRepo.getSharedResourceIds("skill", userId, roleIds, deptPath);

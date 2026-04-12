@@ -29,7 +29,7 @@ import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
 import { PluginLoader } from "./plugin/plugin-loader.js";
 import { UserSessionManager } from "./user/user-session.js";
 import { requestContext } from "./user/request-context.js";
-import { initDatabase, getDb } from "./db/database.js";
+import { initDatabaseAsync, getDb, isMySQL } from "./db/database.js";
 import { extractPptxStyle } from "./services/pptx-style-extractor.js";
 import { authMiddleware, requireAuth, requirePermission, requireAdmin } from "./db/auth-middleware.js";
 import { createSession, destroySession, cleanExpiredSessions } from "./db/auth.js";
@@ -60,9 +60,9 @@ const __dirname = dirname(__filename);
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 
-// 初始化数据库
-initDatabase();
-userRepo.ensureAdminExists();
+// 初始化数据库（异步）
+await initDatabaseAsync();
+await userRepo.ensureAdminExists();
 
 // 定时清理过期 session（每小时）
 setInterval(() => cleanExpiredSessions(), 60 * 60 * 1000);
@@ -542,12 +542,12 @@ if (configManager.isMultimodalConfigured()) {
 }
 
 // 同步 Skill 到资源表
-function syncSkillsToResources() {
+async function syncSkillsToResources() {
   const skills = registry.list().map((s) => ({
     name: s.name,
     description: s.description,
   }));
-  const result = resRepo.syncSkillResources(skills);
+  const result = await resRepo.syncSkillResources(skills);
   console.log(`   Skills synced to resources: ${result.added} added, ${result.total} total`);
 }
 syncSkillsToResources();
@@ -555,21 +555,21 @@ syncSkillsToResources();
 // ===== Auth Routes（公开） =====
 
 // 登录
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body as { username: string; password: string };
   if (!username || !password) {
     res.status(400).json({ success: false, error: "username and password are required" });
     return;
   }
 
-  const user = userRepo.authenticate(username, password);
+  const user = await userRepo.authenticate(username, password);
   if (!user) {
     res.status(401).json({ success: false, error: "Invalid credentials" });
     return;
   }
 
-  const session = createSession(user.id);
-  const details = userRepo.getUserWithDetails(user.id);
+  const session = await createSession(user.id);
+  const details = await userRepo.getUserWithDetails(user.id);
 
   res.json({
     success: true,
@@ -580,10 +580,10 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 // 登出
-app.post("/api/auth/logout", requireAuth, (req, res) => {
+app.post("/api/auth/logout", requireAuth, async (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
-    destroySession(authHeader.slice(7));
+    await destroySession(authHeader.slice(7));
   }
   res.json({ success: true });
 });
@@ -652,7 +652,7 @@ app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
 });
 
 // 用户角色分配
-app.post("/api/users/:id/roles", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/users/:id/roles", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
   if (!roleId || !action) {
@@ -664,7 +664,7 @@ app.post("/api/users/:id/roles", requireAuth, requireAdmin, (req, res) => {
   } else {
     userRepo.removeRole(id, roleId);
   }
-  const roles = userRepo.getUserRoles(id);
+  const roles = await userRepo.getUserRoles(id);
   res.json({ success: true, roles });
 });
 
@@ -1953,9 +1953,26 @@ app.post("/api/memory/restore", requireAuth, requirePermission("memory.write"), 
 
 // ===== Enhanced LTM APIs（新增功能）=====
 
-// 获取用户记忆画像
-app.get("/api/memory/profile/:userId?", requireAuth, requirePermission("memory.read"), async (req, res) => {
-  const targetUserId = req.params.userId || req.user!.id;
+// 获取用户记忆画像（当前用户）
+app.get("/api/memory/profile", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const targetUserId = req.user!.id;
+
+  try {
+    const result = await engine.execute("ltm_profile", { userId: targetUserId });
+
+    if (result.success) {
+      res.json({ success: true, ...(result.data as any) });
+    } else {
+      res.status(400).json({ success: false, error: result.error?.message || "Profile generation failed" });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+  }
+});
+
+// 获取指定用户记忆画像（管理员）
+app.get("/api/memory/profile/:userId", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const targetUserId = req.params.userId;
 
   try {
     const result = await engine.execute("ltm_profile", { userId: targetUserId });

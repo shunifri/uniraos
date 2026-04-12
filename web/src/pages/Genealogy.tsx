@@ -148,7 +148,7 @@ export default function GenealogyPage() {
         }
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadAll}>
-            Refresh
+            {t("refresh")}
           </Button>
         }
       >
@@ -197,7 +197,7 @@ export default function GenealogyPage() {
         title="Family Tree"
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadGenealogy} loading={loadingTree}>
-            Refresh
+            {t("refresh")}
           </Button>
         }
       >
@@ -229,7 +229,7 @@ export default function GenealogyPage() {
         }
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={loadEmergence} loading={loadingPatterns}>
-            Refresh
+            {t("refresh")}
           </Button>
         }
       >

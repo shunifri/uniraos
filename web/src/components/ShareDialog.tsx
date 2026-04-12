@@ -17,6 +17,7 @@ import {
 } from "antd";
 import { DeleteOutlined, PlusOutlined, ShareAltOutlined } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -58,6 +59,7 @@ export default function ShareDialog({
   resourceName,
 }: ShareDialogProps) {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [shares, setShares] = useState<ShareRule[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -322,7 +324,7 @@ export default function ShareDialog({
               onClick={handleAdd}
               style={{ alignSelf: "flex-start" }}
             >
-              添加共享规则
+              {t("add_share_rule")}
             </Button>
           </Flex>
         </div>

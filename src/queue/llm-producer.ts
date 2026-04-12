@@ -52,7 +52,7 @@ export class LLMProducer {
       this.rabbit.publish(QUEUE_NAME, message),
     ]);
 
-    log('LLM task enqueued', { taskId, conversationId: request.conversationId });
+    log('info', 'LLM task enqueued', { taskId, conversationId: request.conversationId });
     return taskId;
   }
 

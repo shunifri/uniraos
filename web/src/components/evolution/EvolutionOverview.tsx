@@ -17,6 +17,7 @@ import {
   PauseCircleOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -33,6 +34,7 @@ interface EvolutionStatus {
 
 export default function EvolutionOverview() {
   const { message } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [status, setStatus] = useState<EvolutionStatus | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -59,11 +61,11 @@ export default function EvolutionOverview() {
       if (status?.running) {
         await api.post("/api/evolution/stop");
         setStatus((s) => s ? { ...s, running: false } : null);
-        message.success("Evolution engine stopped");
+        message.success(t("evolution_engine_stopped"));
       } else {
         await api.post("/api/evolution/start");
         setStatus((s) => s ? { ...s, running: true } : null);
-        message.success("Evolution engine started");
+        message.success(t("evolution_engine_started"));
       }
     } catch (e: any) {
       message.error(e.message);
@@ -77,12 +79,12 @@ export default function EvolutionOverview() {
   return (
     <Flex vertical gap={16}>
       {/* Engine Status */}
-      <Card size="small" title="Evolution Engine">
+      <Card size="small" title={t("evolution_engine")}>
         <Flex vertical gap={12}>
           <Flex align="center" gap={12}>
             <Badge
               status={status.running ? "success" : "default"}
-              text={status.running ? "Running" : "Stopped"}
+              text={status.running ? t("running") : t("stopped")}
             />
             <Button
               size="small"
@@ -91,7 +93,7 @@ export default function EvolutionOverview() {
               loading={loading}
               type={status.running ? "default" : "primary"}
             >
-              {status.running ? "Stop" : "Start"}
+              {status.running ? t("stop") : t("start")}
             </Button>
             <Button
               size="small"
@@ -99,13 +101,13 @@ export default function EvolutionOverview() {
               onClick={loadStatus}
               loading={loading}
             >
-              Refresh
+              {t("refresh")}
             </Button>
           </Flex>
 
           <Flex gap={24} wrap>
             <Statistic
-              title="Evolution Cycles"
+              title={t("evolution_cycles")}
               value={status.evolutionCycles}
               valueStyle={{ fontSize: 20 }}
             />
@@ -119,7 +121,7 @@ export default function EvolutionOverview() {
               </div>
             )}
             <Statistic
-              title="Total Suggestions"
+              title={t("total_suggestions")}
               value={status.totalSuggestions}
               valueStyle={{ fontSize: 20 }}
             />
@@ -128,32 +130,32 @@ export default function EvolutionOverview() {
       </Card>
 
       {/* Quick Stats */}
-      <Card size="small" title="Statistics">
+      <Card size="small" title={t("statistics")}>
         <Flex gap={16} wrap>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Approved Skills"
+              title={t("approved_skills")}
               value={status.approvedSkills}
               valueStyle={{ color: "#52c41a" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Pending Skills"
+              title={t("pending_skills")}
               value={status.pendingSkills}
               valueStyle={{ color: "#faad14" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Emergence Detected"
+              title={t("emergence_detected")}
               value={status.emergenceDetected}
               valueStyle={{ color: "#1677ff" }}
             />
           </Card>
           <Card size="small" style={{ flex: 1, minWidth: 150 }}>
             <Statistic
-              title="Redline Violations"
+              title={t("redline_violations")}
               value={status.redlineViolations}
               valueStyle={{ color: "#ff4d4f" }}
             />

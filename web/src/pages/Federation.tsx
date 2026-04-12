@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18nStore } from "@/i18n";
 import { Card, Flex, Button, Typography } from "antd";
 import {
   GlobalOutlined,
@@ -33,43 +34,44 @@ const panels: Array<{
 }> = [
   {
     key: "overview",
-    label: "Federation Overview",
+    label: "federation_overview",
     icon: <GlobalOutlined />,
     component: FederationOverview,
   },
   {
     key: "peers",
-    label: "Peer Instances",
+    label: "peer_instances",
     icon: <DesktopOutlined />,
     component: PeersView,
   },
   {
     key: "metrics",
-    label: "Metrics Comparison",
+    label: "metrics_comparison",
     icon: <BarChartOutlined />,
     component: MetricsComparison,
   },
   {
     key: "recommendations",
-    label: "Recommendations",
+    label: "recommendations",
     icon: <BulbOutlined />,
     component: RecommendationsPanel,
   },
   {
     key: "migration",
-    label: "Migration History",
+    label: "migration_history",
     icon: <SwapRightOutlined />,
     component: MigrationHistory,
   },
   {
     key: "config",
-    label: "Configuration",
+    label: "configuration",
     icon: <SettingOutlined />,
     component: ConfigurationPanel,
   },
 ];
 
 export default function FederationPage() {
+  const t = useI18nStore((s) => s.t);
   const [activePanel, setActivePanel] = useState<PanelKey>("overview");
 
   const activeComponent = panels.find((p) => p.key === activePanel)?.component;
@@ -83,7 +85,7 @@ export default function FederationPage() {
         title={
           <Flex align="center" gap={8}>
             <GlobalOutlined />
-            <span>Federation</span>
+            <span>{t("federation")}</span>
           </Flex>
         }
         style={{
@@ -116,10 +118,10 @@ export default function FederationPage() {
                 height: 40,
                 borderRadius: 0,
               }}
-              title={panel.label}
+              title={t(panel.label)}
             >
               <Text ellipsis style={{ fontSize: 12 }}>
-                {panel.label}
+                {t(panel.label)}
               </Text>
             </Button>
           ))}

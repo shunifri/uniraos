@@ -63,7 +63,7 @@ export class DocParserProducer {
       this.rabbit.publish(QUEUE_NAME, message),
     ]);
 
-    log('Doc parser task enqueued', { taskId, docId: request.docId });
+    log('info', 'Doc parser task enqueued', { taskId, docId: request.docId });
     return taskId;
   }
 

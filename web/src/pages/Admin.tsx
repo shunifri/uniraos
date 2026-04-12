@@ -385,7 +385,7 @@ function DepartmentsPanel() {
       <Flex justify="space-between" style={{ marginBottom: 12 }}>
         <Text strong>{t("departments")}</Text>
         <Button icon={<PlusOutlined />} size="small" onClick={() => setShowCreate(true)}>
-          新建部门
+          {t("create_dept")}
         </Button>
       </Flex>
       <List
@@ -421,24 +421,24 @@ function DepartmentsPanel() {
 
       {/* Create Department Modal */}
       <Modal
-        title="新建部门"
+        title={t("create_department")}
         open={showCreate}
         onCancel={() => { setShowCreate(false); createForm.resetFields(); }}
         onOk={() => createForm.submit()}
         confirmLoading={loading}
       >
         <Form form={createForm} layout="vertical" onFinish={createDept}>
-          <Form.Item name="name" label="部门名称" rules={[{ required: true, message: "请输入部门名称" }]}>
+          <Form.Item name="name" label={t("department_name")} rules={[{ required: true, message: t("department_name") + " " + t("required") }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="parentId" label="上级部门">
+          <Form.Item name="parentId" label={t("parent_department")}>
             <Select
               allowClear
-              placeholder="无（顶级部门）"
+              placeholder={t("no_parent_department")}
               options={parentOptions}
             />
           </Form.Item>
-          <Form.Item name="description" label="描述">
+          <Form.Item name="description" label={t("description")}>
             <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
@@ -446,7 +446,7 @@ function DepartmentsPanel() {
 
       {/* Edit Department Modal */}
       <Modal
-        title={`编辑部门 "${editingDept?.name}"`}
+        title={`${t("edit_department")} "${editingDept?.name}"`}
         open={!!editingDept}
         onCancel={() => { setEditingDept(null); editForm.resetFields(); }}
         onOk={() => editForm.submit()}
@@ -720,7 +720,7 @@ function RolesPanel() {
     <Flex vertical gap={12}>
       <Input
         prefix={<SearchOutlined />}
-        placeholder="搜索 Skill 权限..."
+        placeholder={t("search_permissions")}
         size="small"
         value={skillSearch}
         onChange={(e) => setSkillSearch(e.target.value)}
@@ -743,7 +743,7 @@ function RolesPanel() {
                   onClick={() => toggleCategoryAll(perms as any[])}
                   style={{ fontSize: 11, padding: 0, height: "auto" }}
                 >
-                  {allChecked ? "取消" : "全选"}
+                  {allChecked ? t("deselect") : t("select_all")}
                 </Button>
               </Flex>
               <Divider style={{ margin: "4px 0 8px" }} />
@@ -762,7 +762,7 @@ function RolesPanel() {
         <Flex justify="space-between" style={{ marginBottom: 12 }}>
           <Text strong>{t("roles")}</Text>
           <Button icon={<PlusOutlined />} size="small" onClick={() => setShowCreate(true)}>
-            新建角色
+            {t("create_role")}
           </Button>
         </Flex>
         <List
@@ -827,7 +827,7 @@ function RolesPanel() {
               loading={savePermLoading}
               onClick={savePermissions}
             >
-              保存权限
+              {t("save_permissions")}
             </Button>
           )
         }
@@ -841,7 +841,7 @@ function RolesPanel() {
         ) : (
           <Flex vertical gap={12}>
             {isAdmin && (
-              <Alert message="管理员角色拥有所有权限" type="info" showIcon style={{ marginBottom: 4 }} />
+              <Alert message={t("admin_role_has_all_permissions")} type="info" showIcon style={{ marginBottom: 4 }} />
             )}
             <Tabs
               size="small"
@@ -864,7 +864,7 @@ function RolesPanel() {
                           onClick={() => toggleCategoryAll(categorized.modulePerms)}
                           style={{ fontSize: 11, padding: 0, height: "auto" }}
                         >
-                          {categorized.modulePerms.every((p: any) => isAdmin || rolePermissions.includes(p.id || p.name)) ? "取消" : "全选"}
+                          {categorized.modulePerms.every((p: any) => isAdmin || rolePermissions.includes(p.id || p.name)) ? t("deselect") : t("select_all")}
                         </Button>
                       </Flex>
                       {renderPermList(categorized.modulePerms)}
@@ -887,7 +887,7 @@ function RolesPanel() {
                           onClick={() => toggleCategoryAll(categorized.apiPerms)}
                           style={{ fontSize: 11, padding: 0, height: "auto" }}
                         >
-                          {categorized.apiPerms.every((p: any) => isAdmin || rolePermissions.includes(p.id || p.name)) ? "取消" : "全选"}
+                          {categorized.apiPerms.every((p: any) => isAdmin || rolePermissions.includes(p.id || p.name)) ? t("deselect") : t("select_all")}
                         </Button>
                       </Flex>
                       {renderPermList(categorized.apiPerms)}
@@ -907,14 +907,14 @@ function RolesPanel() {
 
       {/* Create Role Modal */}
       <Modal
-        title="新建角色"
+        title={t("create_role")}
         open={showCreate}
         onCancel={() => { setShowCreate(false); createForm.resetFields(); }}
         onOk={() => createForm.submit()}
         confirmLoading={createLoading}
       >
         <Form form={createForm} layout="vertical" onFinish={createRole}>
-          <Form.Item name="name" label="角色名称" rules={[{ required: true, message: "请输入角色名称" }]}>
+          <Form.Item name="name" label={t("role_name")} rules={[{ required: true, message: t("role_name") + " " + t("required") }]}>
             <Input />
           </Form.Item>
           <Form.Item name="description" label="描述">

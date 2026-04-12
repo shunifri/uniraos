@@ -21,6 +21,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text, Title } = Typography;
 
@@ -35,6 +36,7 @@ interface PendingSkill {
 
 export default function PendingActions() {
   const { message, modal } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [skills, setSkills] = useState<PendingSkill[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -146,7 +148,7 @@ export default function PendingActions() {
           onClick={loadPendingSkills}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
@@ -155,14 +157,14 @@ export default function PendingActions() {
         size="small"
         title={
           <Flex align="center" gap={8}>
-            <span>Pending Skills ({filtered.length})</span>
+            <span>{t("pending_skills_title")} ({filtered.length})</span>
           </Flex>
         }
         style={{ flex: 1, display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto" } }}
       >
         {filtered.length === 0 ? (
-          <Empty description={search ? "No results found" : "No pending skills"} />
+          <Empty description={search ? t("no_results_found") : t("no_pending_skills")} />
         ) : (
           <List
             dataSource={filtered}
@@ -196,7 +198,7 @@ export default function PendingActions() {
                       icon={<CodeOutlined />}
                       onClick={() => handleViewCode(skill)}
                     >
-                      View Code
+                      {t("view_code")}
                     </Button>
                     <Button
                       size="small"
@@ -205,7 +207,7 @@ export default function PendingActions() {
                       onClick={() => handleApprove(skill)}
                       loading={actionLoading}
                     >
-                      Approve
+                      {t("approve")}
                     </Button>
                     <Button
                       size="small"
@@ -214,7 +216,7 @@ export default function PendingActions() {
                       onClick={() => handleReject(skill)}
                       loading={actionLoading}
                     >
-                      Reject
+                      {t("reject")}
                     </Button>
                   </Space>
                 </Flex>

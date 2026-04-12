@@ -26,6 +26,7 @@ import {
   GlobalOutlined,
   ReconciliationOutlined,
   TeamOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -76,6 +77,15 @@ const Layout: React.FC = () => {
       icon: <BookOutlined />,
       label: t('nav_knowledge'),
     },
+    ...(isAdmin || isDeveloper
+      ? [
+          {
+            key: 'knowledge-graph',
+            icon: <ApartmentOutlined />,
+            label: t('nav_knowledge_graph') || 'Knowledge Graph',
+          },
+        ]
+      : []),
     {
       key: 'files',
       icon: <FolderOutlined />,

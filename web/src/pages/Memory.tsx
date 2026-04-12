@@ -283,7 +283,7 @@ export default function MemoryPage() {
             onClick={startSchedule}
             disabled={schedule.running}
           >
-            开始
+            {t("start")}
           </Button>
           <Button
             size="small"
@@ -291,10 +291,10 @@ export default function MemoryPage() {
             onClick={stopSchedule}
             disabled={!schedule.running}
           >
-            停止
+            {t("stop")}
           </Button>
           <Button size="small" onClick={archiveNow}>
-            立即归档
+            {t("archive_now")}
           </Button>
         </Flex>
       </Card>
@@ -385,7 +385,7 @@ export default function MemoryPage() {
                     restore(a.id);
                   }}
                 >
-                  恢复
+                  {t("restore")}
                 </Button>
               ),
               children: (
@@ -406,13 +406,13 @@ export default function MemoryPage() {
     <Flex vertical gap={16}>
       <Flex gap={8}>
         <Input
-          placeholder="输入 key..."
+          placeholder={t("enter_key")}
           value={versionKey}
           onChange={(e) => setVersionKey(e.target.value)}
           style={{ flex: 1 }}
         />
         <Button type="primary" onClick={loadVersionHistory} loading={loading}>
-          查询
+          {t("query")}
         </Button>
       </Flex>
 
@@ -443,7 +443,7 @@ export default function MemoryPage() {
     <Flex vertical gap={16}>
       <Flex gap={8}>
         <Input
-          placeholder="Key..."
+          placeholder={t("enter_key")}
           value={conflictKey}
           onChange={(e) => setConflictKey(e.target.value)}
           style={{ flex: 1 }}
@@ -454,7 +454,7 @@ export default function MemoryPage() {
       <CodeEditor value={conflictValue} onChange={setConflictValue} />
 
       <Button type="primary" onClick={checkConflicts} loading={loading}>
-        检测矛盾
+        {t("detect_conflicts")}
       </Button>
 
       {conflicts.length > 0 && (
@@ -609,7 +609,7 @@ export default function MemoryPage() {
       <Flex vertical gap={16}>
         <Flex gap={12} align="center">
           <Button type="primary" onClick={() => { load(); }} loading={loading}>
-            刷新画像
+            {t("refresh_profile")}
           </Button>
           <Text type="secondary">基于 {ltm.entries?.length || 0} 条记忆</Text>
         </Flex>
@@ -618,14 +618,14 @@ export default function MemoryPage() {
         <Card size="small" className="glass-card" style={{ overflow: "hidden" }}>
           <Flex gap={8}>
             <Input
-              placeholder="输入自然语言查询记忆，如：家庭情况、技术栈、用户偏好..."
+              placeholder={t("query_memory_placeholder")}
               value={profileQuery}
               onChange={(e) => setProfileQuery(e.target.value)}
               onPressEnter={handleProfileQuery}
               allowClear
             />
             <Button type="primary" onClick={handleProfileQuery} loading={profileQuerying}>
-              检索
+              {t("search")}
             </Button>
           </Flex>
 
@@ -689,7 +689,7 @@ export default function MemoryPage() {
   const renderForgotten = () => (
     <Flex vertical gap={16}>
       <Button type="primary" onClick={loadForgottenLog} loading={loading}>
-        加载日志
+        {t("load_log")}
       </Button>
 
       {forgottenLog.length > 0 && (
@@ -716,14 +716,14 @@ export default function MemoryPage() {
     <Flex vertical gap={16}>
       <Text>输入文本:</Text>
       <Input.TextArea
-        placeholder="粘贴或输入文本..."
+        placeholder={t("paste_text")}
         value={extractText}
         onChange={(e) => setExtractText(e.target.value)}
         rows={6}
       />
 
       <Button type="primary" onClick={extractFacts} loading={loading}>
-        提取事实
+        {t("extract_facts")}
       </Button>
 
       {extractedFacts.length > 0 && (
@@ -773,7 +773,7 @@ export default function MemoryPage() {
             size="small"
             loading={loading}
           >
-            刷新
+            {t("refresh")}
           </Button>
         </div>
         <div style={{ flex: 1, overflow: "auto" }}>

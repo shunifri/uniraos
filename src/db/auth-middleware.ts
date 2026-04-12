@@ -1,5 +1,6 @@
 /**
  * Express 认证中间件
+ * 支持 SQLite 和 MySQL
  */
 import type { Request, Response, NextFunction } from "express";
 import { validateSession } from "./auth.js";
@@ -19,7 +20,7 @@ declare global {
  * 认证中间件：从 Authorization header 提取 token 并验证
  * 未认证时 req.user 为 undefined（不阻断请求）
  */
-export function authMiddleware(req: Request, _res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, _res: Response, next: NextFunction): Promise<void> {
   let token: string | undefined;
 
   // 1. 优先从 Authorization header 取 token
@@ -34,7 +35,7 @@ export function authMiddleware(req: Request, _res: Response, next: NextFunction)
   }
 
   if (token) {
-    const user = validateSession(token);
+    const user = await validateSession(token);
     if (user) {
       req.user = user;
     }
@@ -58,12 +59,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
  * 用法: app.post("/api/xxx", requireAuth, requirePermission("config.read"), handler)
  */
 export function requirePermission(permissionName: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!req.user) {
       res.status(401).json({ success: false, error: "Authentication required" });
       return;
     }
-    if (!userHasPermission(req.user.id, permissionName)) {
+    const hasPerm = await userHasPermission(req.user.id, permissionName);
+    if (!hasPerm) {
       res.status(403).json({ success: false, error: `Permission denied: ${permissionName}` });
       return;
     }
@@ -76,12 +78,12 @@ export function requirePermission(permissionName: string) {
  * 用法: app.post("/api/xxx", requireAuth, requireRole("admin"), handler)
  */
 export function requireRole(roleName: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!req.user) {
       res.status(401).json({ success: false, error: "Authentication required" });
       return;
     }
-    const roles = getUserRoles(req.user.id);
+    const roles = await getUserRoles(req.user.id);
     if (!roles.some((r) => r.name === roleName)) {
       res.status(403).json({ success: false, error: `Role required: ${roleName}` });
       return;
@@ -93,12 +95,12 @@ export function requireRole(roleName: string) {
 /**
  * 要求 admin 角色（快捷方式）
  */
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+export async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {
     res.status(401).json({ success: false, error: "Authentication required" });
     return;
   }
-  const roles = getUserRoles(req.user.id);
+  const roles = await getUserRoles(req.user.id);
   if (!roles.some((r) => r.name === "admin")) {
     res.status(403).json({ success: false, error: "Admin access required" });
     return;

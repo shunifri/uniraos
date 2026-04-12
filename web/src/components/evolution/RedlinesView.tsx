@@ -24,6 +24,7 @@ import {
   DeleteOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -43,6 +44,7 @@ interface Redline {
 
 export default function RedlinesView() {
   const { message, modal } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [redlines, setRedlines] = useState<Redline[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -52,7 +54,7 @@ export default function RedlinesView() {
   const loadRedlines = async () => {
     try {
       setLoading(true);
-      const data = await api.get<any>("/api/evolution/redlines");
+      const data = await api.get<any>("/api/evolution/red-lines");
       setRedlines(data.redlines || []);
     } catch (e: any) {
       message.error(e.message);
@@ -68,8 +70,8 @@ export default function RedlinesView() {
   const handleAddRedline = async (values: any) => {
     try {
       setActionLoading(true);
-      await api.post("/api/evolution/redlines", values);
-      message.success("Redline constraint added");
+      await api.post("/api/evolution/red-lines", values);
+      message.success(t("redline_constraint_added"));
       setIsAddModalOpen(false);
       form.resetFields();
       loadRedlines();
@@ -88,8 +90,8 @@ export default function RedlinesView() {
       onOk: async () => {
         try {
           setActionLoading(true);
-          await api.del(`/api/evolution/redlines/${redline.id}`);
-          message.success(`Redline "${redline.name}" deleted`);
+          await api.post("/api/evolution/red-lines", { action: "remove", id: redline.id });
+          message.success(`${t("redline_deleted")}: "${redline.name}"`);
           loadRedlines();
         } catch (e: any) {
           message.error(e.message);
@@ -165,7 +167,7 @@ export default function RedlinesView() {
             onClick={() => handleDeleteRedline(record)}
             loading={actionLoading}
           >
-            Delete
+            {t("delete")}
           </Button>
         </Space>
       ),
@@ -218,7 +220,7 @@ export default function RedlinesView() {
           onClick={() => setIsAddModalOpen(true)}
           size="small"
         >
-          Add Redline
+          {t("add_redline")}
         </Button>
 
         <Button
@@ -227,19 +229,19 @@ export default function RedlinesView() {
           onClick={loadRedlines}
           loading={loading}
         >
-          Refresh
+          {t("refresh")}
         </Button>
       </Flex>
 
       {/* Table */}
       <Card
         size="small"
-        title="Redline Constraints"
+        title={t("redline_constraints")}
         style={{ flex: 1, display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto" } }}
       >
         {redlines.length === 0 ? (
-          <Empty description="No redline constraints" />
+          <Empty description={t("no_redline_constraints")} />
         ) : (
           <Table
             dataSource={redlines}
@@ -258,7 +260,7 @@ export default function RedlinesView() {
 
       {/* Add Modal */}
       <Modal
-        title="Add Redline Constraint"
+        title={t("add_redline_constraint")}
         open={isAddModalOpen}
         onOk={() => form.submit()}
         onCancel={() => {
@@ -274,15 +276,15 @@ export default function RedlinesView() {
           onFinish={handleAddRedline}
         >
           <Form.Item
-            label="Name"
+            label={t("name")}
             name="name"
             rules={[{ required: true, message: "Please enter name" }]}
           >
-            <Input placeholder="Constraint name" />
+            <Input placeholder={t("constraint_name")} />
           </Form.Item>
 
           <Form.Item
-            label="Type"
+            label={t("type")}
             name="type"
             rules={[{ required: true, message: "Please select type" }]}
             initialValue="warning"
@@ -296,13 +298,13 @@ export default function RedlinesView() {
           </Form.Item>
 
           <Form.Item
-            label="Description"
+            label={t("description")}
             name="description"
             rules={[{ required: true, message: "Please enter description" }]}
           >
             <Input.TextArea
               rows={4}
-              placeholder="Describe the constraint..."
+              placeholder={t("describe_constraint")}
             />
           </Form.Item>
         </Form>

@@ -167,9 +167,7 @@ services:
   # ===========================================================================
   
   # RAOS 后端 API 服务
-  # 后端 API 服务
-  raos-backend:test
-    # 华为云 SWR 镜像: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:test
+  raos-backend:
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:test
     build:
       context: .
@@ -190,7 +188,7 @@ services:
       # Redis 配置
       REDIS_HOSTS: redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      REDIS_KEY_PREFIX: raos:
+      REDIS_KEY_PREFIX: "raos:"
       # Qdrant 配置
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
@@ -288,7 +286,7 @@ services:
   
   # RAOS 前端 Web 服务
   # 前端 Web 服务
-  raos-frontend:test
+  raos-frontend:
     # 华为云 SWR 镜像: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
     build:
@@ -307,7 +305,7 @@ services:
       - ./docker/frontend/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/frontend/ssl:/etc/nginx/ssl:ro
     depends_on:
-      raos-backend:test
+      raos-backend:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
@@ -389,9 +387,9 @@ volumes:
 # 网络
 # =============================================================================
 networks:
-  raos-backend:test
+  raos-backend:
     driver: bridge
     internal: false
-  raos-frontend:test
+  raos-frontend:
     driver: bridge
     internal: false

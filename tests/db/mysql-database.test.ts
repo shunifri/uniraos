@@ -63,13 +63,13 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     // Check tables exist
-    const tables = await adapter.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables 
+    const tables = await adapter.query<{ TABLE_NAME: string }>(
+      `SELECT TABLE_NAME FROM information_schema.tables 
        WHERE table_schema = DATABASE() 
        AND table_name IN ('users', 'departments', 'kb_documents', 'kb_chunks', 'wal_entries', 'kb_versions', 'kb_keywords')`
     );
     
-    const tableNames = tables.map(t => t.table_name);
+    const tableNames = tables.map(t => t.TABLE_NAME);
     expect(tableNames).toContain("users");
     expect(tableNames).toContain("departments");
     expect(tableNames).toContain("kb_documents");
@@ -85,13 +85,13 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     // Check users table columns
-    const columns = await adapter.query<{ column_name: string; data_type: string }>(
-      `SELECT column_name, data_type 
+    const columns = await adapter.query<{ COLUMN_NAME: string; DATA_TYPE: string }>(
+      `SELECT COLUMN_NAME, DATA_TYPE 
        FROM information_schema.columns 
        WHERE table_schema = DATABASE() AND table_name = 'users'`
     );
     
-    const columnMap = new Map(columns.map(c => [c.column_name, c.data_type]));
+    const columnMap = new Map(columns.map(c => [c.COLUMN_NAME, c.DATA_TYPE]));
     
     expect(columnMap.has("id")).toBe(true);
     expect(columnMap.has("username")).toBe(true);
@@ -107,13 +107,13 @@ describeIfMySQL("MySQL Database Migrations", () => {
     
     const adapter = getMySQLAdapter();
     
-    const columns = await adapter.query<{ column_name: string; data_type: string }>(
-      `SELECT column_name, data_type 
+    const columns = await adapter.query<{ COLUMN_NAME: string; DATA_TYPE: string }>(
+      `SELECT COLUMN_NAME, DATA_TYPE 
        FROM information_schema.columns 
        WHERE table_schema = DATABASE() AND table_name = 'kb_documents'`
     );
     
-    const columnMap = new Map(columns.map(c => [c.column_name, c.data_type]));
+    const columnMap = new Map(columns.map(c => [c.COLUMN_NAME, c.DATA_TYPE]));
     
     expect(columnMap.has("doc_id")).toBe(true);
     expect(columnMap.has("name")).toBe(true);
@@ -130,13 +130,13 @@ describeIfMySQL("MySQL Database Migrations", () => {
     
     const adapter = getMySQLAdapter();
     
-    const columns = await adapter.query<{ column_name: string; data_type: string }>(
-      `SELECT column_name, data_type 
+    const columns = await adapter.query<{ COLUMN_NAME: string; DATA_TYPE: string }>(
+      `SELECT COLUMN_NAME, DATA_TYPE 
        FROM information_schema.columns 
        WHERE table_schema = DATABASE() AND table_name = 'kb_chunks'`
     );
     
-    const columnMap = new Map(columns.map(c => [c.column_name, c.data_type]));
+    const columnMap = new Map(columns.map(c => [c.COLUMN_NAME, c.DATA_TYPE]));
     
     expect(columnMap.has("id")).toBe(true);
     expect(columnMap.has("doc_id")).toBe(true);
@@ -157,16 +157,16 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     const foreignKeys = await adapter.query<{
-      table_name: string;
-      column_name: string;
-      referenced_table_name: string;
-      referenced_column_name: string;
+      TABLE_NAME: string;
+      COLUMN_NAME: string;
+      REFERENCED_TABLE_NAME: string;
+      REFERENCED_COLUMN_NAME: string;
     }>(
       `SELECT 
-        table_name,
-        column_name,
-        referenced_table_name,
-        referenced_column_name
+        TABLE_NAME,
+        COLUMN_NAME,
+        REFERENCED_TABLE_NAME,
+        REFERENCED_COLUMN_NAME
        FROM information_schema.key_column_usage
        WHERE table_schema = DATABASE()
        AND referenced_table_name IS NOT NULL`
@@ -174,24 +174,24 @@ describeIfMySQL("MySQL Database Migrations", () => {
     
     // Check kb_documents -> users FK
     const docOwnerFk = foreignKeys.find(
-      fk => fk.table_name === 'kb_documents' && fk.column_name === 'owner_id'
+      fk => fk.TABLE_NAME === 'kb_documents' && fk.COLUMN_NAME === 'owner_id'
     );
     expect(docOwnerFk).toBeDefined();
-    expect(docOwnerFk?.referenced_table_name).toBe("users");
+    expect(docOwnerFk?.REFERENCED_TABLE_NAME).toBe("users");
     
     // Check kb_chunks -> kb_documents FK
     const chunkDocFk = foreignKeys.find(
-      fk => fk.table_name === 'kb_chunks' && fk.column_name === 'doc_id'
+      fk => fk.TABLE_NAME === 'kb_chunks' && fk.COLUMN_NAME === 'doc_id'
     );
     expect(chunkDocFk).toBeDefined();
-    expect(chunkDocFk?.referenced_table_name).toBe("kb_documents");
+    expect(chunkDocFk?.REFERENCED_TABLE_NAME).toBe("kb_documents");
     
     // Check kb_keywords -> kb_chunks FK
     const keywordChunkFk = foreignKeys.find(
-      fk => fk.table_name === 'kb_keywords' && fk.column_name === 'chunk_id'
+      fk => fk.TABLE_NAME === 'kb_keywords' && fk.COLUMN_NAME === 'chunk_id'
     );
     expect(keywordChunkFk).toBeDefined();
-    expect(keywordChunkFk?.referenced_table_name).toBe("kb_chunks");
+    expect(keywordChunkFk?.REFERENCED_TABLE_NAME).toBe("kb_chunks");
   });
 
   it("should have indexes on frequently queried columns", async () => {
@@ -200,37 +200,37 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     const indexes = await adapter.query<{
-      table_name: string;
-      index_name: string;
-      column_name: string;
+      TABLE_NAME: string;
+      INDEX_NAME: string;
+      COLUMN_NAME: string;
     }>(
       `SELECT 
-        table_name,
-        index_name,
-        column_name
+        TABLE_NAME,
+        INDEX_NAME,
+        COLUMN_NAME
        FROM information_schema.statistics
        WHERE table_schema = DATABASE()
        AND table_name IN ('users', 'kb_documents', 'kb_chunks', 'wal_entries')`
     );
     
     // Check users indexes
-    const userIndexes = indexes.filter(i => i.table_name === 'users');
-    expect(userIndexes.some(i => i.index_name === 'idx_users_username')).toBe(true);
-    expect(userIndexes.some(i => i.index_name === 'idx_users_status')).toBe(true);
+    const userIndexes = indexes.filter(i => i.TABLE_NAME === 'users');
+    expect(userIndexes.some(i => i.INDEX_NAME === 'idx_users_username')).toBe(true);
+    expect(userIndexes.some(i => i.INDEX_NAME === 'idx_users_status')).toBe(true);
     
     // Check kb_documents indexes
-    const docIndexes = indexes.filter(i => i.table_name === 'kb_documents');
-    expect(docIndexes.some(i => i.index_name === 'idx_kb_documents_owner')).toBe(true);
-    expect(docIndexes.some(i => i.index_name === 'idx_kb_documents_shared')).toBe(true);
+    const docIndexes = indexes.filter(i => i.TABLE_NAME === 'kb_documents');
+    expect(docIndexes.some(i => i.INDEX_NAME === 'idx_kb_documents_owner')).toBe(true);
+    expect(docIndexes.some(i => i.INDEX_NAME === 'idx_kb_documents_shared')).toBe(true);
     
     // Check kb_chunks indexes
-    const chunkIndexes = indexes.filter(i => i.table_name === 'kb_chunks');
-    expect(chunkIndexes.some(i => i.index_name === 'idx_kb_chunks_doc_id')).toBe(true);
+    const chunkIndexes = indexes.filter(i => i.TABLE_NAME === 'kb_chunks');
+    expect(chunkIndexes.some(i => i.INDEX_NAME === 'idx_kb_chunks_doc_id')).toBe(true);
     
     // Check wal_entries indexes
-    const walIndexes = indexes.filter(i => i.table_name === 'wal_entries');
-    expect(walIndexes.some(i => i.index_name === 'idx_wal_sequence')).toBe(true);
-    expect(walIndexes.some(i => i.index_name === 'idx_wal_timestamp')).toBe(true);
+    const walIndexes = indexes.filter(i => i.TABLE_NAME === 'wal_entries');
+    expect(walIndexes.some(i => i.INDEX_NAME === 'idx_wal_sequence')).toBe(true);
+    expect(walIndexes.some(i => i.INDEX_NAME === 'idx_wal_timestamp')).toBe(true);
   });
 
   it("should have fulltext indexes after migration v2", async () => {
@@ -239,24 +239,24 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     const fulltextIndexes = await adapter.query<{
-      table_name: string;
-      index_name: string;
+      TABLE_NAME: string;
+      INDEX_NAME: string;
     }>(
       `SELECT 
-        table_name,
-        index_name
+        TABLE_NAME,
+        INDEX_NAME
        FROM information_schema.statistics
        WHERE table_schema = DATABASE()
        AND index_type = 'FULLTEXT'`
     );
     
     const ftDocName = fulltextIndexes.find(
-      i => i.table_name === 'kb_documents' && i.index_name === 'ft_idx_kb_documents_name'
+      i => i.TABLE_NAME === 'kb_documents' && i.INDEX_NAME === 'ft_idx_kb_documents_name'
     );
     expect(ftDocName).toBeDefined();
     
     const ftChunkContent = fulltextIndexes.find(
-      i => i.table_name === 'kb_chunks' && i.index_name === 'ft_idx_kb_chunks_content'
+      i => i.TABLE_NAME === 'kb_chunks' && i.INDEX_NAME === 'ft_idx_kb_chunks_content'
     );
     expect(ftChunkContent).toBeDefined();
   });
@@ -346,13 +346,15 @@ describeIfMySQL("MySQL Database Migrations", () => {
     );
     
     // Query back and verify JSON
-    const doc = await adapter.query<{ doc_id: string; tags: string }>(
+    const doc = await adapter.query<{ doc_id: string; tags: string | string[] }>(
       'SELECT * FROM kb_documents WHERE doc_id = ?',
       ['doc_json']
     );
     expect(doc).toHaveLength(1);
     
-    const parsedTags = JSON.parse(doc[0].tags);
+    // MySQL may return JSON as parsed array or string
+    const tagsValue = doc[0].tags;
+    const parsedTags = Array.isArray(tagsValue) ? tagsValue : JSON.parse(tagsValue);
     expect(parsedTags).toEqual(['tag1', 'tag2', 'tag3']);
   });
 
@@ -389,8 +391,8 @@ describeIfMySQL("MySQL Database Migrations", () => {
     
     // Check that kb_keywords table is dropped
     const adapter = getMySQLAdapter();
-    const tables = await adapter.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables 
+    const tables = await adapter.query<{ TABLE_NAME: string }>(
+      `SELECT TABLE_NAME FROM information_schema.tables 
        WHERE table_schema = DATABASE() AND table_name = 'kb_keywords'`
     );
     expect(tables).toHaveLength(0);
@@ -402,8 +404,8 @@ describeIfMySQL("MySQL Database Migrations", () => {
     expect(status2.currentVersion).toBe(2);
     
     // Check that kb_keywords table is recreated
-    const tables2 = await adapter.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables 
+    const tables2 = await adapter.query<{ TABLE_NAME: string }>(
+      `SELECT TABLE_NAME FROM information_schema.tables 
        WHERE table_schema = DATABASE() AND table_name = 'kb_keywords'`
     );
     expect(tables2).toHaveLength(1);
@@ -500,16 +502,16 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     const tableInfo = await adapter.query<{
-      table_name: string;
-      table_collation: string;
+      TABLE_NAME: string;
+      TABLE_COLLATION: string;
     }>(
-      `SELECT table_name, table_collation 
+      `SELECT TABLE_NAME, TABLE_COLLATION 
        FROM information_schema.tables 
        WHERE table_schema = DATABASE() 
        AND table_name = 'users'`
     );
     
-    expect(tableInfo[0].table_collation).toContain('utf8mb4');
+    expect(tableInfo[0].TABLE_COLLATION).toContain('utf8mb4');
   });
 
   it("should use InnoDB engine", async () => {
@@ -518,16 +520,16 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const adapter = getMySQLAdapter();
     
     const tableInfo = await adapter.query<{
-      table_name: string;
-      engine: string;
+      TABLE_NAME: string;
+      ENGINE: string;
     }>(
-      `SELECT table_name, engine 
+      `SELECT TABLE_NAME, ENGINE 
        FROM information_schema.tables 
        WHERE table_schema = DATABASE() 
        AND table_name = 'users'`
     );
     
-    expect(tableInfo[0].engine).toBe('InnoDB');
+    expect(tableInfo[0].ENGINE).toBe('InnoDB');
   });
 });
 

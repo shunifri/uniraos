@@ -709,7 +709,7 @@ export default function FilesPage() {
         extra={
           isSharedFolder ? (
             <Button size="small" icon={<ReloadOutlined />} onClick={loadSharedFiles} loading={loadingShared}>
-              刷新
+              {t("refresh")}
             </Button>
           ) : (
             <Space>
@@ -720,7 +720,7 @@ export default function FilesPage() {
                 beforeUpload={(file) => { handleUpload(file); return false; }}
               >
                 <Button type="primary" size="small" icon={<UploadOutlined />} loading={uploading}>
-                  上传文件
+                  {t("files_upload")}
                 </Button>
               </Upload>
               <Button size="small" icon={<PlusOutlined />} onClick={() => setNewFolderOpen(true)}>

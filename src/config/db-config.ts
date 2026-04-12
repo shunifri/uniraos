@@ -33,8 +33,8 @@ export interface RedisConfig {
   keyPrefix: string;
 }
 
-export const dbConfig = {
-  mysql: {
+function loadMySQLConfig(): MySQLConfig {
+  return {
     primary: {
       host: process.env.MYSQL_PRIMARY_HOST || 'localhost',
       port: parseInt(process.env.MYSQL_PRIMARY_PORT || '3306'),
@@ -48,21 +48,31 @@ export const dbConfig = {
       port: parseInt(process.env.MYSQL_REPLICA_PORT || '3306'),
       connectionLimit: 30,
     })).filter(r => r.host),
-  } as MySQLConfig,
+  };
+}
 
-  qdrant: {
+function loadQdrantConfig(): QdrantConfig {
+  return {
     host: process.env.QDRANT_HOST || 'localhost',
     port: parseInt(process.env.QDRANT_PORT || '6333'),
     grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334'),
     apiKey: process.env.QDRANT_API_KEY,
-  } as QdrantConfig,
+  };
+}
 
-  redis: {
+function loadRedisConfig(): RedisConfig {
+  return {
     nodes: (process.env.REDIS_HOSTS || 'localhost:6379').split(',').map(h => {
       const [host, port] = h.trim().split(':');
       return { host, port: parseInt(port || '6379') };
     }),
     password: process.env.REDIS_PASSWORD,
     keyPrefix: process.env.REDIS_KEY_PREFIX || 'raos:',
-  } as RedisConfig,
+  };
+}
+
+export const dbConfig = {
+  get mysql() { return loadMySQLConfig(); },
+  get qdrant() { return loadQdrantConfig(); },
+  get redis() { return loadRedisConfig(); },
 };

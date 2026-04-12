@@ -15,6 +15,7 @@ import {
 } from "antd";
 import { SaveOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -27,6 +28,7 @@ interface FederationConfig {
 
 export default function ConfigurationPanel() {
   const { message, modal } = App.useApp();
+  const t = useI18nStore((s) => s.t);
   const [form] = Form.useForm();
   const [config, setConfig] = useState<FederationConfig | null>(null);
   const [loading, setLoading] = useState(false);
@@ -41,7 +43,7 @@ export default function ConfigurationPanel() {
       setConfig(data);
       form.setFieldsValue(data);
     } catch (e: any) {
-      message.error(e.message || "Failed to load configuration");
+      message.error(e.message || t("failed_to_load_configuration"));
     } finally {
       setLoading(false);
     }
@@ -55,42 +57,42 @@ export default function ConfigurationPanel() {
     try {
       const values = await form.validateFields();
       modal.confirm({
-        title: "确认保存配置",
-        content: "确定要保存这些联邦配置更改吗？",
-        okText: "确认",
-        cancelText: "取消",
+        title: t("confirm_save_config"),
+        content: t("confirm_save_config_content"),
+        okText: t("confirm"),
+        cancelText: t("cancel"),
         onOk: async () => {
           try {
             setSaving(true);
             await api.put("/api/config/federation", values);
-            message.success("Configuration saved successfully");
+            message.success(t("configuration_saved"));
             setConfig(values);
           } catch (e: any) {
-            message.error(e.message || "Failed to save configuration");
+            message.error(e.message || t("failed_to_save_configuration"));
           } finally {
             setSaving(false);
           }
         },
       });
     } catch (e: any) {
-      message.error(e.message || "Failed to validate configuration");
+      message.error(e.message || t("failed_to_validate_configuration"));
     }
   };
 
   const handleReset = () => {
     if (config) {
       form.setFieldsValue(config);
-      message.info("Configuration reset to last saved state");
+      message.info(t("configuration_reset"));
     }
   };
 
   if (!config) {
-    return <Empty description="Loading..." />;
+    return <Empty description={t("loading")} />;
   }
 
   return (
     <Flex vertical gap={16}>
-      <Card size="small" title="Federation Configuration">
+      <Card size="small" title={t("federation_configuration")}>
         <Form
           form={form}
           layout="vertical"
@@ -101,16 +103,16 @@ export default function ConfigurationPanel() {
           <Form.Item
             label={
               <Flex justify="space-between">
-                <span>Heartbeat Interval (seconds)</span>
+                <span>{t("heartbeat_interval_seconds")}</span>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Controls how often the instance sends heartbeats to other peers
+                  {t("heartbeat_tooltip")}
                 </Text>
               </Flex>
             }
             name="heartbeatInterval"
             rules={[
-              { required: true, message: "Heartbeat interval is required" },
-              { type: "number", min: 1, max: 300, message: "Must be between 1 and 300" },
+              { required: true, message: t("heartbeat_required") },
+              { type: "number", min: 1, max: 300, message: t("must_be_between_1_and_300") },
             ]}
           >
             <InputNumber min={1} max={300} style={{ width: "100%" }} />
@@ -119,16 +121,16 @@ export default function ConfigurationPanel() {
           <Form.Item
             label={
               <Flex justify="space-between">
-                <span>Sync Interval (seconds)</span>
+                <span>{t("sync_interval_seconds")}</span>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Controls how often the instance synchronizes data with peers
+                  {t("sync_tooltip")}
                 </Text>
               </Flex>
             }
             name="syncInterval"
             rules={[
-              { required: true, message: "Sync interval is required" },
-              { type: "number", min: 1, max: 3600, message: "Must be between 1 and 3600" },
+              { required: true, message: t("sync_required") },
+              { type: "number", min: 1, max: 3600, message: t("must_be_between_1_and_3600") },
             ]}
           >
             <InputNumber min={1} max={3600} style={{ width: "100%" }} />
@@ -137,16 +139,16 @@ export default function ConfigurationPanel() {
           <Form.Item
             label={
               <Flex justify="space-between">
-                <span>Minimum Confidence Threshold</span>
+                <span>{t("minimum_confidence_threshold")}</span>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Minimum confidence level for accepting recommendations (0-1)
+                  {t("confidence_tooltip")}
                 </Text>
               </Flex>
             }
             name="minConfidenceThreshold"
             rules={[
-              { required: true, message: "Confidence threshold is required" },
-              { type: "number", min: 0, max: 1, message: "Must be between 0 and 1" },
+              { required: true, message: t("confidence_required") },
+              { type: "number", min: 0, max: 1, message: t("must_be_between_0_and_1") },
             ]}
           >
             <Flex gap={16} align="center">
@@ -169,9 +171,9 @@ export default function ConfigurationPanel() {
           <Form.Item
             label={
               <Flex justify="space-between">
-                <span>Enable Auto Migration</span>
+                <span>{t("enable_auto_migration")}</span>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Automatically accept recommendations from trusted peers
+                  {t("auto_migration_desc")}
                 </Text>
               </Flex>
             }
@@ -188,44 +190,36 @@ export default function ConfigurationPanel() {
               onClick={handleSave}
               loading={saving}
             >
-              Save Configuration
+              {t("save_configuration")}
             </Button>
             <Button
               icon={<ReloadOutlined />}
               onClick={handleReset}
               disabled={saving}
             >
-              Reset
+              {t("reset")}
             </Button>
           </Flex>
         </Form>
       </Card>
 
-      <Card size="small" title="Configuration Notes">
+      <Card size="small" title={t("configuration_notes")}>
         <Flex vertical gap={8}>
           <div>
-            <Text strong>Heartbeat Interval:</Text>
-            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>
-              Lower values increase network traffic but ensure faster detection of peer failures.
-            </Text>
+            <Text strong>{t("heartbeat_interval")}:</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>{t("heartbeat_interval_desc")}</Text>
           </div>
           <div style={{ marginTop: 8 }}>
-            <Text strong>Sync Interval:</Text>
-            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>
-              Controls how frequently this instance synchronizes skill metrics and recommendations with other peers.
-            </Text>
+            <Text strong>{t("sync_interval")}:</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>{t("sync_interval_desc")}</Text>
           </div>
           <div style={{ marginTop: 8 }}>
-            <Text strong>Confidence Threshold:</Text>
-            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>
-              Only recommendations with confidence above this threshold will be considered. Higher values are more conservative.
-            </Text>
+            <Text strong>{t("confidence_threshold")}:</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>{t("confidence_threshold_desc")}</Text>
           </div>
           <div style={{ marginTop: 8 }}>
-            <Text strong>Auto Migration:</Text>
-            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>
-              When enabled, high-confidence recommendations will be automatically accepted. Disable for manual review.
-            </Text>
+            <Text strong>{t("auto_migration")}:</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 4 }}>{t("auto_migration_desc")}</Text>
           </div>
         </Flex>
       </Card>

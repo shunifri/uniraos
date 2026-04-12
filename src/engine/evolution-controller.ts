@@ -711,6 +711,35 @@ export class EvolutionController {
     this.config = { ...this.config, ...partial };
   }
 
+  // ===== Budget Methods =====
+
+  private budgetConsumed = 0;
+  private readonly BUDGET_TOTAL = 100;
+  private readonly BUDGET_COST_PER_GENERATE = 10;
+
+  /** Check if there is remaining budget for an action */
+  hasBudget(action: string): boolean {
+    // Only 'generate' action consumes budget in this implementation
+    if (action !== "generate") return true;
+    return this.budgetConsumed < this.BUDGET_TOTAL;
+  }
+
+  /** Consume budget for an action */
+  consumeBudget(action: string): void {
+    if (action === "generate") {
+      this.budgetConsumed += this.BUDGET_COST_PER_GENERATE;
+    }
+  }
+
+  /** Get current budget status */
+  getBudgetStatus(): { total: number; consumed: number; remaining: number } {
+    return {
+      total: this.BUDGET_TOTAL,
+      consumed: this.budgetConsumed,
+      remaining: this.BUDGET_TOTAL - this.budgetConsumed,
+    };
+  }
+
   /** 关闭数据库连接 */
   close(): void {
     if (this.db) {
