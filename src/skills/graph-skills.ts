@@ -78,7 +78,29 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
           id, size: nodeIds.length, nodes: nodeIds.slice(0, 10),
         }));
         return { success: true, data: { ...stats, communities: commList } };
-      },
-    }),
-  ];
-}
+       },
+     }),
+
+     defineSystemSkill({
+       name: "graph_deduplicate",
+       visible: true,
+       autonomy: Autonomy.MANUAL,
+       description: "知识图谱节点去重，合并相同标签的节点并转移关系。",
+       paramSchema: {},
+       handler: async () => {
+         const gm = getGraphManager();
+         if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
+         const store = gm.getStore();
+         const result = store.deduplicateNodes();
+         return { 
+           success: true, 
+           data: { 
+             merged: result.merged, 
+             removed: result.removed,
+             message: `去重完成：合并 ${result.merged} 个节点，移除 ${result.removed} 个重复节点`
+           } 
+         };
+       },
+     }),
+   ];
+ }

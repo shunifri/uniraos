@@ -1,10 +1,16 @@
 import { Router } from "express";
 import { join } from "path";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
-import { getDb } from "../db/database.js";
+import { getDb, isMySQL } from "../db/database.js";
 import { parseDocument } from "../services/doc-parser.js";
 import type { RouteDependencies } from "./index.js";
 import { confirmQueue } from "../skills/user-confirm-skill.js";
+
+// MySQL adapter helper
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
+  return getAdapter();
+}
 
 export function createAgentRoutes(deps: RouteDependencies): Router {
   const {
@@ -91,32 +97,50 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
     // ===== Backend message persistence =====
     const convId = conversationId || null;
-    const insertMsg = convId
-      ? getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      : null;
-
-    function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
-      if (!insertMsg || !convId) return;
+    
+    async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
+      if (!convId) return;
       try {
-        insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, opts?.extra ? JSON.stringify(opts.extra) : null);
+        const extraJson = opts?.extra ? JSON.stringify(opts.extra) : null;
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          await adapter.execute(
+            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+            [convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson]
+          );
+        } else {
+          const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
+          insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
+        }
       } catch {}
     }
 
-    function updateConvTitle(title: string) {
+    async function updateConvTitle(title: string) {
       if (!convId) return;
       try {
-        const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
-        if (msgCount <= 2) {
-          getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          const rows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
+          const msgCount = rows[0]?.c || 0;
+          if (msgCount <= 2) {
+            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
+          } else {
+            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
+          }
         } else {
-          getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+          const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+          if (msgCount <= 2) {
+            getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+          } else {
+            getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+          }
         }
       } catch {}
     }
 
     // Save user message
-    saveMsg("user", message);
-    updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
+    await saveMsg("user", message);
+    await updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
 
     // Parse attachments: use vision model OCR to parse file content
     let enrichedMessage = message;
@@ -165,18 +189,18 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     let webRefsForSave: unknown[] = [];
 
     try {
-      const processEvent = (eventName: string, eventData: any) => {
+      const processEvent = async (eventName: string, eventData: any) => {
         // 拦截 user_confirm：当 tool_result 包含 __userConfirm 时，改为发送 user_confirm 事件
         if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
           write("user_confirm", eventData.result.data);
           // Save tool completion message
-          saveMsg("tool", "等待用户确认...", {
+          await saveMsg("tool", "等待用户确认...", {
             skillName: eventData.skillName ?? pendingToolName,
             status: "done",
             isError: false,
           });
           // Save user_confirm data for restoration on reload
-          saveMsg("user_confirm", JSON.stringify(eventData.result.data), {
+          await saveMsg("user_confirm", JSON.stringify(eventData.result.data), {
             skillName: eventData.skillName ?? pendingToolName,
           });
           return;
@@ -192,15 +216,15 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         if (eventName === "strategy_selected") {
           const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
           const label = levelMap[eventData.level] || eventData.level;
-          saveMsg("strategy", `策略: ${label}${eventData.reasoning ? " — " + eventData.reasoning : ""}`);
+          await saveMsg("strategy", `策略: ${label}${eventData.reasoning ? " — " + eventData.reasoning : ""}`);
         } else if (eventName === "thinking") {
           const thinkContent = eventData.content || `正在思考 (第 ${eventData.iteration ?? ""} 轮)...`;
-          saveMsg("thinking", thinkContent);
+          await saveMsg("thinking", thinkContent);
         } else if (eventName === "text_delta") {
           currentAssistantText += eventData.text ?? "";
         } else if (eventName === "tool_call") {
           if (currentAssistantText) {
-            saveMsg("assistant", currentAssistantText);
+            await saveMsg("assistant", currentAssistantText);
             currentAssistantText = "";
           }
         } else if (eventName === "tool_start") {
@@ -239,7 +263,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
           } else {
             summary = r?.error?.message || r?.error || "失败";
           }
-          saveMsg("tool", summary, {
+          await saveMsg("tool", summary, {
             skillName: eventData.skillName ?? pendingToolName,
             status: r?.success ? "done" : "error",
             isError: !r?.success,
@@ -269,16 +293,16 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
             if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
             if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
             const kbExtra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
-            saveMsg("assistant", currentAssistantText, { extra: kbExtra });
+            await saveMsg("assistant", currentAssistantText, { extra: kbExtra });
             currentAssistantText = "";
             kbRefsForSave = [];
             webRefsForSave = [];
           }
           if (eventData.hitMax) {
-            saveMsg("system", "已达最大迭代次数");
+            await saveMsg("system", "已达最大迭代次数");
           }
         } else if (eventName === "error") {
-          saveMsg("assistant", eventData.error || "未知错误", { isError: true });
+          await saveMsg("assistant", eventData.error || "未知错误", { isError: true });
         }
       };
 
@@ -288,7 +312,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
         for await (const event of loop.runStream(enrichedMessage)) {
           if (closed) break;
-          processEvent(event.event, event.data);
+          await processEvent(event.event, event.data);
         }
       } else {
         // 默认 Orchestrator 模式（始终使用 react 策略，不走 simple）
@@ -296,7 +320,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
         for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
           if (closed) break;
-          processEvent(event.event, event.data);
+          await processEvent(event.event, event.data);
         }
       }
 
@@ -306,12 +330,12 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
         if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
         const extra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
-        saveMsg("assistant", currentAssistantText, { extra });
+        await saveMsg("assistant", currentAssistantText, { extra });
         currentAssistantText = "";
       }
     } catch (err) {
       write("error", { error: err instanceof Error ? err.message : String(err) });
-      saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
+      await saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
     }
 
     if (!closed) {
@@ -379,96 +403,201 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
   // ===== Chat history persistence API =====
 
-  router.get("/conversations", requireAuth, (req, res) => {
+  router.get("/conversations", requireAuth, async (req, res) => {
     const userId = req.user!.id;
-    const rows = getDb().prepare(
-      "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
-    ).all(userId);
-    res.json({ success: true, conversations: rows });
+    try {
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const rows = await adapter.query(
+          "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
+          [userId]
+        );
+        res.json({ success: true, conversations: rows });
+      } else {
+        const rows = getDb().prepare(
+          "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
+        ).all(userId);
+        res.json({ success: true, conversations: rows });
+      }
+    } catch (error) {
+      res.status(500).json({ success: false, error: String(error) });
+    }
   });
 
-  router.post("/conversations", requireAuth, (req, res) => {
+  router.post("/conversations", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const id = "conv_" + crypto.randomUUID().slice(0, 12);
     const title = req.body.title || "新对话";
-    getDb().prepare(
-      "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
-    ).run(id, userId, title);
-    res.json({ success: true, id, title });
+    try {
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        await adapter.execute(
+          "INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000)",
+          [id, userId, title]
+        );
+      } else {
+        getDb().prepare(
+          "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
+        ).run(id, userId, title);
+      }
+      res.json({ success: true, id, title });
+    } catch (error) {
+      res.status(500).json({ success: false, error: String(error) });
+    }
   });
 
-  router.get("/conversations/:id/messages", requireAuth, (req, res) => {
+  router.get("/conversations/:id/messages", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const convId = req.params.id as string;
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const beforeId = parseInt(req.query.before_id as string) || 0;
 
-    const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-    if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
+    try {
+      let conv;
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+        conv = rows[0];
+      } else {
+        conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
+      }
+      if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
-    let rows: any[];
-    if (beforeId > 0) {
-      rows = getDb().prepare(
-        "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
-      ).all(convId, beforeId, limit) as any[];
-      rows.reverse();
-    } else {
-      rows = getDb().prepare(
-        "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
-      ).all(convId, limit) as any[];
-      rows.reverse();
+      let rows: any[];
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        if (beforeId > 0) {
+          rows = await adapter.query(
+            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+            [convId, beforeId, limit]
+          );
+          rows.reverse();
+        } else {
+          rows = await adapter.query(
+            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            [convId, limit]
+          );
+          rows.reverse();
+        }
+      } else {
+        if (beforeId > 0) {
+          rows = getDb().prepare(
+            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+          ).all(convId, beforeId, limit) as any[];
+          rows.reverse();
+        } else {
+          rows = getDb().prepare(
+            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
+          ).all(convId, limit) as any[];
+          rows.reverse();
+        }
+      }
+
+      const msgs = rows.map((r) => ({
+        ...r,
+        extra: r.extra ? (typeof r.extra === 'string' ? JSON.parse(r.extra) : r.extra) : undefined,
+      }));
+
+      let hasMore = false;
+      if (rows.length > 0) {
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?", [convId, rows[0].id]);
+          hasMore = countRows[0]?.c > 0;
+        } else {
+          hasMore = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?").get(convId, rows[0].id) as any).c > 0;
+        }
+      }
+
+      res.json({ success: true, messages: msgs, hasMore });
+    } catch (error) {
+      res.status(500).json({ success: false, error: String(error) });
     }
-
-    const msgs = rows.map((r) => ({
-      ...r,
-      extra: r.extra ? JSON.parse(r.extra) : undefined,
-    }));
-
-    const hasMore = rows.length > 0 && (getDb().prepare(
-      "SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?"
-    ).get(convId, rows[0].id) as any).c > 0;
-
-    res.json({ success: true, messages: msgs, hasMore });
   });
 
-  router.post("/conversations/:id/messages", requireAuth, (req, res) => {
+  router.post("/conversations/:id/messages", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const convId = req.params.id as string;
     console.log(`   [CHAT] Save messages to ${convId}: ${JSON.stringify((req.body.messages || []).map((m: any) => ({ role: m.role, len: m.content?.length })))}`);
-    const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-    if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
-
-    const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
-    const insert = getDb().prepare(
-      "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    );
-    const insertMany = getDb().transaction((items: typeof msgs) => {
-      for (const m of items) {
-        const extraJson = m.extra ? JSON.stringify(m.extra) : null;
-        insert.run(convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson);
-      }
-    });
-    insertMany(msgs);
-
-    const firstUser = msgs.find(m => m.role === "user");
-    if (firstUser) {
-      const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
-      if (msgCount <= msgs.length) {
-        const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
-        getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+    
+    try {
+      let conv;
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+        conv = rows[0];
       } else {
-        getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+        conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
       }
-    }
+      if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
-    res.json({ success: true });
+      const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
+      
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        for (const m of msgs) {
+          const extraJson = m.extra ? JSON.stringify(m.extra) : null;
+          await adapter.execute(
+            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+            [convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson]
+          );
+        }
+      } else {
+        const insert = getDb().prepare(
+          "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        );
+        const insertMany = getDb().transaction((items: typeof msgs) => {
+          for (const m of items) {
+            const extraJson = m.extra ? JSON.stringify(m.extra) : null;
+            insert.run(convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson);
+          }
+        });
+        insertMany(msgs);
+      }
+
+      const firstUser = msgs.find(m => m.role === "user");
+      if (firstUser) {
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
+          const msgCount = countRows[0]?.c || 0;
+          if (msgCount <= msgs.length) {
+            const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
+            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
+          } else {
+            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
+          }
+        } else {
+          const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+          if (msgCount <= msgs.length) {
+            const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
+            getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+          } else {
+            getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+          }
+        }
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: String(error) });
+    }
   });
 
-  router.delete("/conversations/:id", requireAuth, (req, res) => {
+  router.delete("/conversations/:id", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const convId = req.params.id as string;
-    getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
-    res.json({ success: true });
+    try {
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        await adapter.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+      } else {
+        getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
+      }
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: String(error) });
+    }
   });
 
   return router;

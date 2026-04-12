@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { LongTermMemory } from "../../src/memory/ltm.js";
+import { FileLTMBackend } from "../../src/memory/ltm.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
 describe("LTM Archive", () => {
-  let ltm: LongTermMemory;
+  let ltm: FileLTMBackend;
   let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "raos-archive-"));
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       archiveThreshold: 10,
       coldDays: 0, // 任何记忆都视为冷的（测试用）
@@ -106,7 +106,7 @@ describe("LTM Archive", () => {
     await ltm.archive("persist-test");
 
     // 重建实例
-    const ltm2 = new LongTermMemory({
+    const ltm2 = new FileLTMBackend({
       storePath: tmpDir,
       archiveThreshold: 10,
       coldDays: 0,
@@ -132,7 +132,7 @@ describe("LTM Archive", () => {
 });
 
 describe("LTM Scheduled Archive", () => {
-  let ltm: LongTermMemory;
+  let ltm: FileLTMBackend;
   let tmpDir: string;
 
   beforeEach(() => {
@@ -147,7 +147,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should start and stop scheduled archive", () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,
@@ -162,7 +162,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should auto-start when archiveIntervalMs is configured", () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,
@@ -174,7 +174,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should archive cold entries on timer tick", async () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,
@@ -200,7 +200,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should not archive when no cold entries", async () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,
@@ -220,7 +220,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should run multiple archive cycles", async () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,
@@ -248,7 +248,7 @@ describe("LTM Scheduled Archive", () => {
   });
 
   it("should report scheduled archive status in stats", async () => {
-    ltm = new LongTermMemory({
+    ltm = new FileLTMBackend({
       storePath: tmpDir,
       coldDays: 0,
       coldAccessCount: 2,

@@ -1,70 +1,228 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { dirname } from "path";
 import crypto from "crypto";
-import type { GraphNode, GraphEdge, GraphData, NodeType, EdgeType } from "./types.js";
+import type { GraphNode, GraphEdge, NodeType, EdgeType } from "./types.js";
+import { getMySQLAdapter, type MySQLAdapter } from "../../db/mysql-adapter.js";
+
+interface NodeRow {
+  id: string;
+  label: string;
+  type: NodeType;
+  tags: string;
+  properties: string;
+  created_at: number;
+}
+
+interface EdgeRow {
+  id: string;
+  source_id: string;
+  target_id: string;
+  type: EdgeType;
+  label: string;
+  weight: number;
+  created_at: number;
+}
+
+interface CountRow {
+  count: number;
+}
 
 export class GraphStore {
-  private data: GraphData;
-  private storePath: string;
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
-  private dirty = false;
+  private adapter: MySQLAdapter;
+  private owner: string;
+  // 内存缓存
+  private cache: Map<string, GraphNode> = new Map();
+  private cacheEdges: Map<string, GraphEdge> = new Map();
 
-  constructor(storePath: string) {
-    this.storePath = storePath;
-    this.data = { version: 1, nodes: {}, edges: {}, adjacency: {} };
-    this.load();
+  constructor(owner: string) {
+    this.adapter = getMySQLAdapter();
+    this.owner = owner;
+  }
+
+  // 辅助方法：解析 tags（兼容旧格式）
+  private parseTags(tagsStr: string | null): string[] {
+    if (!tagsStr) return [];
+    try {
+      // 尝试 JSON 解析
+      const parsed = JSON.parse(tagsStr);
+      if (Array.isArray(parsed)) return parsed;
+      return [];
+    } catch {
+      // 兼容旧格式：逗号分隔的字符串
+      if (tagsStr.includes(',')) {
+        return tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+      }
+      // 单个值
+      return tagsStr ? [tagsStr] : [];
+    }
+  }
+
+  // 辅助方法：解析 properties（兼容旧格式）
+  private parseProperties(propsStr: string | null): Record<string, unknown> {
+    if (!propsStr) return {};
+    try {
+      return JSON.parse(propsStr);
+    } catch {
+      return { value: propsStr };
+    }
   }
 
   // Node operations
-  addNode(node: Omit<GraphNode, "id"> & { id?: string }): GraphNode {
+  async addNode(node: Omit<GraphNode, "id"> & { id?: string }): Promise<GraphNode> {
     const id = node.id ?? crypto.randomUUID().slice(0, 12);
-    const full: GraphNode = { ...node, id, createdAt: node.createdAt ?? Date.now() };
-    this.data.nodes[id] = full;
-    if (!this.data.adjacency[id]) this.data.adjacency[id] = [];
-    this.scheduleSave();
+    
+    // 确保 tags 是数组格式
+    const nodeTags = (node as any).tags;
+    const tags = Array.isArray(nodeTags) ? nodeTags : 
+                 typeof nodeTags === 'string' ? nodeTags.split(',').map((t: string) => t.trim()).filter(Boolean) : 
+                 [];
+    
+    const full: GraphNode = { ...node, id, tags, createdAt: node.createdAt ?? Date.now() };
+
+    await this.adapter.execute(
+      `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, this.owner, full.label, full.type, JSON.stringify(full.tags), JSON.stringify(full.properties), full.createdAt]
+    );
+
+    this.cache.set(id, full);
     return full;
   }
 
-  removeNode(id: string): boolean {
-    if (!this.data.nodes[id]) return false;
-    // Remove all edges connected to this node
-    const edgeIds = [...(this.data.adjacency[id] ?? [])];
-    for (const eid of edgeIds) this.removeEdge(eid);
-    delete this.data.nodes[id];
-    delete this.data.adjacency[id];
-    this.scheduleSave();
-    return true;
+  async removeNode(id: string): Promise<boolean> {
+    // 先删除关联的边
+    await this.adapter.execute(
+      `DELETE FROM kb_graph_edges WHERE owner_id = ? AND (source_id = ? OR target_id = ?)`,
+      [this.owner, id, id]
+    );
+
+    // 删除节点
+    const result = await this.adapter.execute(
+      `DELETE FROM kb_graph_nodes WHERE id = ? AND owner_id = ?`,
+      [id, this.owner]
+    );
+
+    this.cache.delete(id);
+    // 清除关联边的缓存
+    for (const [edgeId, edge] of this.cacheEdges.entries()) {
+      if (edge.source === id || edge.target === id) {
+        this.cacheEdges.delete(edgeId);
+      }
+    }
+
+    return result.affectedRows > 0;
   }
 
-  getNode(id: string): GraphNode | undefined {
-    return this.data.nodes[id];
+  async getNode(id: string): Promise<GraphNode | undefined> {
+    // 先查缓存
+    if (this.cache.has(id)) return this.cache.get(id);
+
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE id = ? AND owner_id = ?`,
+      [id, this.owner]
+    );
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+    const node: GraphNode = {
+      id: row.id,
+      label: row.label,
+      type: row.type,
+      tags: this.parseTags(row.tags),
+      properties: this.parseProperties(row.properties),
+      createdAt: row.created_at,
+    };
+
+    this.cache.set(id, node);
+    return node;
   }
 
-  findNodeByLabel(label: string): GraphNode | undefined {
-    return Object.values(this.data.nodes).find((n) => n.label === label);
+  async findNodeByLabel(label: string): Promise<GraphNode | undefined> {
+    // 先查缓存
+    for (const node of this.cache.values()) {
+      if (node.label === label) return node;
+    }
+
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE owner_id = ? AND label = ?`,
+      [this.owner, label]
+    );
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+    const node: GraphNode = {
+      id: row.id,
+      label: row.label,
+      type: row.type,
+      tags: JSON.parse(row.tags || "[]"),
+      properties: JSON.parse(row.properties || "{}"),
+      createdAt: row.created_at,
+    };
+
+    this.cache.set(node.id, node);
+    return node;
   }
 
-  findNodesByType(type: NodeType): GraphNode[] {
-    return Object.values(this.data.nodes).filter((n) => n.type === type);
+  async findNodesByType(type: NodeType): Promise<GraphNode[]> {
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE owner_id = ? AND type = ?`,
+      [this.owner, type]
+    );
+
+    return rows.map((row) => {
+      const node: GraphNode = {
+        id: row.id,
+        label: row.label,
+        type: row.type,
+        tags: this.parseTags(row.tags),
+        properties: this.parseProperties(row.properties),
+        createdAt: row.created_at,
+      };
+      this.cache.set(node.id, node);
+      return node;
+    });
   }
 
-  getAllNodes(): GraphNode[] {
-    return Object.values(this.data.nodes);
+  async getAllNodes(): Promise<GraphNode[]> {
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE owner_id = ?`,
+      [this.owner]
+    );
+
+    return rows.map((row) => {
+      const node: GraphNode = {
+        id: row.id,
+        label: row.label,
+        type: row.type,
+        tags: this.parseTags(row.tags),
+        properties: this.parseProperties(row.properties),
+        createdAt: row.created_at,
+      };
+      this.cache.set(node.id, node);
+      return node;
+    });
   }
 
   // Edge operations
-  addEdge(
+  async addEdge(
     source: string,
     target: string,
     type: EdgeType,
     label: string,
     weight = 1.0
-  ): GraphEdge {
-    if (!this.data.nodes[source] || !this.data.nodes[target]) {
+  ): Promise<GraphEdge> {
+    // 验证节点存在
+    const [sourceNode, targetNode] = await Promise.all([
+      this.getNode(source),
+      this.getNode(target),
+    ]);
+
+    if (!sourceNode || !targetNode) {
       throw new Error(
         `Cannot add edge: node(s) not found (${source} -> ${target})`
       );
     }
+
     const id = crypto.randomUUID().slice(0, 12);
     const edge: GraphEdge = {
       id,
@@ -75,111 +233,306 @@ export class GraphStore {
       weight,
       createdAt: Date.now(),
     };
-    this.data.edges[id] = edge;
-    this.data.adjacency[source] = this.data.adjacency[source] ?? [];
-    this.data.adjacency[target] = this.data.adjacency[target] ?? [];
-    this.data.adjacency[source].push(id);
-    this.data.adjacency[target].push(id);
-    this.scheduleSave();
+
+    await this.adapter.execute(
+      `INSERT INTO kb_graph_edges (id, owner_id, source_id, target_id, type, label, weight, created_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, this.owner, source, target, type, label, weight, edge.createdAt]
+    );
+
+    this.cacheEdges.set(id, edge);
     return edge;
   }
 
-  removeEdge(id: string): boolean {
-    const edge = this.data.edges[id];
-    if (!edge) return false;
-    // Remove from adjacency lists
-    for (const nodeId of [edge.source, edge.target]) {
-      const adj = this.data.adjacency[nodeId];
-      if (adj) {
-        const idx = adj.indexOf(id);
-        if (idx !== -1) adj.splice(idx, 1);
-      }
-    }
-    delete this.data.edges[id];
-    this.scheduleSave();
-    return true;
+  async removeEdge(id: string): Promise<boolean> {
+    const result = await this.adapter.execute(
+      `DELETE FROM kb_graph_edges WHERE id = ? AND owner_id = ?`,
+      [id, this.owner]
+    );
+
+    this.cacheEdges.delete(id);
+    return result.affectedRows > 0;
   }
 
-  getEdge(id: string): GraphEdge | undefined {
-    return this.data.edges[id];
+  async getEdge(id: string): Promise<GraphEdge | undefined> {
+    if (this.cacheEdges.has(id)) return this.cacheEdges.get(id);
+
+    const rows = await this.adapter.query<EdgeRow>(
+      `SELECT * FROM kb_graph_edges WHERE id = ? AND owner_id = ?`,
+      [id, this.owner]
+    );
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+    const edge: GraphEdge = {
+      id: row.id,
+      source: row.source_id,
+      target: row.target_id,
+      type: row.type,
+      label: row.label,
+      weight: row.weight,
+      createdAt: row.created_at,
+    };
+
+    this.cacheEdges.set(id, edge);
+    return edge;
   }
 
-  getEdgesOf(nodeId: string): GraphEdge[] {
-    return (this.data.adjacency[nodeId] ?? [])
-      .map((eid) => this.data.edges[eid])
-      .filter(Boolean) as GraphEdge[];
+  async getEdgesOf(nodeId: string): Promise<GraphEdge[]> {
+    const rows = await this.adapter.query<EdgeRow>(
+      `SELECT * FROM kb_graph_edges WHERE owner_id = ? AND (source_id = ? OR target_id = ?)`,
+      [this.owner, nodeId, nodeId]
+    );
+
+    return rows.map((row) => {
+      const edge: GraphEdge = {
+        id: row.id,
+        source: row.source_id,
+        target: row.target_id,
+        type: row.type,
+        label: row.label,
+        weight: row.weight,
+        createdAt: row.created_at,
+      };
+      this.cacheEdges.set(edge.id, edge);
+      return edge;
+    });
   }
 
-  getEdgesBetween(a: string, b: string): GraphEdge[] {
-    return this.getEdgesOf(a).filter((e) => e.source === b || e.target === b);
+  async getEdgesBetween(a: string, b: string): Promise<GraphEdge[]> {
+    const rows = await this.adapter.query<EdgeRow>(
+      `SELECT * FROM kb_graph_edges 
+       WHERE owner_id = ? AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))`,
+      [this.owner, a, b, b, a]
+    );
+
+    return rows.map((row) => {
+      const edge: GraphEdge = {
+        id: row.id,
+        source: row.source_id,
+        target: row.target_id,
+        type: row.type,
+        label: row.label,
+        weight: row.weight,
+        createdAt: row.created_at,
+      };
+      this.cacheEdges.set(edge.id, edge);
+      return edge;
+    });
   }
 
-  getAllEdges(): GraphEdge[] {
-    return Object.values(this.data.edges);
+  async getAllEdges(): Promise<GraphEdge[]> {
+    const rows = await this.adapter.query<EdgeRow>(
+      `SELECT * FROM kb_graph_edges WHERE owner_id = ?`,
+      [this.owner]
+    );
+
+    return rows.map((row) => {
+      const edge: GraphEdge = {
+        id: row.id,
+        source: row.source_id,
+        target: row.target_id,
+        type: row.type,
+        label: row.label,
+        weight: row.weight,
+        createdAt: row.created_at,
+      };
+      this.cacheEdges.set(edge.id, edge);
+      return edge;
+    });
   }
 
   // Graph queries
-  getNeighbors(nodeId: string): GraphNode[] {
-    const edges = this.getEdgesOf(nodeId);
+  async getNeighbors(nodeId: string): Promise<GraphNode[]> {
+    const edges = await this.getEdgesOf(nodeId);
     const neighborIds = new Set<string>();
     for (const e of edges) {
       if (e.source !== nodeId) neighborIds.add(e.source);
       if (e.target !== nodeId) neighborIds.add(e.target);
     }
-    return [...neighborIds]
-      .map((id) => this.data.nodes[id])
-      .filter(Boolean) as GraphNode[];
+
+    const neighbors: GraphNode[] = [];
+    for (const id of neighborIds) {
+      const node = await this.getNode(id);
+      if (node) neighbors.push(node);
+    }
+    return neighbors;
   }
 
-  getDegree(nodeId: string): number {
-    return (this.data.adjacency[nodeId] ?? []).length;
+  async getDegree(nodeId: string): Promise<number> {
+    const result = await this.adapter.query<CountRow>(
+      `SELECT COUNT(*) as count FROM kb_graph_edges 
+       WHERE owner_id = ? AND (source_id = ? OR target_id = ?)`,
+      [this.owner, nodeId, nodeId]
+    );
+
+    return result[0]?.count ?? 0;
   }
 
-  get nodeCount(): number {
-    return Object.keys(this.data.nodes).length;
+  // Note: These are methods, not getters, because they are async
+  async countNodes(): Promise<number> {
+    const result = await this.adapter.query<CountRow>(
+      `SELECT COUNT(*) as count FROM kb_graph_nodes WHERE owner_id = ?`,
+      [this.owner]
+    );
+
+    return result[0]?.count ?? 0;
   }
 
-  get edgeCount(): number {
-    return Object.keys(this.data.edges).length;
+  async countEdges(): Promise<number> {
+    const result = await this.adapter.query<CountRow>(
+      `SELECT COUNT(*) as count FROM kb_graph_edges WHERE owner_id = ?`,
+      [this.owner]
+    );
+
+    return result[0]?.count ?? 0;
   }
 
-  // Persistence
-  load(): void {
-    if (existsSync(this.storePath)) {
-      try {
-        const raw = readFileSync(this.storePath, "utf-8");
-        this.data = JSON.parse(raw);
-      } catch (err) {
-        console.warn(`[GraphStore] Failed to load ${this.storePath}: ${err instanceof Error ? err.message : String(err)}. Starting with empty graph.`);
-        this.data = { version: 1, nodes: {}, edges: {}, adjacency: {} };
+  // Getter versions for backward compatibility (returns Promise)
+  get nodeCount(): Promise<number> {
+    return this.countNodes();
+  }
+
+  get edgeCount(): Promise<number> {
+    return this.countEdges();
+  }
+
+  /**
+   * 知识图谱节点去重
+   *  - 完全匹配：标签完全相同直接合并
+   *  - 近似匹配：大小写/空格/标点标准化后相同合并
+   *  - 合并策略：保留较早节点，将所有边转移到保留节点
+   */
+  async deduplicateNodes(): Promise<{ merged: number; removed: number }> {
+    let mergedCount = 0;
+    let removedCount = 0;
+
+    // 1. 按标准化标签分组
+    const allNodes = await this.getAllNodes();
+    const labelGroups = new Map<string, string[]>();
+
+    for (const node of allNodes) {
+      const normalized = this.normalizeLabel(node.label);
+      const group = labelGroups.get(normalized);
+      if (!group) {
+        labelGroups.set(normalized, [node.id]);
+      } else {
+        group.push(node.id);
       }
     }
+
+    // 2. 处理每组重复/相似节点
+    for (const [, nodeIds] of labelGroups.entries()) {
+      if (nodeIds.length <= 1) continue;
+
+      // 保留创建时间最早的节点
+      let keepId = nodeIds[0];
+      let keepNode = await this.getNode(keepId);
+
+      for (const nodeId of nodeIds) {
+        const node = await this.getNode(nodeId);
+        if (node && keepNode && node.createdAt < keepNode.createdAt) {
+          keepId = nodeId;
+          keepNode = node;
+        }
+      }
+
+      if (!keepNode) continue;
+
+      // 合并其他节点到保留节点
+      // 先收集所有需要处理的边，避免在遍历过程中修改数据结构
+      const edgesToRemove: string[] = [];
+      const edgesToAdd: Array<{
+        source: string;
+        target: string;
+        type: EdgeType;
+        label: string;
+        weight: number;
+      }> = [];
+
+      for (const removeId of nodeIds) {
+        if (removeId === keepId) continue;
+
+        // 收集需要转移的边
+        const edgesToTransfer = (await this.getAllEdges()).filter(
+          (e) => e.source === removeId || e.target === removeId
+        );
+
+        for (const edge of edgesToTransfer) {
+          const otherEnd = edge.source === removeId ? edge.target : edge.source;
+          const otherNode = await this.getNode(otherEnd);
+          if (!otherNode) {
+            edgesToRemove.push(edge.id);
+            continue;
+          }
+
+          // 检查是否已有相同关系的边，避免重复
+          const existingEdges = await this.getEdgesBetween(keepId, otherEnd);
+          const hasSameRelation = existingEdges.some((e) => e.label === edge.label);
+
+          if (!hasSameRelation) {
+            edgesToAdd.push({
+              source: edge.source === removeId ? keepId : otherEnd,
+              target: edge.target === removeId ? keepId : otherEnd,
+              type: edge.type,
+              label: edge.label,
+              weight: edge.weight,
+            });
+          }
+
+          edgesToRemove.push(edge.id);
+        }
+      }
+
+      // 批量添加新边
+      for (const edgeData of edgesToAdd) {
+        await this.addEdge(
+          edgeData.source,
+          edgeData.target,
+          edgeData.type,
+          edgeData.label,
+          edgeData.weight
+        );
+      }
+
+      // 批量删除旧边
+      for (const edgeId of edgesToRemove) {
+        await this.removeEdge(edgeId);
+      }
+
+      // 批量删除重复节点
+      for (const removeId of nodeIds) {
+        if (removeId === keepId) continue;
+        await this.removeNode(removeId);
+        mergedCount++;
+        removedCount++;
+      }
+    }
+
+    return { merged: mergedCount, removed: removedCount };
   }
 
-  save(): void {
-    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
-    const dir = dirname(this.storePath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const tmp = this.storePath + ".tmp";
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2));
-    renameSync(tmp, this.storePath);
-    this.dirty = false;
+  /**
+   * 标准化标签用于去重
+   * - 小写
+   * - 移除多余空格、标点
+   * - 统一分隔符
+   */
+  private normalizeLabel(label: string): string {
+    return label
+      .toLowerCase()
+      .replace(/[_\-\s]+/g, "_")
+      .replace(/[^a-z0-9\u4e00-\u9fff_]/g, "")
+      .replace(/^_+|_+$/g, "")
+      .trim();
   }
 
-  dispose(): void {
-    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
-    if (this.dirty) this.save();
-  }
-
-  private scheduleSave(): void {
-    this.dirty = true;
-    if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => {
-      this.save();
-    }, 500);
-  }
-
-  toJSON(): GraphData {
-    return this.data;
+  /**
+   * 清空缓存
+   */
+  clearCache(): void {
+    this.cache.clear();
+    this.cacheEdges.clear();
   }
 }

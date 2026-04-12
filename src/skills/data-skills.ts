@@ -10,6 +10,13 @@ import { createHash } from "crypto";
 import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import { getCurrentUserId } from "../user/request-context.js";
+import { isMySQL } from "../db/database.js";
+
+// MySQL adapter helper
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
+  return getAdapter();
+}
 
 // ===== 安全限制 =====
 
@@ -380,29 +387,31 @@ function createUploadSkills(registry: SkillRegistry): void {
   const UPLOAD_DIR = resolve(SAFE_BASE, "uploads");
   mkdirSync(UPLOAD_DIR, { recursive: true });
 
-  // 使用 SQLite 持久化上传元数据
+  // SQLite 上传元数据数据库（仅 SQLite 模式使用）
   let uploadDb: any = null;
-  try {
-    const Database = require("better-sqlite3");
-    const dbPath = resolve(process.cwd(), ".raos", "uploads.db");
-    uploadDb = new Database(dbPath);
-    uploadDb.pragma("journal_mode = WAL");
-    uploadDb.exec(`
-      CREATE TABLE IF NOT EXISTS uploads (
-        id TEXT PRIMARY KEY,
-        original_name TEXT NOT NULL,
-        stored_name TEXT NOT NULL,
-        path TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        mime_type TEXT,
-        uploaded_by TEXT DEFAULT 'system',
-        uploaded_at INTEGER NOT NULL,
-        tags TEXT DEFAULT '[]',
-        description TEXT DEFAULT ''
-      )
-    `);
-  } catch {
-    // better-sqlite3 不可用时退化为纯文件模式
+  if (!isMySQL()) {
+    try {
+      const Database = require("better-sqlite3");
+      const dbPath = resolve(process.cwd(), ".raos", "uploads.db");
+      uploadDb = new Database(dbPath);
+      uploadDb.pragma("journal_mode = WAL");
+      uploadDb.exec(`
+        CREATE TABLE IF NOT EXISTS uploads (
+          id TEXT PRIMARY KEY,
+          original_name TEXT NOT NULL,
+          stored_name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          mime_type TEXT,
+          uploaded_by TEXT DEFAULT 'system',
+          uploaded_at INTEGER NOT NULL,
+          tags TEXT DEFAULT '[]',
+          description TEXT DEFAULT ''
+        )
+      `);
+    } catch {
+      // better-sqlite3 不可用时退化为纯文件模式
+    }
   }
 
   registry.register(
@@ -511,7 +520,12 @@ function createUploadSkills(registry: SkillRegistry): void {
           if (existingByName && mode === "overwrite") {
             const oldPath = join(userUploadDir, existingByName.name);
             try { if (existsSync(oldPath)) unlinkSync(oldPath); } catch { /* ignore */ }
-            if (uploadDb) {
+            if (isMySQL()) {
+              try { 
+                const adapter = await getMySQLAdapter();
+                await adapter.execute("DELETE FROM uploads WHERE stored_name = ?", [existingByName.name]); 
+              } catch { /* ignore */ }
+            } else if (uploadDb) {
               try { uploadDb.prepare("DELETE FROM uploads WHERE stored_name = ?").run(existingByName.name); } catch { /* ignore */ }
             }
           }
@@ -532,7 +546,27 @@ function createUploadSkills(registry: SkillRegistry): void {
           const description = (params.description as string) ?? "";
 
           // 持久化元数据
-          if (uploadDb) {
+          if (isMySQL()) {
+            try {
+              const adapter = await getMySQLAdapter();
+              await adapter.execute(
+                `INSERT INTO uploads (id, original_name, stored_name, path, size, mime_type, uploaded_by, uploaded_at, tags, description)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  id,
+                  filename,
+                  storedName,
+                  relativePath,
+                  buffer.length,
+                  guessMimeType(ext),
+                  (params.uploadedBy as string) ?? "system",
+                  Date.now(),
+                  JSON.stringify(tags),
+                  description,
+                ]
+              );
+            } catch { /* 元数据保存失败不影响文件上传 */ }
+          } else if (uploadDb) {
             try {
               uploadDb.prepare(
                 `INSERT INTO uploads (id, original_name, stored_name, path, size, mime_type, uploaded_by, uploaded_at, tags, description)
@@ -580,8 +614,32 @@ function createUploadSkills(registry: SkillRegistry): void {
         const limit = (params.limit as number) ?? 50;
         const query = params.query as string | undefined;
 
-        // 优先从 SQLite 查询
-        if (uploadDb) {
+        // 优先从数据库查询
+        if (isMySQL()) {
+          try {
+            const adapter = await getMySQLAdapter();
+            let rows: any[];
+            if (query) {
+              rows = await adapter.query(
+                `SELECT * FROM uploads WHERE original_name LIKE ? OR description LIKE ? ORDER BY uploaded_at DESC LIMIT ?`,
+                [`%${query}%`, `%${query}%`, limit]
+              );
+            } else {
+              rows = await adapter.query("SELECT * FROM uploads ORDER BY uploaded_at DESC LIMIT ?", [limit]);
+            }
+
+            return {
+              success: true,
+              data: {
+                files: rows.map((r: any) => ({
+                  ...r,
+                  tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : r.tags ?? [],
+                })),
+                total: rows.length,
+              },
+            };
+          } catch { /* fallback to filesystem */ }
+        } else if (uploadDb) {
           try {
             let rows: any[];
             if (query) {
@@ -633,9 +691,17 @@ function createUploadSkills(registry: SkillRegistry): void {
         }
 
         let storedName: string | undefined;
-        if (id && uploadDb) {
-          const row = uploadDb.prepare("SELECT stored_name FROM uploads WHERE id = ?").get(id) as any;
-          if (row) storedName = row.stored_name;
+        if (id) {
+          if (isMySQL()) {
+            try {
+              const adapter = await getMySQLAdapter();
+              const rows = await adapter.query("SELECT stored_name FROM uploads WHERE id = ?", [id]);
+              if (rows[0]) storedName = rows[0].stored_name;
+            } catch { /* ignore */ }
+          } else if (uploadDb) {
+            const row = uploadDb.prepare("SELECT stored_name FROM uploads WHERE id = ?").get(id) as any;
+            if (row) storedName = row.stored_name;
+          }
         } else if (path) {
           storedName = path.replace(/^uploads\//, "");
         }
@@ -651,7 +717,12 @@ function createUploadSkills(registry: SkillRegistry): void {
 
         try {
           if (existsSync(filePath)) unlinkSync(filePath);
-          if (uploadDb) {
+          if (isMySQL()) {
+            try {
+              const adapter = await getMySQLAdapter();
+              await adapter.execute("DELETE FROM uploads WHERE stored_name = ? OR id = ?", [storedName, id ?? ""]);
+            } catch { /* ignore */ }
+          } else if (uploadDb) {
             uploadDb.prepare("DELETE FROM uploads WHERE stored_name = ? OR id = ?").run(storedName, id ?? "");
           }
           return { success: true, data: { deleted: storedName } };
@@ -990,9 +1061,18 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
           const id = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const userId = getCurrentUserId();
 
-          getDb().prepare(
-            "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
-          ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+          if (isMySQL()) {
+            const adapter = await getMySQLAdapter();
+            await adapter.execute(
+              "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file, created_at) VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+              [id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile]
+            );
+          } else {
+            const { getDb } = await import('../db/database.js');
+            getDb().prepare(
+              "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
+            ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+          }
 
           return {
             success: true,
@@ -1018,8 +1098,6 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
       description: "列出所有可用的 PPTX 主题（包括内置主题和用户自定义主题）。无参数。",
       handler: async (params) => {
         try {
-          const { getDb } = await import("../db/database.js");
-
           // 内置主题
           const builtIn = [
             { name: "business-blue", label: "商务蓝", custom: false },
@@ -1032,7 +1110,14 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
           // 自定义主题
           let custom: any[] = [];
           try {
-            const rows = getDb().prepare("SELECT id, name, colors_json, fonts_json, source_file FROM custom_pptx_themes ORDER BY created_at DESC").all() as any[];
+            let rows: any[];
+            if (isMySQL()) {
+              const adapter = await getMySQLAdapter();
+              rows = await adapter.query("SELECT id, name, colors_json, fonts_json, source_file FROM custom_pptx_themes ORDER BY created_at DESC", []);
+            } else {
+              const { getDb } = await import("../db/database.js");
+              rows = getDb().prepare("SELECT id, name, colors_json, fonts_json, source_file FROM custom_pptx_themes ORDER BY created_at DESC").all() as any[];
+            }
             custom = rows.map((r) => ({
               name: r.id,
               label: r.name,
@@ -1068,10 +1153,18 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
         }
 
         try {
-          const { getDb } = await import("../db/database.js");
-          const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ?").run(themeId);
+          let success = false;
+          if (isMySQL()) {
+            const adapter = await getMySQLAdapter();
+            const result = await adapter.execute("DELETE FROM custom_pptx_themes WHERE id = ?", [themeId]);
+            success = result.affectedRows > 0;
+          } else {
+            const { getDb } = await import("../db/database.js");
+            const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ?").run(themeId);
+            success = result.changes > 0;
+          }
 
-          if (result.changes === 0) {
+          if (!success) {
             return { success: false, error: new Error(`主题不存在: ${themeId}`) };
           }
 

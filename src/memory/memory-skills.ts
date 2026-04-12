@@ -24,8 +24,23 @@ import { getCurrentUserId } from "../user/request-context.js";
 
 /** 可选的引擎引用，用于记忆 Skill 间的递归调用 */
 type EngineRef = {
-  execute: (skillName: string, params: Record<string, unknown>) => Promise<any>;
+  execute: (skillName: string, params: Record<string, unknown>) => Promise<unknown>;
 } | null;
+
+/** LTM 列表默认限制 - 防止内存溢出 */
+const DEFAULT_LTM_LIST_LIMIT = 10000;
+
+/** LTM 条目接口 */
+interface LTMEntry {
+  id: string;
+  key: string;
+  value: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt?: number;
+  accessCount?: number;
+  lastAccessAt?: number;
+}
 
 /** 检查是否可以安全地进行递归调用（防止循环） */
 function canRecurse(context: ExecutionContext, targetSkill: string, maxMemoryDepth: number = 3): boolean {
@@ -174,7 +189,7 @@ export function createMemorySkills(
             if (cached?.data?.found && cached.data.value) {
               return {
                 success: true,
-                data: { query, results: cached.data.value, count: (cached.data.value as any[]).length, cached: true },
+                data: { query, results: cached.data.value, count: Array.isArray(cached.data.value) ? cached.data.value.length : 0, cached: true },
               };
             }
           } catch {
@@ -229,7 +244,7 @@ export function createMemorySkills(
 
         // 对于 Enhanced 后端，优先使用软删除（除非明确指定 hard=true）
         if (isEnhancedBackend(ltm) && !hard) {
-          const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {
@@ -398,7 +413,7 @@ export function createMemorySkills(
         // 对于 Enhanced 后端，添加额外的统计信息
         const extraStats: any = {};
         if (isEnhancedBackend(ltm)) {
-          const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
           const versionChains = new Set(allEntries.map((e) => e.rootId).filter(Boolean)).size;
           const forgottenCount = allEntries.filter((e) => e.forgotten).length;
           const expiredPending = allEntries.filter((e) => e.expiresAt && e.expiresAt <= Date.now() && !e.forgotten).length;
@@ -658,7 +673,7 @@ export function createMemorySkills(
         const { key, includeForgotten } = params as { key: string; includeForgotten?: boolean };
         if (!key) return { success: false, error: new Error("key is required") };
 
-        const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as VersionChainModule.VersionChainEntry[];
         const versions = VersionChainModule.getHistory(key, allEntries, includeForgotten);
 
         return {
@@ -745,7 +760,7 @@ export function createMemorySkills(
 
         const { since, limit = 50, reason } = params as { since?: number; limit?: number; reason?: string };
 
-        const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
         const fm = new ForgettingManager();
         const log = fm.getForgottenLog(allEntries, { since, limit });
 
@@ -791,7 +806,10 @@ export function createMemorySkills(
 
         if (isSupermemoryBackend(ltm)) {
           // Supermemory 后端的实现（向后兼容）
-          const profile = await (ltm as any).getProfile();
+          interface SupermemoryBackend {
+            getProfile: () => Promise<unknown>;
+          }
+          const profile = await (ltm as unknown as SupermemoryBackend).getProfile();
           return { success: true, data: profile };
         }
 
@@ -905,7 +923,7 @@ export function createMemorySkills(
 
         if (isEnhancedBackend(ltm)) {
           // Enhanced 后端：调用 ForgettingManager 的 forget 方法
-          const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {
@@ -925,7 +943,10 @@ export function createMemorySkills(
         if (isSupermemoryBackend(ltm)) {
           // Supermemory 后端（向后兼容）
           const target = id || key!;
-          const forgotten = await (ltm as any).forgetWithReason(target, reason);
+          interface ForgettingBackend {
+            forgetWithReason: (target: string, reason: string) => Promise<unknown>;
+          }
+          const forgotten = await (ltm as unknown as ForgettingBackend).forgetWithReason(target, reason);
           return { success: true, data: { forgotten, reason } };
         }
 
@@ -960,7 +981,7 @@ export function createMemorySkills(
 
         if (isEnhancedBackend(ltm)) {
           // Enhanced 后端：调用 ForgettingManager 的 setExpiration 方法
-          const allEntries = (await ltm.list({ limit: 1000000 })) as any[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {

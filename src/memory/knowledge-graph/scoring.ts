@@ -2,21 +2,24 @@ import type { GraphNode } from "./types.js";
 import type { GraphStore } from "./graph-store.js";
 
 /** Identify top-N nodes by degree (highest connectivity) */
-export function identifyGodNodes(store: GraphStore, topN = 10): GraphNode[] {
-  return store.getAllNodes()
-    .map(n => ({ node: n, degree: store.getDegree(n.id) }))
+export async function identifyGodNodes(store: GraphStore, topN = 10): Promise<GraphNode[]> {
+  const nodes = await store.getAllNodes();
+  const nodesWithDegree = await Promise.all(
+    nodes.map(async (n) => ({ node: n, degree: await store.getDegree(n.id) }))
+  );
+  return nodesWithDegree
     .sort((a, b) => b.degree - a.degree)
     .slice(0, topN)
     .map(x => x.node);
 }
 
 /** Score how "surprising" a node's connections are */
-export function scoreSurprise(node: GraphNode, store: GraphStore): {
+export async function scoreSurprise(node: GraphNode, store: GraphStore): Promise<{
   score: number; reasons: string[];
-} {
+}> {
   let score = 0;
   const reasons: string[] = [];
-  const neighbors = store.getNeighbors(node.id);
+  const neighbors = await store.getNeighbors(node.id);
 
   // 1. Cross-type connections
   const neighborTypes = new Set(neighbors.map(n => n.type));
@@ -33,9 +36,13 @@ export function scoreSurprise(node: GraphNode, store: GraphStore): {
   }
 
   // 3. Peripheral-to-hub (low degree node connected to high degree node)
-  const myDegree = store.getDegree(node.id);
+  const myDegree = await store.getDegree(node.id);
   if (myDegree <= 3) {
-    const hubNeighbors = neighbors.filter(n => store.getDegree(n.id) >= 5);
+    const hubNeighbors = [];
+    for (const n of neighbors) {
+      const degree = await store.getDegree(n.id);
+      if (degree >= 5) hubNeighbors.push(n);
+    }
     if (hubNeighbors.length > 0) {
       score += 2.0;
       reasons.push("peripheral connected to hub");
@@ -43,7 +50,8 @@ export function scoreSurprise(node: GraphNode, store: GraphStore): {
   }
 
   // 4. INFERRED edge bonus
-  const inferredEdges = store.getEdgesOf(node.id).filter(e => e.type === "INFERRED");
+  const edges = await store.getEdgesOf(node.id);
+  const inferredEdges = edges.filter(e => e.type === "INFERRED");
   if (inferredEdges.length > 0) {
     score += inferredEdges.length * 0.3;
     reasons.push(`${inferredEdges.length} inferred connections`);

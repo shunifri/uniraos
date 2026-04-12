@@ -99,7 +99,18 @@ export default function KnowledgeGraphPage() {
     setLoading(true);
     try {
       const data = await api.get<{ nodes: GraphNode[]; edges: GraphEdge[] }>("/api/graph/data");
-      setGraphData(data);
+      // 防御性处理：确保 tags 是数组格式
+      const processedData = {
+        ...data,
+        nodes: data.nodes.map(node => ({
+          ...node,
+          tags: Array.isArray(node.tags) ? node.tags : 
+                typeof node.tags === 'string' ? 
+                  (node.tags.startsWith('[') ? JSON.parse(node.tags) : node.tags.split(',')) : 
+                []
+        }))
+      };
+      setGraphData(processedData);
     } catch (err) {
       message.error(t("error"));
     } finally {

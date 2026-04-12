@@ -4,16 +4,17 @@ import type { GraphStore } from "./graph-store.js";
  * Louvain community detection — pure TypeScript implementation.
  * Assigns communityId to each node in the graph.
  */
-export function detectCommunities(store: GraphStore, options?: {
+export async function detectCommunities(store: GraphStore, options?: {
   maxCommunitySize?: number;  // default 50
   resolution?: number;        // default 1.0
-}): Map<number, string[]> {
+}): Promise<Map<number, string[]>> {
   const _maxSize = options?.maxCommunitySize ?? 50;
-  const nodes = store.getAllNodes();
+  const nodes = await store.getAllNodes();
   if (nodes.length === 0) return new Map();
 
   // Total edge weight (m)
-  const m = store.getAllEdges().reduce((sum, e) => sum + e.weight, 0) || 1;
+  const allEdges = await store.getAllEdges();
+  const m = allEdges.reduce((sum, e) => sum + e.weight, 0) || 1;
 
   // Initialize: each node in its own community
   const nodeCommunity = new Map<string, number>();
@@ -25,7 +26,8 @@ export function detectCommunities(store: GraphStore, options?: {
   // Precompute per-node degree (ki)
   const nodeDegree = new Map<string, number>();
   for (const node of nodes) {
-    nodeDegree.set(node.id, store.getEdgesOf(node.id).reduce((sum, e) => sum + e.weight, 0));
+    const edges = await store.getEdgesOf(node.id);
+    nodeDegree.set(node.id, edges.reduce((sum, e) => sum + e.weight, 0));
   }
 
   // Precompute sigmaTotal per community (sum of all edge weights incident to nodes in community)
@@ -48,13 +50,14 @@ export function detectCommunities(store: GraphStore, options?: {
       const nodeId = node.id;
       const currentComm = nodeCommunity.get(nodeId)!;
       const ki = nodeDegree.get(nodeId)!;
-      const neighbors = store.getNeighbors(nodeId);
+      const neighbors = await store.getNeighbors(nodeId);
 
       if (neighbors.length === 0) continue;
 
       // Compute ki_in for current community and each neighbor community
       const kiInPerComm = new Map<number, number>();
-      for (const edge of store.getEdgesOf(nodeId)) {
+      const nodeEdges = await store.getEdgesOf(nodeId);
+      for (const edge of nodeEdges) {
         const neighborId = edge.source === nodeId ? edge.target : edge.source;
         const neighborComm = nodeCommunity.get(neighborId)!;
         kiInPerComm.set(neighborComm, (kiInPerComm.get(neighborComm) ?? 0) + edge.weight);
@@ -113,7 +116,7 @@ export function detectCommunities(store: GraphStore, options?: {
     result.set(i, sorted[i][1]);
     // Update node communityId
     for (const nodeId of sorted[i][1]) {
-      const storeNode = store.getNode(nodeId);
+      const storeNode = await store.getNode(nodeId);
       if (storeNode) storeNode.communityId = i;
     }
   }

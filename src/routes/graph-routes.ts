@@ -13,29 +13,30 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
   }
 
   // GET /api/graph/data — full graph for visualization
-  router.get("/graph/data", requireAuth, requirePermission("memory.read"), (req, res) => {
+  router.get("/graph/data", requireAuth, requirePermission("memory.read"), async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodes: [], edges: [] }); return; }
-    const data = gm.getStore().toJSON();
-    res.json({
-      nodes: Object.values(data.nodes),
-      edges: Object.values(data.edges),
-    });
+    const store = gm.getStore();
+    const [nodes, edges] = await Promise.all([
+      store.getAllNodes(),
+      store.getAllEdges(),
+    ]);
+    res.json({ nodes, edges });
   });
 
   // GET /api/graph/stats
-  router.get("/graph/stats", requireAuth, requirePermission("memory.read"), (req, res) => {
+  router.get("/graph/stats", requireAuth, requirePermission("memory.read"), async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodeCount: 0, edgeCount: 0 }); return; }
-    res.json(gm.getStats());
+    res.json(await gm.getStats());
   });
 
   // POST /api/graph/query
-  router.post("/graph/query", requireAuth, requirePermission("memory.read"), (req, res) => {
+  router.post("/graph/query", requireAuth, requirePermission("memory.read"), async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodes: [], edges: [], seedNodes: [] }); return; }
     const { query, maxDepth, maxNodes } = req.body;
-    const result = gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
+    const result = await gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
     res.json(result);
   });
 
@@ -53,10 +54,10 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
   });
 
   // POST /api/graph/communities
-  router.post("/graph/communities", requireAuth, requirePermission("memory.read"), (req, res) => {
+  router.post("/graph/communities", requireAuth, requirePermission("memory.read"), async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ communities: [], stats: { count: 0, avgSize: 0 } }); return; }
-    const result = gm.getCommunities();
+    const result = await gm.getCommunities();
     const commList = [...result.communities.entries()].map(([id, nodes]: [number, string[]]) => ({
       id, size: nodes.length, nodes: nodes.slice(0, 20),
     }));

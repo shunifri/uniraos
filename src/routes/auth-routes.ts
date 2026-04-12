@@ -29,6 +29,16 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     const session = await createSession(user.id);
     const details = await userRepo.getUserWithDetails(user.id);
 
+    // Set HttpOnly cookie for better security (token not exposed to JS/history/logs)
+    const msToExpiry = session.expiresAt - Date.now();
+    res.cookie('token', session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: msToExpiry > 0 ? msToExpiry : 7 * 24 * 60 * 60 * 1000, // 1 week default
+      path: '/',
+    });
+
     res.json({
       success: true,
       token: session.token,
@@ -52,9 +62,18 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       let user = await userRepo.getUserByPhone(phone);
 
       if (user) {
-        // 已有用户，直接创建新 session
         const session = await createSession(user.id);
         const details = await userRepo.getUserWithDetails(user.id);
+
+        const msToExpiry = session.expiresAt - Date.now();
+        res.cookie('token', session.token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: msToExpiry > 0 ? msToExpiry : 7 * 24 * 60 * 60 * 1000,
+          path: '/',
+        });
+
         res.json({
           success: true,
           token: session.token,
@@ -76,6 +95,15 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
       const session = await createSession(user.id);
       const details = await userRepo.getUserWithDetails(user.id);
+
+      const msToExpiry = session.expiresAt - Date.now();
+      res.cookie('token', session.token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: msToExpiry > 0 ? msToExpiry : 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+      });
 
       res.json({
         success: true,

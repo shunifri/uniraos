@@ -121,11 +121,11 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: `Invalid model card type: ${cardType}` });
       return;
     }
-    const { type, apiKey, baseUrl, model, maxTokens, temperature, embeddingMode } = req.body;
+    const { type, apiKey, baseUrl, model, maxTokens, temperature, embeddingMode, apiMode } = req.body;
     const existingCards = configManager.getModelCards();
     const existingCard = (existingCards as Record<string, any>)[cardType] ?? {};
     const resolvedApiKey = (!apiKey || apiKey.startsWith("***")) ? existingCard.apiKey : apiKey;
-    configManager.setModelCard(cardType, { type, apiKey: resolvedApiKey, baseUrl, model, maxTokens, temperature, embeddingMode });
+    configManager.setModelCard(cardType, { type, apiKey: resolvedApiKey, baseUrl, model, maxTokens, temperature, embeddingMode, apiMode });
 
     if (cardType === "llm" && type && resolvedApiKey && model) {
       configManager.setLLM({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });

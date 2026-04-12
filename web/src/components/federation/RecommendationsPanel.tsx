@@ -42,10 +42,10 @@ export default function RecommendationsPanel() {
   const loadRecommendations = async () => {
     try {
       setLoading(true);
-      const data = await api.get<Recommendation[]>(
+      const data = await api.get<{ success: boolean; recommendations: Recommendation[] }>(
         "/api/federation/recommendations"
       );
-      setRecommendations(data);
+      setRecommendations(data.recommendations || []);
     } catch (e: any) {
       message.error(e.message || "Failed to load recommendations");
     } finally {

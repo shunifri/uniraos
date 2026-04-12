@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { ShortTermMemory } from "../../src/memory/stm.js";
-import { FileLTMBackend, LongTermMemory } from "../../src/memory/ltm.js";
+import { FileLTMBackend, MySQLLTMBackend, LongTermMemory } from "../../src/memory/ltm.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -108,7 +108,7 @@ describe("LongTermMemory (FileLTMBackend)", () => {
     expect(stats.tags["y"]).toBe(1);
   });
 
-  it("LongTermMemory alias should work", () => {
-    expect(LongTermMemory).toBe(FileLTMBackend);
+  it("LongTermMemory alias should be MySQLLTMBackend", () => {
+    expect(LongTermMemory).toBe(MySQLLTMBackend);
   });
 });

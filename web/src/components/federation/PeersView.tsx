@@ -44,8 +44,8 @@ export default function PeersView() {
   const loadPeers = async () => {
     try {
       setLoading(true);
-      const data = await api.get<Peer[]>("/api/federation/peers");
-      setPeers(data);
+      const data = await api.get<{ success: boolean; peers: Peer[] }>("/api/federation/peers");
+      setPeers(data.peers || []);
     } catch (e: any) {
       message.error(e.message || t("failed_to_load_peers"));
     } finally {

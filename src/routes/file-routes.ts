@@ -3,20 +3,28 @@ import express from "express";
 import { join, dirname } from "path";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream } from "fs";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
-import { getDb } from "../db/database.js";
+import { getDb, isMySQL } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
 import { extractPptxStyle } from "../services/pptx-style-extractor.js";
 import { getKnowledgeBase } from "../skills/knowledge-skills.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
-import { isMySQL } from "../db/database.js";
 import type { RouteDependencies } from "./index.js";
+
+// MySQL adapter helper
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
+  return getAdapter();
+}
 
 const WS_BASE = join(process.cwd(), ".raos", "workspace");
 
 // ===== File parse cache =====
 const fileParseCache = new Map<string, { status: "parsing" | "done" | "error"; content?: string; error?: string; format?: string; tags?: string[]; pageCount?: number }>();
+
+// MAX file size 50MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 function getImageDir(relativePath: string): string {
   const wsBase = join(process.cwd(), ".raos", "workspace");
@@ -299,7 +307,7 @@ async function convertToDocx(md: string): Promise<Buffer> {
     } else if (token.type === "list") {
       for (const item of token.items) {
         children.push(new Paragraph({
-          children: parseInlineTokens(item.tokens?.[0]?.type === "text" ? (item.tokens[0] as any).tokens || item.tokens : item.tokens || [], TextRun),
+          children: parseInlineTokens(item.tokens?.[0]?.type === "text" ? (item.tokens[0].tokens || item.tokens) : item.tokens || [], TextRun),
           bullet: { level: 0 },
           spacing: { after: 60 },
         }));
@@ -397,7 +405,6 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
   }
 
   const content = parsed.content;
-
   const slides = content.split(/\n---\n/).map((s) => s.trim()).filter(Boolean);
 
   for (let si = 0; si < slides.length; si++) {
@@ -429,7 +436,6 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
         if (cells.length > 0) { tableRows.push(cells); inTable = true; }
         continue;
       }
-      inTable = false;
 
       if (!title && /^#{1,3}\s+/.test(trimmed)) {
         title = trimmed.replace(/^#{1,3}\s+/, "");
@@ -474,7 +480,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
     } else {
       if (title) {
         slide.addText(title, {
-          x: 0.6, y: 0.25, w: "88%", h: 0.9,
+          x: 0.6, y: 0.25, w: 88, h: 0.9,
           fontSize: theme.titleSize, bold: true,
           color: theme.titleColor, fontFace: theme.titleFont,
           align: "left", valign: "middle",
@@ -556,6 +562,12 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
   return Buffer.from(arrBuf as ArrayBuffer);
 }
 
+// Ensure uploads directory exists
+const UPLOADS_DIR = join(WS_BASE, "uploads");
+if (!existsSync(UPLOADS_DIR)) {
+  mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
 export function createFileRoutes(deps: RouteDependencies): Router {
   const { engine, getOrchestrator, getVisionConfig } = deps;
   const router = Router();
@@ -575,6 +587,17 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       if (files.length === 0) {
         res.status(400).json({ success: false, error: "未发现文件" });
         return;
+      }
+
+      // 文件大小验证
+      for (const file of files) {
+        if (file.data.length > MAX_FILE_SIZE) {
+          res.status(413).json({
+            success: false,
+            error: `文件 "${file.filename}" 过大，最大允许 ${MAX_FILE_SIZE / 1024 / 1024}MB，实际 ${(file.data.length / 1024 / 1024).toFixed(2)}MB`
+          });
+          return;
+        }
       }
 
       const mode = (req.query.mode as string) || "auto";
@@ -598,66 +621,66 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         }
       }
 
-      res.json({
-        success: true,
-        data: {
-          files: results,
-          message: `已上传 ${results.length} 个文件`,
-        },
-      });
-    } catch (err) {
-      res.status(500).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  });
+       res.json({
+         success: true,
+         data: {
+           files: results,
+           message: `已上传 ${results.length} 个文件`,
+         },
+       });
+     } catch (err) {
+       res.status(500).json({
+         success: false,
+         error: err instanceof Error ? err.message : String(err),
+       });
+     }
+   });
 
-  // File parse status
-  router.get("/upload/parse-status", requireAuth, requirePermission("files.read"), (req, res) => {
-    const path = req.query.path as string;
-    if (!path) {
-      res.status(400).json({ success: false, error: "path required" });
-      return;
-    }
-    const status = fileParseCache.get(path);
-    if (!status) {
-      res.json({ success: true, status: "unknown" });
-    } else {
-      const diskPages = getPageImageList(path);
-      const pageCount = status.pageCount || diskPages.length;
-      res.json({ success: true, ...status, hasPageImages: pageCount > 0, pageCount });
-    }
-  });
+   // Parse status (for async preview)
+   router.get("/upload/parse-status", requireAuth, requirePermission("files.read"), (req, res) => {
+     const path = req.query.path as string;
+     if (!path) {
+       res.status(400).json({ success: false, error: "path required" });
+       return;
+     }
+     const status = fileParseCache.get(path);
+     if (!status) {
+       res.json({ success: true, status: "unknown" });
+     } else {
+       const diskPages = getPageImageList(path);
+       const pageCount = status.pageCount || diskPages.length;
+       res.json({ success: true, ...status, hasPageImages: pageCount > 0, pageCount });
+     }
+   });
 
-  // Parse images
-  router.get("/upload/parse-images", requireAuth, requirePermission("files.read"), (req, res) => {
-    const path = req.query.path as string;
-    const page = req.query.page as string;
-    if (!path) {
-      res.status(400).json({ success: false, error: "path required" });
-      return;
-    }
+   // Parse images
+   router.get("/upload/parse-images", requireAuth, requirePermission("files.read"), (req, res) => {
+     const path = req.query.path as string;
+     const page = req.query.page as string;
+     if (!path) {
+       res.status(400).json({ success: false, error: "path required" });
+       return;
+     }
 
-    const imgDir = getImageDir(path);
+     const imgDir = getImageDir(path);
 
-    if (page) {
-      const imgPath = join(imgDir, `page-${page}.png`);
-      if (!existsSync(imgPath)) {
-        res.status(404).json({ success: false, error: "page not found" });
-        return;
-      }
-      res.setHeader("Content-Type", "image/png");
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      createReadStream(imgPath).pipe(res);
-      return;
-    }
+     if (page) {
+       const imgPath = join(imgDir, `page-${page}.png`);
+       if (!existsSync(imgPath)) {
+         res.status(404).json({ success: false, error: "page not found" });
+         return;
+       }
+       res.setHeader("Content-Type", "image/png");
+       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+       createReadStream(imgPath).pipe(res);
+       return;
+     }
 
-    const pages = getPageImageList(path);
-    res.json({ success: true, pages });
-  });
+     const pages = getPageImageList(path);
+     res.json({ success: true, pages });
+   });
 
-  // List uploaded files
+   // List uploaded files
   router.get("/upload", requireAuth, requirePermission("files.read"), async (_req, res) => {
     try {
       const result = await engine.execute("file_upload_list", {});
@@ -670,23 +693,10 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  // Delete uploaded file
-  router.delete("/upload/:filename", requireAuth, requirePermission("files.write"), async (req, res) => {
-    try {
-      const result = await engine.execute("file_upload_delete", { path: `uploads/${req.params.filename}` });
-      res.json(result);
-    } catch (err) {
-      res.status(500).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  });
-
   // ===== File management API =====
 
   // File tree
-  router.get("/files/tree", requireAuth, requirePermission("files.read"), (req, res) => {
+  router.get("/files/tree", requireAuth, requirePermission("files.read"), async (req, res) => {
 
     interface TreeNode {
       key: string;
@@ -812,11 +822,11 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // KB status for files
-  router.get("/files/kb-status", requireAuth, requirePermission("files.read"), (req, res) => {
+  router.get("/files/kb-status", requireAuth, requirePermission("files.read"), async (req, res) => {
     const userId = req.user?.id || "default";
     try {
       const kb = getKnowledgeBase(userId);
-      const docs = kb.listDocuments();
+      const docs = await kb.listDocuments();
       const kbNames = docs.map((d: any) => d.name);
       const kbDocs: Record<string, { docId: string; vectorized: number; vectorTotal: number; chunkCount: number; status: string }> = {};
       for (const d of docs) {
@@ -862,8 +872,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         permission: string;
       }> = [];
 
-      // 从 upload_records 查询文件信息
-      if (sharedFileIds.length > 0) {
+      // 从 upload_records 查询文件信息 (SQLite only)
+      if (sharedFileIds.length > 0 && !isMySQL()) {
         const db = getDb();
         for (const fileId of sharedFileIds) {
           // 尝试从 upload_records 获取
@@ -1033,7 +1043,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   });
 
   // User documents (aggregate uploads + KB status)
-  router.get("/files/user-documents", requireAuth, requirePermission("files.read"), (req, res) => {
+  router.get("/files/user-documents", requireAuth, requirePermission("files.read"), async (req, res) => {
     const userId = req.user!.id;
     const userUploadDir = join(WS_BASE, "uploads", userId);
 
@@ -1081,7 +1091,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
 
     try {
       const kb = getKnowledgeBase(userId);
-      const docs = kb.listDocuments();
+      const docs = await kb.listDocuments();
       for (const d of docs) {
         let status = "done";
         if (d.chunkCount === 0) status = "parsing";
@@ -1338,7 +1348,7 @@ ${fileList}
   });
 
   // PPTX themes list API
-  router.get("/pptx/themes", requireAuth, requirePermission("files.read"), (req: any, res) => {
+  router.get("/pptx/themes", requireAuth, requirePermission("files.read"), async (req: any, res) => {
     const builtIn = Object.values(PPTX_THEMES).map((t) => ({
       name: t.name, label: t.label, custom: false,
       preview: { bg: t.background, title: t.titleColor, accent: t.accentColor },
@@ -1348,11 +1358,20 @@ ${fileList}
     try {
       const userId = req.user?.id;
       if (userId) {
-        const rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+        let rows: any[];
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          rows = await adapter.query("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC", [userId]);
+        } else {
+          rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+        }
         custom = rows.map((r) => {
           const colors = JSON.parse(r.colors_json);
           return {
-            name: r.id, label: r.name, custom: true,
+            id: r.id,
+            name: r.name,
+            label: r.name,
+            custom: true,
             sourceFile: r.source_file,
             preview: { bg: colors.background || "FFFFFF", title: colors.text || colors.primary, accent: colors.secondary || colors.accent },
           };
@@ -1374,6 +1393,17 @@ ${fileList}
       }
 
       const parts = parseMultipart(req.body as Buffer, boundaryMatch[1]);
+      // 文件大小验证
+      for (const part of parts) {
+        if (part.data.length > MAX_FILE_SIZE) {
+          res.status(413).json({
+            success: false,
+            error: `文件 "${part.filename}" 过大，最大允许 ${MAX_FILE_SIZE / 1024 / 1024}MB`
+          });
+          return;
+        }
+      }
+
       const pptxFile = parts.find((p) => p.filename.toLowerCase().endsWith(".pptx"));
       if (!pptxFile) {
         res.status(400).json({ success: false, error: "请上传 .pptx 文件" });
@@ -1391,9 +1421,17 @@ ${fileList}
         return;
       }
 
-      getDb().prepare(
-        "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        await adapter.execute(
+          "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file, created_at) VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+          [id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile]
+        );
+      } else {
+        getDb().prepare(
+          "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+      }
 
       res.json({
         success: true,
@@ -1412,7 +1450,7 @@ ${fileList}
   });
 
   // Delete custom PPTX theme
-  router.delete("/pptx/themes/:id", requireAuth, requirePermission("files.write"), (req: any, res) => {
+  router.delete("/pptx/themes/:id", requireAuth, requirePermission("files.write"), async (req: any, res) => {
     try {
       const themeId = req.params.id;
       const userId = req.user?.id;
@@ -1421,8 +1459,16 @@ ${fileList}
         return;
       }
 
-      const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
-      if (result.changes === 0) {
+      let success = false;
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const result = await adapter.execute("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?", [themeId, userId]);
+        success = result.affectedRows > 0;
+      } else {
+        const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
+        success = result.changes > 0;
+      }
+      if (!success) {
         res.status(404).json({ success: false, error: "主题不存在或无权删除" });
         return;
       }

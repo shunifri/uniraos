@@ -59,7 +59,7 @@ export async function removeKBFromUserGraph(
 
     // Find and remove document nodes from user's graph
     const store = session.graphManager.getStore();
-    const nodes = store.getAllNodes();
+    const nodes = await store.getAllNodes();
     
     // Remove nodes that reference this document
     for (const node of nodes) {
@@ -67,7 +67,7 @@ export async function removeKBFromUserGraph(
           node.id.includes(`kb_shared_${docId}`) ||
           node.label === `kb:${docName}:chunk0` ||
           node.label.startsWith(`kb:${docName}:`)) {
-        store.removeNode(node.id);
+        await store.removeNode(node.id);
       }
     }
 
@@ -110,7 +110,7 @@ export async function removeKBFromAllGraphs(
   sessionManager: UserSessionManager
 ): Promise<void> {
   // Get all users who might have this document in their graph
-  const allUsers = getAllTenants();
+  const allUsers = await getAllTenants();
   
   // Also include the owner
   if (!allUsers.includes(ownerId)) {
@@ -125,8 +125,9 @@ export async function removeKBFromAllGraphs(
 /**
  * Get all users who have access to a shared KB document
  */
-export function getSharedKBTargetUsers(sharedByUserId: string): string[] {
+export async function getSharedKBTargetUsers(sharedByUserId: string): Promise<string[]> {
   // For now, return all tenants except the owner
   // In a more sophisticated system, this would check share_rules table
-  return getAllTenants().filter((t: string) => t !== sharedByUserId);
+  const tenants = await getAllTenants();
+  return tenants.filter((t: string) => t !== sharedByUserId);
 }

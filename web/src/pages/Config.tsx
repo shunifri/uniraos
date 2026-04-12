@@ -234,11 +234,22 @@ export default function ConfigPage() {
       });
 
       // 加载 Document Mind 配置
-      if (cfg.docMind) {
-        setDocMindConfig(cfg.docMind);
-        docMindForm.setFieldsValue(cfg.docMind);
-      }
-    } catch { /* ignore */ }
+      const docMindDefaults = {
+        enabled: false,
+        accessKeyId: "",
+        accessKeySecret: "",
+        endpoint: "docmind-api.cn-hangzhou.aliyuncs.com",
+        regionId: "cn-hangzhou",
+        multimediaMode: "advance",
+        maxPollingMinutes: 30,
+        pollingIntervalSeconds: 3,
+      };
+      const docMindCfg = cfg.docMind || docMindDefaults;
+      setDocMindConfig(docMindCfg);
+      docMindForm.setFieldsValue(docMindCfg);
+    } catch (err: unknown) { 
+      console.warn('Failed to load docMind config:', err);
+    }
 
     if (isAdmin) {
       try {
@@ -247,11 +258,15 @@ export default function ConfigPage() {
           fedForm.setFieldsValue(fedCfg.config);
           setPeers(fedCfg.config.peers || []);
         }
-      } catch { /* ignore */ }
+      } catch (err: unknown) { 
+        console.warn('Failed to load federation config:', err);
+      }
       try {
         const evoCfg = await api.get<any>("/api/config/evolution-engine");
         if (evoCfg.success) evoForm.setFieldsValue(evoCfg.config);
-      } catch { /* ignore */ }
+      } catch (err: unknown) { 
+        console.warn('Failed to load evolution config:', err);
+      }
     }
   }, [isAdmin, agentForm, fedForm, evoForm, docMindForm]);
 

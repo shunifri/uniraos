@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "skill": {
+      "*": "allow",
+      "superpowers": "allow"
+    }
+  },
+  "agent": {
+    "plan": {
+      "permission": {
+        "skill": {
+          "superpowers": "allow"
+        }
+      },
+      "tools": {
+        "skill": true
+      }
+    },
+    "default": {
+      "permission": {
+        "skill": {
+          "superpowers": "allow"
+        }
+      }
+    }
+  }
+}

@@ -16,6 +16,50 @@ import { resolve, extname, basename, join } from "path";
 import { tmpdir } from "os";
 import { execSync } from "child_process";
 
+/**
+ * 清理 PDF 解析后的文本空格
+ * PDF 解析往往会在字符之间添加空格，需要清理：
+ * 1. 中文字符之间的空格
+ * 2. 连续的单个英文字母之间的空格（如 S k i l l -> Skill）
+ * 3. 中文标点与文字之间的空格
+ */
+function cleanPdfText(text: string): string {
+  if (!text) return text;
+  
+  let cleaned = text;
+  
+  // 1. 处理中文字符之间的空格（执行多次以处理连续空格）
+  for (let i = 0; i < 3; i++) {
+    cleaned = cleaned.replace(/([\u4e00-\u9fff])\s+([\u4e00-\u9fff])/g, "$1$2");
+  }
+  
+  // 2. 处理连续的单个英文字母之间的空格（如 S k i l l -> Skill）
+  // 但保留正常的英文单词之间的空格
+  // 匹配模式：单个字母 + 空格 + 单个字母（连续出现）
+  cleaned = cleaned.replace(/([a-zA-Z])\s+(?=[a-zA-Z])/g, "$1");
+  
+  // 2.1 处理下划线周围的空格（如 navigation _planner -> navigation_planner）
+  cleaned = cleaned.replace(/([a-zA-Z0-9])\s+_/g, "$1_");
+  cleaned = cleaned.replace(/_\s+([a-zA-Z0-9])/g, "_$1");
+  
+  // 2.2 处理数字和标点之间的空格（如 1 . -> 1.）
+  cleaned = cleaned.replace(/(\d)\s+([.])/g, "$1$2");
+  cleaned = cleaned.replace(/([.])\s+(\d)/g, "$1$2");
+  
+  // 3. 处理中文标点与文字之间的空格
+  cleaned = cleaned.replace(/([\u4e00-\u9fff])\s*([，。、；：？！""''（）【】《》])/g, "$1$2");
+  cleaned = cleaned.replace(/([，。、；：？！""''（）【】《》])\s*([\u4e00-\u9fff])/g, "$1$2");
+  
+  // 4. 规范中英文/数字之间的空格（保留单个空格）
+  cleaned = cleaned.replace(/([\u4e00-\u9fff])\s+([a-zA-Z0-9])/g, "$1 $2");
+  cleaned = cleaned.replace(/([a-zA-Z0-9])\s+([\u4e00-\u9fff])/g, "$1 $2");
+  
+  // 5. 清理多余的连续空格（保留最多一个）
+  cleaned = cleaned.replace(/ {2,}/g, " ");
+  
+  return cleaned;
+}
+
 // OCR 系统提示词（对齐 zerox 项目，简洁有效）
 const SYSTEM_PROMPT_BASE = `Convert the following document to markdown.
 Return only the markdown with no explanation text. Do not include delimiters like \`\`\`markdown or \`\`\`html.
@@ -284,33 +328,50 @@ async function ocrImageWithBbox(
 
 /**
  * 将 PDF 逐页转为 PNG 图片（gm convert，保持原始比例）
- * 返回 pageNum → base64 映射
+ * 直接生成到目标目录，不缓存所有base64到内存，减少内存峰值
+ * 返回生成成功的页数集合
  */
-async function generatePageImages(pdfPath: string, pageCount: number): Promise<Map<number, string>> {
+async function generatePageImages(
+  pdfPath: string, 
+  pageCount: number, 
+  outputDir: string
+): Promise<Set<number>> {
   const pLimit = (await import("p-limit")).default;
-  const tempDir = resolve(tmpdir(), `raos-img-${Date.now()}`);
-  mkdirSync(tempDir, { recursive: true });
+  mkdirSync(outputDir, { recursive: true });
   const limit = pLimit(5);
   const pageNumbers = Array.from({ length: pageCount }, (_, i) => i + 1);
-  const imageMap = new Map<number, string>();
+  const successPages = new Set<number>();
 
   await Promise.all(
     pageNumbers.map((pageNum) =>
       limit(async () => {
         try {
-          const outFile = join(tempDir, `page.${pageNum}.png`);
+          const outFile = join(outputDir, `page.${pageNum}.png`);
           execSync(
             `gm convert -density 150 "${pdfPath}[${pageNum - 1}]" -quality 85 "${outFile}"`,
             { timeout: 60_000, stdio: "pipe" },
           );
-          imageMap.set(pageNum, readFileSync(outFile).toString("base64"));
+          if (existsSync(outFile)) {
+            successPages.add(pageNum);
+          }
         } catch {}
       })
     )
   );
 
-  cleanupDir(tempDir);
-  return imageMap;
+  return successPages;
+}
+
+/**
+ * 清理中文文本中的多余空格
+ * 移除中文字符之间的空格，但保留中英文之间的适当空格
+ */
+function cleanChineseSpacing(text: string): string {
+  // 移除中文字符之间的空格
+  // 使用 lookbehind 和 lookahead 来匹配中文字符之间的空格
+  return text
+    .replace(/([\u4e00-\u9fff])\s+([\u4e00-\u9fff])/g, "$1$2")
+    .replace(/([\u4e00-\u9fff])\s+([\u4e00-\u9fff])/g, "$1$2"); // 执行两次以处理连续空格
 }
 
 /**
@@ -405,20 +466,25 @@ async function pdfToVisionOCR(pdfPath: string, visionConfig: VisionModelConfig, 
   const pdfData = await pdfParse(buffer);
   const pageCount = pdfData.numpages;
 
-  // 生成页面图片
-  const imageMap = await generatePageImages(pdfPath, pageCount);
+  // 生成页面图片（临时目录保存，OCR处理后立即清理）
+  const pLimit = (await import("p-limit")).default;
+  const tempDir = resolve(tmpdir(), `raos-ocr-${Date.now()}`);
+  mkdirSync(tempDir, { recursive: true });
+  await generatePageImages(pdfPath, pageCount, tempDir);
 
   // 按顺序 OCR，传递前一页结果保持格式一致性
   const pages: PageResult[] = [];
   let priorPage: string | undefined;
   const pageNumbers = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const limit = pLimit(2);
 
-  for (const pageNum of pageNumbers) {
-    const base64 = imageMap.get(pageNum);
-    if (!base64) {
+  await Promise.all(pageNumbers.map(pageNum => limit(async () => {
+    const imageFile = join(tempDir, `page.${pageNum}.png`);
+    if (!existsSync(imageFile)) {
       pages.push({ page: pageNum, content: "[图片转换失败]" });
-      continue;
+      return;
     }
+    const base64 = readFileSync(imageFile).toString("base64");
     try {
       const { blocks, rawMarkdown } = await ocrImageWithBbox(base64, visionConfig, "image/png", priorPage);
       pages.push({ page: pageNum, content: rawMarkdown, imageBase64: base64, blocks });
@@ -426,9 +492,11 @@ async function pdfToVisionOCR(pdfPath: string, visionConfig: VisionModelConfig, 
     } catch (e: any) {
       pages.push({ page: pageNum, content: `[OCR 失败: ${e.message}]`, imageBase64: base64 });
     }
-  }
+  })));
 
+  // 排序并清理临时目录
   pages.sort((a, b) => a.page - b.page);
+  cleanupDir(tempDir);
   const fullContent = pages.map((p) => p.content).join("\n\n---\n\n");
 
   return {
@@ -495,7 +563,26 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
       pagerender: async (pageData: any) => {
         try {
           const textContent = await pageData.getTextContent();
-          const text = textContent.items.map((item: any) => item.str).join(" ");
+          // 智能连接文本项：中文内容不加空格，英文内容加空格
+          const items = textContent.items.map((item: any) => item.str || "");
+          let text = "";
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (i === 0) {
+              text = item;
+            } else {
+              const prevChar = text.slice(-1);
+              const currChar = item.charAt(0);
+              // 如果前后都是中文字符，不加空格；否则加空格
+              const isPrevCJK = /[\u4e00-\u9fff]/.test(prevChar);
+              const isCurrCJK = /[\u4e00-\u9fff]/.test(currChar);
+              if (isPrevCJK && isCurrCJK) {
+                text += item;
+              } else {
+                text += " " + item;
+              }
+            }
+          }
           pageTexts.push(text);
           return text;
         } catch {
@@ -504,20 +591,33 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
         }
       },
     });
-    pdfText = data.text;
+    // 使用我们自己处理的页面文本，而不是 data.text（data.text 是 pdf-parse 原始提取的）
     pageCount = data.numpages;
     perPageTexts = pageTexts;
+    // 组装完整的 PDF 文本（使用处理后的页面文本）
+    pdfText = pageTexts.join("\n\n");
   } catch (err: any) {
     console.warn(`pdf-parse failed: ${err.message}`);
   }
 
   const quality = assessPdfTextQuality(pdfText, pageCount);
-  console.log(`[doc-parser] PDF quality: ${quality.reason}, avgChars=${Math.round(pdfText.length / Math.max(pageCount, 1))}, pages=${pageCount}`);
+  console.log(`[doc-parser] PDF质量评估: 质量=${quality.reason}, 平均每页字符数=${Math.round(pdfText.length / Math.max(pageCount, 1))}, 总页数=${pageCount}`);
 
   // Step 2: 文本质量好 → 快速路径
   if (quality.isGoodQuality && pageCount > 0) {
     // 后台并行生成页面图片（不阻塞文本处理）
-    const imagePromise = generatePageImages(filePath, pageCount).catch(() => new Map<number, string>());
+    const tempDir = resolve(tmpdir(), `raos-pdf-${Date.now()}`);
+     const imagePromise = (async () => {
+       mkdirSync(tempDir, { recursive: true });
+       const successPages = await generatePageImages(filePath, pageCount, tempDir);
+       const imageMap = new Map<number, string>();
+       for (const pageNum of successPages) {
+         const imageFile = join(tempDir, `page.${pageNum}.png`);
+         imageMap.set(pageNum, readFileSync(imageFile).toString("base64"));
+       }
+       cleanupDir(tempDir);
+       return imageMap;
+     })().catch(() => new Map<number, string>());
 
     // 逐页整理文本
     const pages: PageResult[] = [];
@@ -550,6 +650,7 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
       const img = imageMap.get(p.page);
       if (img) p.imageBase64 = img;
     }
+    cleanupDir(tempDir);
 
     const fullContent = pages.map((p) => p.content).join("\n\n---\n\n");
     return {
@@ -564,11 +665,15 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
   // Step 3: 文本质量差 → 视觉 OCR 回退（扫描件）
   if (visionConfig) {
     try {
-      console.log(`[doc-parser] PDF text quality poor (${quality.reason}), falling back to vision OCR`);
-      return await pdfToVisionOCR(filePath, visionConfig, "pdf");
+      console.log(`[doc-parser] PDF文本质量差(${quality.reason})，使用视觉模型OCR(扫描件)`);
+      const result = await pdfToVisionOCR(filePath, visionConfig, "pdf");
+      console.log(`[doc-parser] 视觉模型OCR完成，内容长度: ${result.content.length}`);
+      return result;
     } catch (err: any) {
-      console.warn(`PDF OCR failed, falling back to raw text: ${err.message}`);
+      console.warn(`[doc-parser] 视觉模型OCR失败，回退到纯文本: ${err.message}`);
     }
+  } else {
+    console.log(`[doc-parser] 无视觉模型配置，回退到纯文本提取`);
   }
   return parsePDFText(filePath);
 }
@@ -624,8 +729,19 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
       const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
       const pdfData = await pdfParse(readFileSync(pdfPath));
-      const images = await generatePageImages(pdfPath, pdfData.numpages);
+      
+      const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
+      mkdirSync(imageTempDir, { recursive: true });
+      const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+      
+      const images = new Map<number, string>();
+      for (const pageNum of successPages) {
+        const imageFile = join(imageTempDir, `page.${pageNum}.png`);
+        images.set(pageNum, readFileSync(imageFile).toString("base64"));
+      }
+      
       cleanupDir(tempDir);
+      cleanupDir(imageTempDir);
       return { images, pageCount: pdfData.numpages };
     } catch {
       return null;
@@ -727,7 +843,7 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
     extractedPages = null;
   }
 
-  // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）
+   // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）
   const imagePromise = (async (): Promise<Map<number, string>> => {
     try {
       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
@@ -736,8 +852,19 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
       const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
       const pdfData = await pdfParse(readFileSync(pdfPath));
-      const images = await generatePageImages(pdfPath, pdfData.numpages);
+      
+      const imageTempDir = resolve(tmpdir(), `raos-ppt-img-${Date.now()}`);
+      mkdirSync(imageTempDir, { recursive: true });
+      const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+      
+      const images = new Map<number, string>();
+      for (const pageNum of successPages) {
+        const imageFile = join(imageTempDir, `page.${pageNum}.png`);
+        images.set(pageNum, readFileSync(imageFile).toString("base64"));
+      }
+      
       cleanupDir(tempDir);
+      cleanupDir(imageTempDir);
       return images;
     } catch {
       return new Map();
@@ -818,20 +945,33 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
 
     // 后台生成页面图片（LibreOffice → PDF → gm），用于引用展示
     let pages: PageResult[] | undefined;
-    try {
-      const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
-      const pdfPath = convertToPDF(filePath, tempDir);
-      // @ts-ignore
-      const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-      const pdfData = await pdfParse(readFileSync(pdfPath));
-      const images = await generatePageImages(pdfPath, pdfData.numpages);
-      cleanupDir(tempDir);
-      pages = Array.from({ length: pdfData.numpages }, (_, i) => ({
-        page: i + 1,
-        content: "",
-        imageBase64: images.get(i + 1),
-      }));
+     try {
+       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
+       const pdfPath = convertToPDF(filePath, tempDir);
+       // @ts-ignore
+       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
+       const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
+       const pdfData = await pdfParse(readFileSync(pdfPath));
+       
+       const imageTempDir = resolve(tmpdir(), `raos-excel-img-${Date.now()}`);
+       mkdirSync(imageTempDir, { recursive: true });
+       const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+       
+       pages = Array.from({ length: pdfData.numpages }, (_, i) => {
+         const pageNum = i + 1;
+         if (!successPages.has(pageNum)) {
+           return { page: pageNum, content: "" };
+         }
+         const imageFile = join(imageTempDir, `page.${pageNum}.png`);
+         return {
+           page: pageNum,
+           content: "",
+           imageBase64: readFileSync(imageFile).toString("base64"),
+         };
+       });
+       
+       cleanupDir(tempDir);
+       cleanupDir(imageTempDir);
       console.log(`[doc-parser] Excel: generated ${pdfData.numpages} page images`);
     } catch (err: any) {
       console.warn(`[doc-parser] Excel image generation failed: ${err.message}`);
@@ -974,6 +1114,18 @@ export async function parseDocument(
   else {
     try { result = parseText(filePath); }
     catch { return { success: false, format: "unknown", content: "", error: `不支持的文件格式: ${ext}` }; }
+  }
+
+  // 解析成功时，清理 PDF 文本空格
+  if (result.success && result.content) {
+    result.content = cleanPdfText(result.content);
+    // 同时清理每个页面的内容
+    if (result.pages) {
+      result.pages = result.pages.map(page => ({
+        ...page,
+        content: cleanPdfText(page.content),
+      }));
+    }
   }
 
   // 解析成功且有视觉模型时，自动提取标签

@@ -71,18 +71,31 @@ ${text}`;
         jsonStr = jsonMatch[1].trim();
       }
 
-      const facts: ExtractedFact[] = JSON.parse(jsonStr);
-
-      // 过滤低置信度
-      return facts.filter(
-        (f) =>
-          f.key &&
-          f.fact &&
-          typeof f.confidence === "number" &&
-          f.confidence >= 0.5 &&
-          Array.isArray(f.tags)
-      );
-    } catch {
+      const parsed = JSON.parse(jsonStr);
+      
+      // 验证解析结果是否为数组
+      if (!Array.isArray(parsed)) {
+        console.warn('[FactExtractor] LLM returned non-array JSON');
+        return [];
+      }
+      
+      // 过滤并验证每个事实
+      const facts: ExtractedFact[] = parsed.filter((f: unknown): f is ExtractedFact => {
+        if (typeof f !== 'object' || f === null) return false;
+        const fact = f as Record<string, unknown>;
+        return (
+          typeof fact.key === 'string' &&
+          typeof fact.fact === 'string' &&
+          typeof fact.confidence === 'number' &&
+          fact.confidence >= 0.5 &&
+          Array.isArray(fact.tags) &&
+          fact.tags.every((t: unknown) => typeof t === 'string')
+        );
+      });
+      
+      return facts;
+    } catch (err: unknown) {
+      console.warn('[FactExtractor] Failed to extract facts:', err);
       return [];
     }
   }

@@ -351,10 +351,14 @@ export class ConfigManager {
 
   /** 检查 Document Mind 是否已配置 */
   isDocMindConfigured(): boolean {
+    // 检查是否启用了 Document Mind 且配置了必要的凭证
+    const docMindConfig = this.config.docMind;
     return !!(
-      this.config.docMind?.enabled &&
-      this.config.docMind?.accessKeyId &&
-      this.config.docMind?.accessKeySecret
+      docMindConfig?.enabled &&
+      docMindConfig?.accessKeyId &&
+      docMindConfig?.accessKeyId.trim().length > 0 &&
+      docMindConfig?.accessKeySecret &&
+      docMindConfig?.accessKeySecret.trim().length > 0
     );
   }
 }

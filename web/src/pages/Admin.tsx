@@ -46,6 +46,32 @@ import {
 import { useI18nStore } from "@/i18n";
 import { api } from "@/api";
 
+// ===== 类型定义 =====
+interface User {
+  id: string;
+  username: string;
+  nickname?: string;
+  email?: string;
+  phone?: string;
+  departmentId?: string;
+  roleIds?: string[];
+  status?: string;
+  createdAt?: string;
+}
+
+interface Department {
+  id: string;
+  name: string;
+  parentId?: string;
+  children?: Department[];
+}
+
+interface Role {
+  id: string;
+  name: string;
+  permissions?: string[];
+}
+
 const { Text } = Typography;
 
 export default function AdminPage() {
@@ -76,20 +102,23 @@ export default function AdminPage() {
 function UsersPanel() {
   const t = useI18nStore((s) => s.t);
   const { message, modal } = App.useApp();
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [editingUser, setEditingUser] = useState<any>(null);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
-  const [depts, setDepts] = useState<any[]>([]);
-  const [roles, setRoles] = useState<any[]>([]);
+  const [depts, setDepts] = useState<Department[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
+    interface UsersResponse { users: User[] }
+    interface DeptsResponse { departments: Department[] }
+    interface RolesResponse { roles: Role[] }
     const [usersR, deptsR, rolesR] = await Promise.all([
-      api.get<any>("/api/users"),
-      api.get<any>("/api/departments"),
-      api.get<any>("/api/roles"),
+      api.get<UsersResponse>("/api/users"),
+      api.get<DeptsResponse>("/api/departments"),
+      api.get<RolesResponse>("/api/roles"),
     ]);
     setUsers(usersR.users || []);
     setDepts(deptsR.departments || []);
@@ -98,24 +127,24 @@ function UsersPanel() {
 
   useEffect(() => { load(); }, []);
 
-  const createUser = async (values: any) => {
+  const createUser = async (values: Omit<User, 'id'>) => {
     try {
       setLoading(true);
       const data = await api.post<any>("/api/users", values);
       if (data.success) { setShowCreate(false); form.resetFields(); load(); }
       else message.error(data.error);
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setLoading(false); }
   };
 
-  const openEditUser = (user: any) => {
+  const openEditUser = (user: User) => {
     setEditingUser(user);
     editForm.setFieldsValue({
       displayName: user.displayName,
       phone: user.phone || "",
       email: user.email || "",
       departmentId: user.departmentId,
-      roleIds: user.roles?.map((r: any) => r.id) || [],
+      roleIds: user.roles?.map((r: Role) => r.id) || [],
       status: user.status,
     });
   };
@@ -127,7 +156,7 @@ function UsersPanel() {
       const data = await api.put<any>("/api/users/" + editingUser.id, values);
       if (data.success) { setEditingUser(null); editForm.resetFields(); load(); }
       else message.error(data.error);
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setLoading(false); }
   };
 
@@ -332,7 +361,7 @@ function DepartmentsPanel() {
       } else {
         message.error(data.error || "创建失败");
       }
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setLoading(false); }
   };
 
@@ -357,7 +386,7 @@ function DepartmentsPanel() {
       } else {
         message.error(data.error || "更新失败");
       }
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setLoading(false); }
   };
 
@@ -370,7 +399,7 @@ function DepartmentsPanel() {
         try {
           await api.del<any>("/api/departments/" + id);
           load();
-        } catch (e: any) { message.error(e.message); }
+        } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
       },
     });
   };
@@ -544,7 +573,9 @@ function RolesPanel() {
         }
       }
       setSkillDescriptions(descMap);
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Admin operation failed:', err);
+    }
   };
 
   useEffect(() => {
@@ -563,7 +594,7 @@ function RolesPanel() {
       } else {
         message.error(data.error || "创建失败");
       }
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setCreateLoading(false); }
   };
 
@@ -576,7 +607,7 @@ function RolesPanel() {
           await api.del<any>("/api/roles/" + id);
           if (selectedRole?.id === id) setSelectedRole(null);
           loadRoles();
-        } catch (e: any) { message.error(e.message); }
+        } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
       },
     });
   };
@@ -599,7 +630,7 @@ function RolesPanel() {
         permissions: rolePermissions,
       });
       message.success("权限已保存");
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setSavePermLoading(false); }
   };
 
@@ -991,7 +1022,9 @@ function EvolutionPanel() {
       setConfig(cfgR.config || {});
       setPending(pendR.pending || []);
       setHistory(histR.history || []);
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Admin operation failed:', err);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -1001,7 +1034,7 @@ function EvolutionPanel() {
       const data = await api.post<any>("/api/evolution/approve/" + id, {});
       if (data.success) { message.success(t("approved")); load(); }
       else message.error(data.error);
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
   };
 
   return (
@@ -1163,7 +1196,9 @@ function FederationPanel() {
   const load = async () => {
     try {
       setStatus(await api.get<any>("/api/federation/status"));
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Admin operation failed:', err);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -1173,7 +1208,7 @@ function FederationPanel() {
       await api.post<any>("/api/execute", { skillName: "evolution_run", params: {} });
       message.success(t("done"));
       load();
-    } catch (e: any) { message.error(e.message); }
+    } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
   };
 
   return (
@@ -1236,7 +1271,9 @@ function PluginsPanel() {
     try {
       const data = await api.get<any>("/api/plugins");
       setPlugins(data.plugins || []);
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Admin operation failed:', err);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -1290,7 +1327,9 @@ function TasksPanel() {
     try {
       const data = await api.get<any>(url);
       setTasks(data.tasks || []);
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Admin operation failed:', err);
+    }
   };
 
   useEffect(() => { load(); }, []);

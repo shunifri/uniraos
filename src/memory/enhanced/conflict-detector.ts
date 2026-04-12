@@ -77,17 +77,30 @@ Return ONLY a valid JSON array. If no contradictions, return an empty array [].`
         jsonStr = jsonMatch[1].trim();
       }
 
-      const conflicts: ConflictInfo[] = JSON.parse(jsonStr);
-
-      // 验证结构
-      return conflicts.filter(
-        (c) =>
-          c.existingId &&
-          c.existingKey &&
-          c.description &&
-          ["low", "medium", "high"].includes(c.severity)
-      );
-    } catch {
+      const parsed = JSON.parse(jsonStr);
+      
+      // 验证解析结果是否为数组
+      if (!Array.isArray(parsed)) {
+        console.warn('[ConflictDetector] LLM returned non-array JSON');
+        return [];
+      }
+      
+      // 验证每个冲突的结构
+      const conflicts: ConflictInfo[] = parsed.filter((c: unknown): c is ConflictInfo => {
+        if (typeof c !== 'object' || c === null) return false;
+        const conflict = c as Record<string, unknown>;
+        return (
+          typeof conflict.existingId === 'string' &&
+          typeof conflict.existingKey === 'string' &&
+          typeof conflict.description === 'string' &&
+          typeof conflict.severity === 'string' &&
+          ['low', 'medium', 'high'].includes(conflict.severity)
+        );
+      });
+      
+      return conflicts;
+    } catch (err: unknown) {
+      console.warn('[ConflictDetector] Failed to detect conflicts:', err);
       return [];
     }
   }

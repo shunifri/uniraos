@@ -36,24 +36,42 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
 
       if (path && !content) {
         const kb = getKnowledgeBase(userId);
-        const docId = kb.createPlaceholder(name, { source: path, tags: tags || [] });
+        const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [] });
         res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
 
+        console.log(`[API] 创建占位符 docId: ${docId}`);
         requestContext.run({ userId }, () => {
+          const kb = getKnowledgeBase(userId);
+          console.log(`[API] 调用 kb_ingest 传入 _placeholderDocId: ${docId}`);
           engine.execute("kb_ingest", {
             name,
             path,
             tags: tags || [],
             owner: userId,
             skipEmbedding: true,
-          }).then((result) => {
+            _placeholderDocId: docId,
+          }).then(async (result) => {
             if (result.success) {
-              const docId = (result.data as any).docId;
-              if (docId) {
-                engine.execute("kb_vectorize", { docId, owner: userId }).catch(() => {});
+              const resultDocId = (result.data as any).docId;
+              if (resultDocId) {
+                engine.execute("kb_vectorize", { docId: resultDocId, owner: userId }).catch(() => {});
               }
+            } else {
+              // 解析失败，标记占位文档为失败
+              console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
+              await kb.updateParsingStatus(docId, {
+                parsingStatus: 'failed',
+                parsingProgress: 0,
+              });
             }
-          }).catch(() => {});
+          }).catch(async (err) => {
+            // 异常失败，标记占位文档为失败
+            console.error(`[kb_ingest] Async ingest threw exception for placeholder ${docId}:`, err);
+            await kb.updateParsingStatus(docId, {
+              parsingStatus: 'failed',
+              parsingProgress: 0,
+            });
+          });
         });
         return;
       }
@@ -131,16 +149,16 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/knowledge/documents/:docId/layouts — Get document layouts and media items
-  router.get("/knowledge/documents/:docId/layouts", requireAuth, requirePermission("knowledge.read"), (req, res) => {
+  router.get("/knowledge/documents/:docId/layouts", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
     try {
       const owner = req.user!.id;
       const docId = String(req.params.docId);
       const kb = getKnowledgeBase(owner);
       
       // Get document data using existing KB methods
-      const layouts = kb.getLayouts(docId);
-      const segments = kb.getSegments(docId);
-      const parsingStatus = kb.getParsingStatus(docId);
+      const layouts = await kb.getLayouts(docId);
+      const segments = await kb.getSegments(docId);
+      const parsingStatus = await kb.getParsingStatus(docId);
       
       // Check if document exists (getParsingStatus returns null if not found)
       if (!parsingStatus) {
@@ -234,13 +252,14 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     const unsubscribe = queue.subscribe(docId, (update: ParsingUpdate) => {
       res.write(`data: ${JSON.stringify(update)}\n\n`);
       
-      // 如果任务完成或失败，关闭连接
+      // 如果任务完成或失败，关闭连接并取消订阅
       if (update.status === 'success' || update.status === 'failed') {
+        unsubscribe(); // 立即取消订阅防止内存泄漏
         res.end();
       }
     });
 
-    // 客户端断开时取消订阅
+    // 客户端断开时取消订阅（防止连接提前关闭导致的内存泄漏）
     req.on('close', () => {
       unsubscribe();
     });

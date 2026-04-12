@@ -29,7 +29,12 @@ export async function authMiddleware(req: Request, _res: Response, next: NextFun
     token = authHeader.slice(7);
   }
 
-  // 2. 回退：从 URL 查询参数 ?token=xxx 取（用于 <img src> 等无法设置 header 的场景）
+  // 2. 回退：从 Cookie 读取 token（更安全，token 不会暴露在 URL/日志中）
+  if (!token && req.cookies?.token) {
+    token = req.cookies.token;
+  }
+
+  // 3. 最后回退：从 URL 查询参数 ?token=xxx 取（用于 <img src> 等无法设置 header/Cookie 的场景）
   if (!token && typeof req.query.token === "string") {
     token = req.query.token;
   }

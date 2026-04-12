@@ -5,7 +5,7 @@
  * 支持语义搜索 + 关键词搜索混合检索，大批量文件优化。
  *
  * 特性：
- *   - 多租户隔离：每个用户拥有独立知识库（独立 SQLite 文件）
+ *   - 多租户隔离：每个用户拥有独立知识库（通过 owner_id 隔离）
  *   - 知识更新：同名/同源文档自动替换旧版本，保留版本历史
  *   - 知识共享：用户可将文档标记为共享，其他用户可检索共享知识
  *
@@ -25,9 +25,11 @@ import type { SkillRegistry } from "../registry/index.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { EmbeddingProvider } from "../memory/embedding-provider.js";
 import { LocalEmbeddingProvider, cosineSimilarity } from "../memory/embedding-provider.js";
+import type { LLMProvider } from "../llm/types.js";
 import { parseDocument, type VisionModelConfig, type PageResult, type OCRBlock } from "../services/doc-parser.js";
-import Database from "better-sqlite3";
-import { join, resolve, dirname } from "path";
+import { getMySQLAdapter, type MySQLAdapter } from "../db/mysql-adapter.js";
+import * as mysql from 'mysql2/promise';
+import { join, resolve, dirname, normalize, sep } from "path";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
 import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } from "../kb-graph-sync.js";
@@ -36,144 +38,158 @@ import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } f
 const PARSER_VERSION = 2;
 import { getCurrentUserId } from "../user/request-context.js";
 
+// ===== 类型定义 =====
+
+/** 文档记录 */
+interface DocRecord {
+  doc_id: string;
+  name: string;
+  source: string;
+  chunk_count: number;
+  total_tokens: number;
+  ingested_at: number;
+  updated_at: number | null;
+  version: number;
+  tags: string;
+  shared: number;
+  content_hash: string;
+  parsed_content: string;
+  layouts_json?: string;
+  segments_json?: string;
+}
+
+/** 简化文档记录（用于查询） */
+interface DocIdRecord {
+  doc_id: string;
+}
+
+/** 文档版本记录 */
+interface DocVersionRecord {
+  version: number;
+  content_hash: string;
+}
+
+/** 文档统计记录 */
+interface DocStatsRecord {
+  chunk_count: number;
+  total_tokens: number;
+  content_hash: string;
+}
+
+/** 块记录 */
+interface ChunkRecord {
+  id: number;
+  doc_id: string;
+  chunk_index: number;
+  content: string;
+  tokens: number;
+  vector: Buffer | null;
+  content_type?: string;
+  page_number?: number | null;
+  bbox_data?: string | null;
+}
+
+/** 关键词记录 */
+interface KeywordRecord {
+  id: number;
+  doc_id: string;
+  docName: string;
+  chunkIndex: number;
+  content: string;
+  page_number: number | null;
+  bbox_data: string | null;
+}
+
+/** 计数记录 */
+interface CountRecord {
+  c: number;
+}
+
+/** 标签计数记录 */
+interface TagCountRecord {
+  tag: string;
+  count: number;
+}
+
+/** 总和记录 */
+interface SumRecord {
+  t: number;
+}
+
+/** 共享文档记录 */
+interface SharedDocRecord {
+  doc_id: string;
+  name: string;
+  shared: number;
+}
+
+/** JSON 布局记录 */
+interface LayoutRecord {
+  layouts_json: string;
+}
+
+/** JSON 段落记录 */
+interface SegmentRecord {
+  segments_json: string;
+}
+
+/** 版面布局 */
+interface Layout {
+  id?: string;
+  uniqueId?: string;
+  page?: number;
+  pageNum?: number;
+  type: string;
+  subType?: string;
+  content?: string;
+  text?: string;
+}
+
+/** 音视频切片 */
+interface Segment {
+  index: number;
+  startTime: number;
+  endTime: number;
+  synopsis?: string;
+  searchableText?: string;
+}
+
 // ===== 知识库核心 =====
 
 export class KnowledgeBase {
-  private db: Database.Database;
+  private adapter: MySQLAdapter;
   private embeddingProvider: EmbeddingProvider;
   private vectorCache: Map<number, number[]> = new Map();
+  private vectorCacheAccessTime: Map<number, number> = new Map(); // LRU tracking
+  private static readonly MAX_VECTOR_CACHE_SIZE = 10000; // 最大缓存向量数（降低到10000约60MB/实例）
   private vectorCacheDirty = true;
+  private vectorCacheLock = false;
+  private vectorCacheWaiters: (() => void)[] = [];
   readonly owner: string;
 
-  constructor(dbPath: string, owner: string, embeddingProvider?: EmbeddingProvider) {
-    mkdirSync(resolve(dbPath, ".."), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
+  constructor(owner: string, embeddingProvider?: EmbeddingProvider) {
+    this.adapter = getMySQLAdapter();
     this.embeddingProvider = embeddingProvider ?? new LocalEmbeddingProvider();
     this.owner = owner;
-    this.initSchema();
-  }
-
-  private initSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS kb_documents (
-        doc_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        source TEXT DEFAULT '',
-        chunk_count INTEGER DEFAULT 0,
-        total_tokens INTEGER DEFAULT 0,
-        ingested_at INTEGER NOT NULL,
-        updated_at INTEGER,
-        version INTEGER DEFAULT 1,
-        tags TEXT DEFAULT '[]',
-        shared INTEGER DEFAULT 0,
-        content_hash TEXT DEFAULT '',
-        parsed_content TEXT DEFAULT ''
-      );
-
-      CREATE TABLE IF NOT EXISTS kb_chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        doc_id TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        tokens INTEGER DEFAULT 0,
-        vector BLOB,
-        FOREIGN KEY (doc_id) REFERENCES kb_documents(doc_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON kb_chunks(doc_id);
-
-      CREATE TABLE IF NOT EXISTS kb_keywords (
-        keyword TEXT NOT NULL,
-        chunk_id INTEGER NOT NULL,
-        tf REAL DEFAULT 0,
-        PRIMARY KEY (keyword, chunk_id),
-        FOREIGN KEY (chunk_id) REFERENCES kb_chunks(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON kb_keywords(keyword);
-
-      CREATE TABLE IF NOT EXISTS kb_versions (
-        doc_id TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        content_hash TEXT NOT NULL,
-        chunk_count INTEGER DEFAULT 0,
-        total_tokens INTEGER DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (doc_id, version)
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_name ON kb_documents(name);
-    `);
-
-    // 迁移：为旧库添加 parsed_content 列
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN parsed_content TEXT DEFAULT ''");
-    } catch {
-      // 列已存在，忽略
-    }
-
-    // 迁移：为 kb_chunks 添加 page_number 和 bbox_data 列
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN page_number INTEGER");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN bbox_data TEXT DEFAULT '[]'");
-    } catch { /* 列已存在 */ }
-
-    // 迁移：Document Mind 相关字段
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN layouts_json TEXT DEFAULT '[]'");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN segments_json TEXT DEFAULT '[]'");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN doc_mind_task_id TEXT");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN parsing_status TEXT DEFAULT 'success'");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN parsing_progress REAL DEFAULT 100");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN media_type TEXT DEFAULT 'document'");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_documents ADD COLUMN duration_ms INTEGER");
-    } catch { /* 列已存在 */ }
-
-    // 迁移：kb_chunks 音视频相关字段
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN segment_index INTEGER");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN time_range TEXT");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN frame_url TEXT");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN asr_text TEXT");
-    } catch { /* 列已存在 */ }
-    try {
-      this.db.exec("ALTER TABLE kb_chunks ADD COLUMN content_type TEXT DEFAULT 'text'");
-    } catch { /* 列已存在 */ }
   }
 
   /** 创建文档占位记录（用于异步解析，立即在列表中显示） */
-  createPlaceholder(docName: string, opts?: { source?: string; tags?: string[] }): string {
+  async createPlaceholder(docName: string, opts?: { source?: string; tags?: string[] }): Promise<string> {
     const source = opts?.source ?? "";
     const tags = opts?.tags ?? [];
-    const existing = this.db.prepare("SELECT doc_id FROM kb_documents WHERE name = ?").get(docName) as any;
-    if (existing) return existing.doc_id;
+    
+    const rows = await this.adapter.query<DocIdRecord>(
+      "SELECT doc_id FROM kb_documents WHERE name = ? AND owner_id = ?",
+      [docName, this.owner]
+    );
+    
+    if (rows.length > 0) return rows[0].doc_id;
 
     const docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    this.db.prepare(
-      "INSERT INTO kb_documents (doc_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, 0, 0, ?, 1, ?, 0, '', '解析中...')",
-    ).run(docId, docName, source, Date.now(), JSON.stringify(tags));
+    await this.adapter.execute(
+      "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?)",
+      [docId, this.owner, docName, source, Date.now(), JSON.stringify(tags), '', '解析中...']
+    );
     return docId;
   }
 
@@ -198,7 +214,11 @@ export class KnowledgeBase {
       : `v${PARSER_VERSION}_${simpleHash(content)}`;
 
     // 检查同名文档是否存在
-    const existing = this.db.prepare("SELECT doc_id, version, content_hash FROM kb_documents WHERE name = ?").get(docName) as any;
+    const existingRows = await this.adapter.query<DocVersionRecord & DocIdRecord>(
+      "SELECT doc_id, version, content_hash FROM kb_documents WHERE name = ? AND owner_id = ?",
+      [docName, this.owner]
+    );
+    const existing = existingRows[0];
 
     let docId: string;
     let version = 1;
@@ -222,16 +242,22 @@ export class KnowledgeBase {
       updated = true;
 
       // 保存旧版本记录
-      const oldDoc = this.db.prepare("SELECT chunk_count, total_tokens, content_hash FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-      this.db.prepare(
-        "INSERT OR REPLACE INTO kb_versions (doc_id, version, content_hash, chunk_count, total_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      ).run(docId, existing.version, oldDoc.content_hash, oldDoc.chunk_count, oldDoc.total_tokens, Date.now());
-
-      // 删除旧的 chunks 和 keywords
-      this.db.prepare("DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)").run(docId);
-      this.db.prepare("DELETE FROM kb_chunks WHERE doc_id = ?").run(docId);
+      const oldDocRows = await this.adapter.query<DocStatsRecord>(
+        "SELECT chunk_count, total_tokens, content_hash FROM kb_documents WHERE doc_id = ?",
+        [docId]
+      );
+      const oldDoc = oldDocRows[0];
+      
+      if (oldDoc) {
+        await this.adapter.execute(
+          "INSERT INTO kb_versions (doc_id, version, content_hash, chunk_count, total_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash), chunk_count = VALUES(chunk_count), total_tokens = VALUES(total_tokens), created_at = VALUES(created_at)",
+          [docId, existing.version, oldDoc.content_hash, oldDoc.chunk_count, oldDoc.total_tokens, Date.now()]
+        );
+      }
     } else {
-      docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // 使用占位符 docId（如果传入），否则生成新的
+      const placeholderDocId = (opts as any)?._placeholderDocId as string | undefined;
+      docId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
     // 智能分块（有 pages + blocks 时使用页码感知分块）
@@ -258,25 +284,37 @@ export class KnowledgeBase {
       }
     }
 
-    // 事务写入
+    // 事务写入（包含删除旧数据、插入新数据，保证原子性）
     let totalTokens = 0;
-    const transaction = this.db.transaction(() => {
+    
+    await this.adapter.transaction(async (connection) => {
+      // 如果是更新，先删除旧的 chunks 和 keywords
       if (updated) {
-        this.db.prepare(
+        await connection.execute(
+          "DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)",
+          [docId]
+        );
+        await connection.execute("DELETE FROM kb_chunks WHERE doc_id = ?", [docId]);
+        await connection.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
+        
+        await connection.execute(
           "UPDATE kb_documents SET chunk_count = ?, total_tokens = 0, updated_at = ?, version = ?, tags = ?, shared = ?, content_hash = ?, source = ?, parsed_content = ? WHERE doc_id = ?",
-        ).run(chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId);
+          [chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId]
+        );
       } else {
-        this.db.prepare(
-          "INSERT INTO kb_documents (doc_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
-        ).run(docId, docName, source, chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, content);
+        await connection.execute(
+          "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+          [docId, this.owner, docName, source, chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
+        );
       }
 
-      const insertChunk = this.db.prepare(
-        "INSERT INTO kb_chunks (doc_id, chunk_index, content, tokens, vector, page_number, bbox_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      );
-      const insertKeyword = this.db.prepare(
-        "INSERT OR REPLACE INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?)",
-      );
+      // 插入标签关联
+      for (const tag of tags) {
+        await connection.execute(
+          "INSERT IGNORE INTO kb_tags (tag, doc_id) VALUES (?, ?)",
+          [tag, docId]
+        );
+      }
 
       for (let i = 0; i < chunks.length; i++) {
         const meta = chunksWithMeta[i];
@@ -287,19 +325,42 @@ export class KnowledgeBase {
           : null;
         const pageNumber = meta?.pageNumber ?? null;
         const bboxData = meta?.bboxes && meta.bboxes.length > 0 ? JSON.stringify(meta.bboxes) : "[]";
-        const result = insertChunk.run(docId, i, chunks[i], tokens, vectorBlob, pageNumber, bboxData);
-        const chunkId = result.lastInsertRowid as number;
+        
+        // 插入 chunk
+        await connection.execute(
+          "INSERT INTO kb_chunks (doc_id, chunk_index, content, tokens, vector, page_number, bbox_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [docId, i, chunks[i], tokens, vectorBlob, pageNumber, bboxData]
+        );
+        
+        // 使用 LAST_INSERT_ID() 获取自增ID
+        const [idRows] = await connection.query<mysql.RowDataPacket[]>("SELECT LAST_INSERT_ID() as id");
+        const chunkId = idRows[0]?.id;
+        
+        if (!chunkId) {
+          console.warn(`[KnowledgeBase] Failed to get chunkId for chunk ${i}`);
+          continue;
+        }
 
+        // 插入关键词
         const keywords = this.extractKeywords(chunks[i]);
         for (const [keyword, tf] of keywords) {
-          insertKeyword.run(keyword, chunkId, tf);
+          try {
+            await connection.execute(
+              "INSERT INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)",
+              [keyword, chunkId, tf]
+            );
+          } catch (e) {
+            console.warn(`[KnowledgeBase] Keyword insert failed: ${e}`);
+          }
         }
       }
 
-      this.db.prepare("UPDATE kb_documents SET total_tokens = ? WHERE doc_id = ?").run(totalTokens, docId);
+      await connection.execute(
+        "UPDATE kb_documents SET total_tokens = ? WHERE doc_id = ?",
+        [totalTokens, docId]
+      );
     });
 
-    transaction();
     this.vectorCacheDirty = true;
 
     return { docId, chunkCount: chunks.length, totalTokens, updated, version };
@@ -307,25 +368,28 @@ export class KnowledgeBase {
 
   /** 对指定文档异步向量化（仅处理 vector 为 null 的 chunks） */
   async vectorizeDoc(docId: string): Promise<{ vectorized: number }> {
-    const rows = this.db.prepare(
+    const rows = await this.adapter.query<{ id: number; content: string }>(
       "SELECT id, content FROM kb_chunks WHERE doc_id = ? AND vector IS NULL",
-    ).all() as Array<{ id: number; content: string }>;
+      [docId]
+    );
 
     if (rows.length === 0) return { vectorized: 0 };
 
     const batchSize = 50;
-    const updateStmt = this.db.prepare("UPDATE kb_chunks SET vector = ? WHERE id = ?");
 
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
       const vectors = await this.embeddingProvider.embed(batch.map((r) => r.content));
-      const txn = this.db.transaction(() => {
+      
+      await this.adapter.transaction(async (connection) => {
         for (let j = 0; j < batch.length; j++) {
           const vectorBlob = Buffer.from(new Float32Array(vectors[j]).buffer);
-          updateStmt.run(vectorBlob, batch[j].id);
+          await connection.execute(
+            "UPDATE kb_chunks SET vector = ? WHERE id = ?",
+            [vectorBlob, batch[j].id]
+          );
         }
       });
-      txn();
     }
 
     this.vectorCacheDirty = true;
@@ -333,10 +397,16 @@ export class KnowledgeBase {
   }
 
   /** 获取文档向量化状态 */
-  getDocVectorStatus(docId: string): { total: number; vectorized: number } {
-    const total = (this.db.prepare("SELECT COUNT(*) as c FROM kb_chunks WHERE doc_id = ?").get(docId) as any).c;
-    const vectorized = (this.db.prepare("SELECT COUNT(*) as c FROM kb_chunks WHERE doc_id = ? AND vector IS NOT NULL").get(docId) as any).c;
-    return { total, vectorized };
+  async getDocVectorStatus(docId: string): Promise<{ total: number; vectorized: number }> {
+    const totalRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(*) as c FROM kb_chunks WHERE doc_id = ?",
+      [docId]
+    );
+    const vectorizedRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(*) as c FROM kb_chunks WHERE doc_id = ? AND vector IS NOT NULL",
+      [docId]
+    );
+    return { total: totalRows[0]?.c ?? 0, vectorized: vectorizedRows[0]?.c ?? 0 };
   }
 
   /** 混合检索（支持限定范围和共享文档） */
@@ -349,7 +419,7 @@ export class KnowledgeBase {
     const threshold = opts?.threshold ?? 0.4;
     const candidateCount = Math.max(limit * 3, 30);
 
-    const keywordResults = this.keywordSearch(query, candidateCount, opts?.docIds, opts?.tags);
+    const keywordResults = await this.keywordSearch(query, candidateCount, opts?.docIds, opts?.tags);
     const semanticResults = await this.semanticSearch(query, candidateCount, opts?.docIds);
 
     // RRF 混合评分 — k=60，keyword 权重 0.4 / semantic 权重 0.6
@@ -393,12 +463,24 @@ export class KnowledgeBase {
     // tag 过滤（如果 keyword 阶段未预过滤）
     if (opts?.tags && opts.tags.length > 0) {
       const tagSet = new Set(opts.tags);
-      results = results.filter((r) => {
-        const doc = this.db.prepare("SELECT tags FROM kb_documents WHERE doc_id = ?").get(r.data.docId) as any;
-        if (!doc) return false;
-        const docTags = JSON.parse(doc.tags ?? "[]") as string[];
-        return docTags.some((t) => tagSet.has(t));
-      });
+      results = await Promise.all(results.map(async (r) => {
+        const docRows = await this.adapter.query<{ tags: string }>(
+          "SELECT tags FROM kb_documents WHERE doc_id = ?",
+          [r.data.docId]
+        );
+        if (docRows.length === 0) return null;
+        // 兼容 MySQL JSON 字段可能直接返回数组
+        let docTags: string[] = [];
+        const tagsRaw = docRows[0].tags;
+        if (Array.isArray(tagsRaw)) {
+          docTags = tagsRaw as string[];
+        } else if (typeof tagsRaw === 'string') {
+          try {
+            docTags = JSON.parse(tagsRaw);
+          } catch { /* ignore */ }
+        }
+        return docTags.some((t) => tagSet.has(t)) ? r : null;
+      })).then(rs => rs.filter((r): r is NonNullable<typeof r> => r !== null));
     }
 
     return results.map((r) => {
@@ -423,12 +505,12 @@ export class KnowledgeBase {
     });
   }
 
-  private keywordSearch(
+  private async keywordSearch(
     query: string,
     limit: number,
     docIds?: string[],
     tags?: string[],
-  ): Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; score: number; shared: number; page_number: number | null; bbox_data: string }> {
+  ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; score: number; shared: number; page_number: number | null; bbox_data: string }>> {
     const queryKeywords = this.extractKeywords(query);
     if (queryKeywords.size === 0) return [];
 
@@ -443,27 +525,32 @@ export class KnowledgeBase {
       FROM kb_keywords k
       JOIN kb_chunks c ON k.chunk_id = c.id
       JOIN kb_documents d ON c.doc_id = d.doc_id
-      WHERE k.keyword IN (${placeholders})
     `;
 
-    const params: any[] = [...keywords];
+    const params: unknown[] = [...keywords];
+
+    // 使用标签关联表 JOIN 来高效过滤（利用索引）
+    if (tags && tags.length > 0) {
+      sql += ` JOIN kb_tags t ON t.doc_id = c.doc_id AND t.tag IN (${tags.map(() => "?").join(",")})`;
+      params.push(...tags);
+    }
+
+    sql += ` WHERE k.keyword IN (${placeholders})`;
 
     if (docIds && docIds.length > 0) {
       sql += ` AND c.doc_id IN (${docIds.map(() => "?").join(",")})`;
       params.push(...docIds);
     }
+    
+    // 添加 owner_id 限制
+    sql += ` AND d.owner_id = ?`;
+    params.push(this.owner);
 
-    if (tags && tags.length > 0) {
-      // JSON tag 过滤下推到 SQL 层
-      const tagConditions = tags.map(() => "d.tags LIKE ?");
-      sql += ` AND (${tagConditions.join(" OR ")})`;
-      params.push(...tags.map((t) => `%"${t}"%`));
-    }
-
+    // DISTINCT 因为一个 doc 可能匹配多个标签，会产生重复行
     sql += ` GROUP BY c.id ORDER BY score DESC LIMIT ?`;
     params.push(limit);
 
-    return this.db.prepare(sql).all(...params) as any[];
+    return this.adapter.query(sql, params);
   }
 
   private async semanticSearch(
@@ -477,7 +564,7 @@ export class KnowledgeBase {
     }
 
     const [queryVector] = await this.embeddingProvider.embed([query]);
-    this.ensureVectorCache();
+    await this.ensureVectorCache();
 
     if (this.vectorCache.size === 0) return [];
 
@@ -487,7 +574,9 @@ export class KnowledgeBase {
     const topK: Array<{ id: number; similarity: number }> = [];
     let heapMin = minSim;
 
-    for (const [chunkId, vector] of this.vectorCache) {
+    for (const [chunkId] of this.vectorCache) {
+      const vector = this.getVector(chunkId);
+      if (!vector) continue;
       const sim = cosineSimilarity(queryVector, vector);
       if (sim <= heapMin && topK.length >= limit) continue;
       if (sim <= minSim) continue;
@@ -527,94 +616,186 @@ export class KnowledgeBase {
       JOIN kb_documents d ON c.doc_id = d.doc_id
       WHERE c.id IN (${placeholders})
     `;
-    const params: any[] = [...ids];
+    const params: unknown[] = [...ids];
 
     if (docIds && docIds.length > 0) {
       sql += ` AND c.doc_id IN (${docIds.map(() => "?").join(",")})`;
       params.push(...docIds);
     }
+    
+    // 添加 owner_id 限制
+    sql += ` AND d.owner_id = ?`;
+    params.push(this.owner);
 
-    const rows = this.db.prepare(sql).all(...params) as any[];
-    const rowMap = new Map(rows.map((r: any) => [r.id, r]));
+    interface ChunkRow {
+      id: number;
+      docId: string;
+      docName: string;
+      chunkIndex: number;
+      content: string;
+      shared: number;
+      page_number: number | null;
+      bbox_data: string;
+    }
+    const rows = await this.adapter.query<ChunkRow>(sql, params);
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
 
     return topK
       .filter((c) => rowMap.has(c.id))
       .map((c) => ({ ...rowMap.get(c.id)!, similarity: c.similarity }));
   }
 
-  private ensureVectorCache(): void {
+  private async ensureVectorCache(): Promise<void> {
+    // 快速路径：缓存已是最新
     if (!this.vectorCacheDirty) return;
+    
+    // 等待锁释放，最多等待 5 分钟，超时强制释放锁避免死锁
+    const startTime = Date.now();
+    const MAX_WAIT_MS = 5 * 60 * 1000; // 5分钟超时
+    while (this.vectorCacheLock) {
+      if (Date.now() - startTime > MAX_WAIT_MS) {
+        console.warn(`[KnowledgeBase] Vector cache lock wait timeout (${MAX_WAIT_MS}ms), forcing unlock`);
+        this.vectorCacheLock = false;
+        break;
+      }
+      await new Promise<void>(resolve => this.vectorCacheWaiters.push(resolve));
+    }
+    
+    // 双重检查：等待期间可能已被其他线程刷新
+    if (!this.vectorCacheDirty) return;
+    
+    // 获取锁
+    this.vectorCacheLock = true;
+    
+    try {
+      this.vectorCache.clear();
+      this.vectorCacheAccessTime.clear();
+      
+      const rows = await this.adapter.query<{ id: number; vector: Buffer }>(
+        "SELECT c.id, c.vector FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE c.vector IS NOT NULL AND d.owner_id = ?",
+        [this.owner]
+      );
 
-    this.vectorCache.clear();
-    const rows = this.db.prepare("SELECT id, vector FROM kb_chunks WHERE vector IS NOT NULL").all() as Array<{ id: number; vector: Buffer }>;
+      for (const row of rows) {
+        if (row.vector && row.vector.length > 0) {
+          const floats = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.length / 4);
+          this.vectorCache.set(row.id, Array.from(floats));
+          this.vectorCacheAccessTime.set(row.id, Date.now());
+          
+          // LRU 淘汰：如果超过最大限制，移除最久未访问的 10%
+          if (this.vectorCache.size > KnowledgeBase.MAX_VECTOR_CACHE_SIZE) {
+            this.evictLRU();
+          }
+        }
+      }
 
-    for (const row of rows) {
-      if (row.vector && row.vector.length > 0) {
-        const floats = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.length / 4);
-        this.vectorCache.set(row.id, Array.from(floats));
+      this.vectorCacheDirty = false;
+    } finally {
+      // 释放锁并通知等待者
+      this.vectorCacheLock = false;
+      const waiters = this.vectorCacheWaiters.splice(0);
+      for (const waiter of waiters) {
+        waiter();
       }
     }
+  }
 
-    this.vectorCacheDirty = false;
+  /** LRU 淘汰：移除最久未访问的 10% 缓存 */
+  private evictLRU(): void {
+    const entries = [...this.vectorCacheAccessTime.entries()]
+      .sort((a, b) => a[1] - b[1]);
+    
+    // 淘汰 10% 最久未访问的
+    const evictCount = Math.ceil(KnowledgeBase.MAX_VECTOR_CACHE_SIZE * 0.1);
+    const toEvict = entries.slice(0, evictCount);
+    
+    for (const [id] of toEvict) {
+      this.vectorCache.delete(id);
+      this.vectorCacheAccessTime.delete(id);
+    }
+  }
+
+  /** 更新访问时间并获取向量 */
+  private getVector(chunkId: number): number[] | undefined {
+    const vector = this.vectorCache.get(chunkId);
+    if (vector) {
+      this.vectorCacheAccessTime.set(chunkId, Date.now());
+      
+      // 如果因为增量添加超过限制，触发淘汰
+      if (this.vectorCache.size > KnowledgeBase.MAX_VECTOR_CACHE_SIZE) {
+        this.evictLRU();
+      }
+    }
+    return vector;
   }
 
   /** 列出文档（增强版筛选） */
-  listDocuments(opts?: { 
+  async listDocuments(opts?: { 
     query?: string; 
     tags?: string[]; 
     sharedOnly?: boolean; 
     limit?: number;
     format?: string;  // 文件格式筛选，如 "pdf", "docx", "md"
-  }): any[] {
+  }): Promise<Array<{ docId: string; id: string; name: string; source: string; chunkCount: number; totalTokens: number; ingestedAt: number; updatedAt: number | null; version: number; tags: string[]; shared: boolean; vectorized: number; vectorTotal: number; format: string }>> {
     const limit = opts?.limit ?? 100;
-    let sql = "SELECT * FROM kb_documents";
-    const conditions: string[] = [];
-    const params: any[] = [];
+    let sql = "SELECT d.* FROM kb_documents d WHERE d.owner_id = ?";
+    const params: unknown[] = [this.owner];
+
+    // 使用标签关联表索引筛选
+    if (opts?.tags && opts.tags.length > 0) {
+      sql += ` AND EXISTS (SELECT 1 FROM kb_tags t WHERE t.doc_id = d.doc_id AND t.tag IN (${opts.tags.map(() => "?").join(",")}))`;
+      params.push(...opts.tags);
+    }
 
     if (opts?.query) {
-      conditions.push("(name LIKE ? OR source LIKE ?)");
+      sql += " AND (d.name LIKE ? OR d.source LIKE ?)";
       params.push(`%${opts.query}%`, `%${opts.query}%`);
     }
     if (opts?.sharedOnly) {
-      conditions.push("shared = 1");
+      sql += " AND d.shared = 1";
     }
     if (opts?.format) {
-      conditions.push("(name LIKE ? OR name LIKE ?)");
+      sql += " AND (d.name LIKE ? OR d.name LIKE ?)";
       params.push(`%.${opts.format}`, `%.${opts.format.toUpperCase()}`);
     }
 
-    if (conditions.length > 0) sql += " WHERE " + conditions.join(" AND ");
-    sql += " ORDER BY ingested_at DESC LIMIT ?";
+    sql += " ORDER BY d.ingested_at DESC LIMIT ?";
     params.push(limit);
 
-    const rows = this.db.prepare(sql).all(...params) as any[];
+    const rows = await this.adapter.query<DocRecord>(sql, params);
 
-    return rows
-      .map((r: any) => {
-        const vs = this.getDocVectorStatus(r.doc_id);
-        const tags = JSON.parse(r.tags ?? "[]");
-        return {
-          docId: r.doc_id,
-          id: r.doc_id,
-          name: r.name,
-          source: r.source,
-          chunkCount: r.chunk_count,
-          totalTokens: r.total_tokens,
-          ingestedAt: r.ingested_at,
-          updatedAt: r.updated_at,
-          version: r.version,
-          tags,
-          shared: r.shared === 1,
-          vectorized: vs.vectorized,
-          vectorTotal: vs.total,
-          format: this.getFileFormat(r.name),
-        };
-      })
-      .filter((doc: any) => {
-        // 标签筛选（后过滤，因为 tags 是 JSON 存储）
-        if (!opts?.tags || opts.tags.length === 0) return true;
-        return opts.tags.some((t) => doc.tags.includes(t));
-      });
+    return await Promise.all(rows.map(async (r) => {
+      const vs = await this.getDocVectorStatus(r.doc_id);
+      // MySQL JSON 字段可能直接返回对象/数组，需要兼容处理
+      let tags: string[] = [];
+      if (r.tags) {
+        if (Array.isArray(r.tags)) {
+          tags = r.tags as string[];
+        } else if (typeof r.tags === 'string') {
+          try {
+            tags = JSON.parse(r.tags);
+          } catch {
+            tags = [];
+          }
+        }
+      }
+      return {
+        docId: r.doc_id,
+        id: r.doc_id,
+        name: r.name,
+        source: r.source,
+        chunkCount: r.chunk_count,
+        totalTokens: r.total_tokens,
+        ingestedAt: r.ingested_at,
+        updatedAt: r.updated_at,
+        version: r.version,
+        tags,
+        shared: r.shared === 1,
+        vectorized: vs.vectorized,
+        vectorTotal: vs.total,
+        format: this.getFileFormat(r.name),
+      };
+    }));
   }
 
   /** 获取文件格式 */
@@ -624,25 +805,21 @@ export class KnowledgeBase {
   }
 
   /** 获取所有标签及其使用次数（按次数降序） */
-  getAllTags(): Array<{ tag: string; count: number }> {
-    const rows = this.db.prepare("SELECT tags FROM kb_documents").all() as any[];
-    const tagCount = new Map<string, number>();
-    
-    for (const row of rows) {
-      const tags: string[] = JSON.parse(row.tags ?? "[]");
-      for (const tag of tags) {
-        tagCount.set(tag, (tagCount.get(tag) || 0) + 1);
-      }
-    }
-
-    return Array.from(tagCount.entries())
-      .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count);
+  async getAllTags(): Promise<Array<{ tag: string; count: number }>> {
+    // 使用标签关联表统计，更高效准确
+    const rows = await this.adapter.query<TagCountRecord>(
+      "SELECT tag, COUNT(*) as count FROM kb_tags WHERE doc_id IN (SELECT doc_id FROM kb_documents WHERE owner_id = ?) GROUP BY tag ORDER BY count DESC",
+      [this.owner]
+    );
+    return rows.map(row => ({ tag: row.tag, count: row.count }));
   }
 
   /** 获取所有文件格式及其数量 */
-  getAllFormats(): Array<{ format: string; count: number }> {
-    const rows = this.db.prepare("SELECT name FROM kb_documents").all() as any[];
+  async getAllFormats(): Promise<Array<{ format: string; count: number }>> {
+    const rows = await this.adapter.query<{ name: string }>(
+      "SELECT name FROM kb_documents WHERE owner_id = ?",
+      [this.owner]
+    );
     const formatCount = new Map<string, number>();
     
     for (const row of rows) {
@@ -656,80 +833,122 @@ export class KnowledgeBase {
   }
 
   /** 获取文档解析内容 */
-  getDocumentContent(docId: string): string | null {
-    const row = this.db.prepare("SELECT parsed_content FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-    return row?.parsed_content || null;
+  async getDocumentContent(docId: string): Promise<string | null> {
+    const rows = await this.adapter.query<{ parsed_content: string }>(
+      "SELECT parsed_content FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
+    return rows[0]?.parsed_content || null;
   }
 
   /** 获取文档基本信息 */
-  getDocument(docId: string): { doc_id: string; name: string; shared: number } | null {
-    const row = this.db.prepare("SELECT doc_id, name, shared FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-    return row || null;
+  async getDocument(docId: string): Promise<{ doc_id: string; name: string; shared: number } | null> {
+    const rows = await this.adapter.query<SharedDocRecord>(
+      "SELECT doc_id, name, shared FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
+    return rows[0] || null;
   }
 
   /** 设置文档共享状态 */
-  setShared(docId: string, shared: boolean): boolean {
-    const result = this.db.prepare("UPDATE kb_documents SET shared = ? WHERE doc_id = ?").run(shared ? 1 : 0, docId);
-    return result.changes > 0;
+  async setShared(docId: string, shared: boolean): Promise<boolean> {
+    const result = await this.adapter.execute(
+      "UPDATE kb_documents SET shared = ? WHERE doc_id = ? AND owner_id = ?",
+      [shared ? 1 : 0, docId, this.owner]
+    );
+    return result.affectedRows > 0;
   }
 
   /** 获取共享文档列表（用于跨租户检索） */
-  getSharedDocIds(): string[] {
-    const rows = this.db.prepare("SELECT doc_id FROM kb_documents WHERE shared = 1").all() as any[];
-    return rows.map((r: any) => r.doc_id);
+  async getSharedDocIds(): Promise<string[]> {
+    const rows = await this.adapter.query<DocIdRecord>(
+      "SELECT doc_id FROM kb_documents WHERE owner_id = ? AND shared = 1",
+      [this.owner]
+    );
+    return rows.map((r) => r.doc_id);
   }
 
   /** 删除文档 */
-  deleteDocument(docId: string): boolean {
-    const exists = this.db.prepare("SELECT 1 FROM kb_documents WHERE doc_id = ?").get(docId);
-    if (!exists) return false;
+  async deleteDocument(docId: string): Promise<boolean> {
+    const exists = await this.adapter.query(
+      "SELECT 1 FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
+    if (exists.length === 0) return false;
 
     // 先删子表（外键依赖），再删父表
-    this.db.prepare("DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)").run(docId);
-    this.db.prepare("DELETE FROM kb_chunks WHERE doc_id = ?").run(docId);
-    this.db.prepare("DELETE FROM kb_versions WHERE doc_id = ?").run(docId);
-    this.db.prepare("DELETE FROM kb_documents WHERE doc_id = ?").run(docId);
+    await this.adapter.execute(
+      "DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)",
+      [docId]
+    );
+    await this.adapter.execute("DELETE FROM kb_chunks WHERE doc_id = ?", [docId]);
+    await this.adapter.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
+    await this.adapter.execute("DELETE FROM kb_versions WHERE doc_id = ?", [docId]);
+    await this.adapter.execute("DELETE FROM kb_documents WHERE doc_id = ?", [docId]);
+    
     this.vectorCacheDirty = true;
     return true;
   }
 
   /** 统计信息 */
-  stats(): any {
-    const docCount = (this.db.prepare("SELECT COUNT(*) as c FROM kb_documents").get() as any).c;
-    const chunkCount = (this.db.prepare("SELECT COUNT(*) as c FROM kb_chunks").get() as any).c;
-    const totalTokens = (this.db.prepare("SELECT COALESCE(SUM(total_tokens), 0) as t FROM kb_documents").get() as any).t;
-    const keywordCount = (this.db.prepare("SELECT COUNT(DISTINCT keyword) as c FROM kb_keywords").get() as any).c;
-    const sharedCount = (this.db.prepare("SELECT COUNT(*) as c FROM kb_documents WHERE shared = 1").get() as any).c;
+  async stats(): Promise<{ owner: string; documentCount: number; sharedCount: number; chunkCount: number; totalTokens: number; vectorCacheSize: number; keywordCount: number; embeddingProvider: string }> {
+    const docCountRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ?",
+      [this.owner]
+    );
+    const chunkCountRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(*) as c FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
+      [this.owner]
+    );
+    const totalTokensRows = await this.adapter.query<SumRecord>(
+      "SELECT COALESCE(SUM(total_tokens), 0) as t FROM kb_documents WHERE owner_id = ?",
+      [this.owner]
+    );
+    const keywordCountRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(DISTINCT k.keyword) as c FROM kb_keywords k JOIN kb_chunks c ON k.chunk_id = c.id JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
+      [this.owner]
+    );
+    const sharedCountRows = await this.adapter.query<CountRecord>(
+      "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ? AND shared = 1",
+      [this.owner]
+    );
 
     return {
       owner: this.owner,
-      documentCount: docCount,
-      sharedCount,
-      chunkCount,
-      totalTokens,
+      documentCount: docCountRows[0]?.c ?? 0,
+      sharedCount: sharedCountRows[0]?.c ?? 0,
+      chunkCount: chunkCountRows[0]?.c ?? 0,
+      totalTokens: totalTokensRows[0]?.t ?? 0,
       vectorCacheSize: this.vectorCache.size,
-      keywordCount,
+      keywordCount: keywordCountRows[0]?.c ?? 0,
       embeddingProvider: this.embeddingProvider.name,
     };
   }
 
   /** 重建向量索引 */
   async rebuildIndex(): Promise<{ chunksProcessed: number }> {
-    const rows = this.db.prepare("SELECT id, content FROM kb_chunks").all() as Array<{ id: number; content: string }>;
+    const rows = await this.adapter.query<{ id: number; content: string }>(
+      "SELECT c.id, c.content FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
+      [this.owner]
+    );
+    
     const batchSize = 50;
     let processed = 0;
-    const updateStmt = this.db.prepare("UPDATE kb_chunks SET vector = ? WHERE id = ?");
 
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
       const vectors = await this.embeddingProvider.embed(batch.map((r) => r.content));
-      const transaction = this.db.transaction(() => {
+      
+      await this.adapter.transaction(async (connection) => {
         for (let j = 0; j < batch.length; j++) {
           const vectorBlob = Buffer.from(new Float32Array(vectors[j]).buffer);
-          updateStmt.run(vectorBlob, batch[j].id);
+          await connection.execute(
+            "UPDATE kb_chunks SET vector = ? WHERE id = ?",
+            [vectorBlob, batch[j].id]
+          );
         }
       });
-      transaction();
+      
       processed += batch.length;
     }
 
@@ -749,61 +968,91 @@ export class KnowledgeBase {
 
   // ===== Document Mind 相关方法 =====
 
-  /** 更新文档解析状态 */
-  updateParsingStatus(
-    docId: string,
-    status: {
-      parsingStatus?: string;
-      parsingProgress?: number;
-      docMindTaskId?: string;
-      mediaType?: string;
-      durationMs?: number;
-    }
-  ): void {
-    const fields: string[] = [];
-    const values: any[] = [];
-    
-    if (status.parsingStatus !== undefined) {
-      fields.push('parsing_status = ?');
-      values.push(status.parsingStatus);
-    }
-    if (status.parsingProgress !== undefined) {
-      fields.push('parsing_progress = ?');
-      values.push(status.parsingProgress);
-    }
-    if (status.docMindTaskId !== undefined) {
-      fields.push('doc_mind_task_id = ?');
-      values.push(status.docMindTaskId);
-    }
-    if (status.mediaType !== undefined) {
-      fields.push('media_type = ?');
-      values.push(status.mediaType);
-    }
+   /** 更新文档解析状态 */
+   async updateParsingStatus(
+     docId: string,
+     status: {
+       parsingStatus?: string;
+       parsingProgress?: number;
+       docMindTaskId?: string;
+       mediaType?: string;
+       durationMs?: number;
+       chunkCount?: number;
+       parsedContent?: string;
+     }
+   ): Promise<void> {
+     const fields: string[] = [];
+     const values: unknown[] = [];
+     
+     if (status.parsingStatus !== undefined) {
+       fields.push('parsing_status = ?');
+       values.push(status.parsingStatus);
+     }
+     if (status.parsingProgress !== undefined) {
+       fields.push('parsing_progress = ?');
+       values.push(status.parsingProgress);
+     }
+     if (status.docMindTaskId !== undefined) {
+       fields.push('doc_mind_task_id = ?');
+       values.push(status.docMindTaskId);
+     }
+     if (status.mediaType !== undefined) {
+       fields.push('media_type = ?');
+       values.push(status.mediaType);
+     }
+     if (status.chunkCount !== undefined) {
+       fields.push('chunk_count = ?');
+       values.push(status.chunkCount);
+     }
     if (status.durationMs !== undefined) {
       fields.push('duration_ms = ?');
       values.push(status.durationMs);
     }
+    if (status.parsedContent !== undefined) {
+      fields.push('parsed_content = ?');
+      values.push(status.parsedContent);
+    }
     
     if (fields.length > 0) {
       values.push(docId);
-      this.db.prepare(`UPDATE kb_documents SET ${fields.join(', ')} WHERE doc_id = ?`).run(...values);
+      values.push(this.owner);
+      await this.adapter.execute(
+        `UPDATE kb_documents SET ${fields.join(', ')} WHERE doc_id = ? AND owner_id = ?`,
+        values
+      );
     }
   }
 
+  /** 更新文档标签 */
+  async updateTags(docId: string, tags: string[]): Promise<void> {
+    await this.adapter.execute(
+      `UPDATE kb_documents SET tags = ? WHERE doc_id = ? AND owner_id = ?`,
+      [JSON.stringify(tags), docId, this.owner]
+    );
+  }
+
   /** 获取文档解析状态 */
-  getParsingStatus(docId: string): {
+  async getParsingStatus(docId: string): Promise<{
     parsingStatus: string;
     parsingProgress: number;
     docMindTaskId: string | null;
     mediaType: string;
     durationMs: number | null;
-  } | null {
-    const row = this.db.prepare(
-      "SELECT parsing_status, parsing_progress, doc_mind_task_id, media_type, duration_ms FROM kb_documents WHERE doc_id = ?"
-    ).get(docId) as any;
+  } | null> {
+    const rows = await this.adapter.query<{
+      parsing_status: string;
+      parsing_progress: number;
+      doc_mind_task_id: string;
+      media_type: string;
+      duration_ms: number;
+    }>(
+      "SELECT parsing_status, parsing_progress, doc_mind_task_id, media_type, duration_ms FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
     
-    if (!row) return null;
+    if (rows.length === 0) return null;
     
+    const row = rows[0];
     return {
       parsingStatus: row.parsing_status || 'success',
       parsingProgress: row.parsing_progress || 100,
@@ -814,47 +1063,128 @@ export class KnowledgeBase {
   }
 
   /** 保存版面数据（增量） */
-  saveLayouts(docId: string, layouts: any[], append: boolean = false): void {
+  async saveLayouts(docId: string, layouts: unknown[], append: boolean = false): Promise<void> {
     if (append) {
-      const existing = this.db.prepare("SELECT layouts_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-      const existingLayouts = existing ? JSON.parse(existing.layouts_json || '[]') : [];
+      const rows = await this.adapter.query<LayoutRecord>(
+        "SELECT layouts_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+        [docId, this.owner]
+      );
+      const existingLayouts = rows.length > 0 ? JSON.parse(rows[0].layouts_json || '[]') : [];
       const allLayouts = [...existingLayouts, ...layouts];
-      this.db.prepare("UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ?")
-        .run(JSON.stringify(allLayouts), docId);
+      await this.adapter.execute(
+        "UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ? AND owner_id = ?",
+        [JSON.stringify(allLayouts), docId, this.owner]
+      );
     } else {
-      this.db.prepare("UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ?")
-        .run(JSON.stringify(layouts), docId);
+      await this.adapter.execute(
+        "UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ? AND owner_id = ?",
+        [JSON.stringify(layouts), docId, this.owner]
+      );
     }
   }
 
   /** 获取版面数据 */
-  getLayouts(docId: string): any[] {
-    const row = this.db.prepare("SELECT layouts_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-    return row ? JSON.parse(row.layouts_json || '[]') : [];
+  async getLayouts(docId: string): Promise<unknown[]> {
+    const rows = await this.adapter.query<LayoutRecord>(
+      "SELECT layouts_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
+    if (rows.length > 0 && rows[0].layouts_json) {
+      try {
+        return JSON.parse(rows[0].layouts_json);
+      } catch (err) {
+        console.warn(`[KnowledgeBase] Failed to parse layouts_json for doc ${docId}, returning empty:`, err);
+        return [];
+      }
+    }
+    return [];
   }
 
   /** 保存音视频切片数据（增量） */
-  saveSegments(docId: string, segments: any[], append: boolean = false): void {
+  async saveSegments(docId: string, segments: unknown[], append: boolean = false): Promise<void> {
     if (append) {
-      const existing = this.db.prepare("SELECT segments_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-      const existingSegments = existing ? JSON.parse(existing.segments_json || '[]') : [];
+      const rows = await this.adapter.query<SegmentRecord>(
+        "SELECT segments_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+        [docId, this.owner]
+      );
+      const existingSegments = rows.length > 0 ? JSON.parse(rows[0].segments_json || '[]') : [];
       const allSegments = [...existingSegments, ...segments];
-      this.db.prepare("UPDATE kb_documents SET segments_json = ? WHERE doc_id = ?")
-        .run(JSON.stringify(allSegments), docId);
+      await this.adapter.execute(
+        "UPDATE kb_documents SET segments_json = ? WHERE doc_id = ? AND owner_id = ?",
+        [JSON.stringify(allSegments), docId, this.owner]
+      );
     } else {
-      this.db.prepare("UPDATE kb_documents SET segments_json = ? WHERE doc_id = ?")
-        .run(JSON.stringify(segments), docId);
+      await this.adapter.execute(
+        "UPDATE kb_documents SET segments_json = ? WHERE doc_id = ? AND owner_id = ?",
+        [JSON.stringify(segments), docId, this.owner]
+      );
     }
   }
 
   /** 获取音视频切片数据 */
-  getSegments(docId: string): any[] {
-    const row = this.db.prepare("SELECT segments_json FROM kb_documents WHERE doc_id = ?").get(docId) as any;
-    return row ? JSON.parse(row.segments_json || '[]') : [];
+  async getSegments(docId: string): Promise<unknown[]> {
+    const rows = await this.adapter.query<SegmentRecord>(
+      "SELECT segments_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+      [docId, this.owner]
+    );
+    if (rows.length > 0 && rows[0].segments_json) {
+      try {
+        return JSON.parse(rows[0].segments_json);
+      } catch (err) {
+        console.warn(`[KnowledgeBase] Failed to parse segments_json for doc ${docId}, returning empty:`, err);
+        return [];
+      }
+    }
+    return [];
+  }
+
+  /** 
+   * 直接插入 chunk（用于增量索引）
+   * 返回插入的 chunk ID
+   */
+  async insertChunkDirect(
+    docId: string,
+    chunkIndex: number,
+    content: string,
+    tokens: number,
+    vector: number[] | null,
+    pageNumber: number | null,
+    bboxData: string
+  ): Promise<number> {
+    const vectorBlob = vector ? Buffer.from(new Float32Array(vector).buffer) : null;
+    
+    const result = await this.adapter.execute(
+      `INSERT INTO kb_chunks 
+       (doc_id, chunk_index, content, tokens, vector, page_number, bbox_data) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [docId, chunkIndex, content, tokens, vectorBlob, pageNumber, bboxData]
+    );
+
+    return result.insertId as number;
+  }
+
+  /** 
+   * 增加文档 chunk 计数和 token 计数
+   */
+  async incrementChunkCount(docId: string, count: number, tokens: number = 0): Promise<void> {
+    await this.adapter.execute(
+      "UPDATE kb_documents SET chunk_count = chunk_count + ?, total_tokens = total_tokens + ? WHERE doc_id = ? AND owner_id = ?",
+      [count, tokens, docId, this.owner]
+    );
+  }
+
+  /**
+   * 插入关键词（用于增量索引）
+   */
+  async insertKeyword(keyword: string, chunkId: number, tf: number): Promise<void> {
+    await this.adapter.execute(
+      "INSERT INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)",
+      [keyword, chunkId, tf]
+    );
   }
 
   /** 保存音视频分块（带 segment 信息） */
-  insertMediaChunk(
+  async insertMediaChunk(
     docId: string,
     chunkIndex: number,
     content: string,
@@ -866,28 +1196,29 @@ export class KnowledgeBase {
       asrText?: string;
       contentType?: string;
     }
-  ): number {
+  ): Promise<number> {
     const vectorBlob = vector ? Buffer.from(new Float32Array(vector).buffer) : null;
     const timeRangeStr = JSON.stringify(metadata.timeRange);
     
-    const result = this.db.prepare(
+    const result = await this.adapter.execute(
       `INSERT INTO kb_chunks 
        (doc_id, chunk_index, content, tokens, vector, segment_index, time_range, frame_url, asr_text, content_type) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      docId,
-      chunkIndex,
-      content,
-      this.estimateTokens(content),
-      vectorBlob,
-      metadata.segmentIndex,
-      timeRangeStr,
-      metadata.frameUrl || null,
-      metadata.asrText || null,
-      metadata.contentType || 'video_segment'
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        docId,
+        chunkIndex,
+        content,
+        this.estimateTokens(content),
+        vectorBlob,
+        metadata.segmentIndex,
+        timeRangeStr,
+        metadata.frameUrl || null,
+        metadata.asrText || null,
+        metadata.contentType || 'video_segment'
+      ]
     );
     
-    return result.lastInsertRowid as number;
+    return result.insertId as number;
   }
 
   // ===== 工具方法 =====
@@ -1033,24 +1364,58 @@ export class KnowledgeBase {
 // ===== 多租户知识库管理 =====
 
 const KB_BASE = join(process.cwd(), ".raos", "knowledge");
-const kbInstances = new Map<string, KnowledgeBase>();
+
+/** LRU 缓存配置：最大 KB 实例数 */
+const MAX_KB_INSTANCES = 10;
+
+/** 
+ * KB 实例缓存，记录最后访问时间
+ * 使用 LRU 策略淘汰最久未使用的实例以控制内存占用
+ */
+interface CachedKB {
+  kb: KnowledgeBase;
+  lastAccessed: number;
+}
+const kbInstances = new Map<string, CachedKB>();
 
 export function getKnowledgeBase(owner: string): KnowledgeBase {
-  if (!kbInstances.has(owner)) {
-    const dbPath = join(KB_BASE, owner, "knowledge.db");
-    const kb = new KnowledgeBase(dbPath, owner, globalEmbeddingProvider ?? undefined);
-    kbInstances.set(owner, kb);
+  // 更新访问时间
+  if (kbInstances.has(owner)) {
+    const cached = kbInstances.get(owner)!;
+    cached.lastAccessed = Date.now();
+    return cached.kb;
   }
-  return kbInstances.get(owner)!;
+
+  // 如果超过最大实例数，淘汰最久未使用的
+  if (kbInstances.size >= MAX_KB_INSTANCES) {
+    let oldestOwner: string | null = null;
+    let oldestTime = Infinity;
+    for (const [key, value] of kbInstances.entries()) {
+      if (value.lastAccessed < oldestTime) {
+        oldestTime = value.lastAccessed;
+        oldestOwner = key;
+      }
+    }
+    if (oldestOwner) {
+      console.log(`[KnowledgeBase] LRU淘汰最久未使用实例: ${oldestOwner} (LRU cache size: ${kbInstances.size})`);
+      kbInstances.delete(oldestOwner);
+    }
+  }
+
+  // 创建新实例
+  const kb = new KnowledgeBase(owner, globalEmbeddingProvider ?? undefined);
+  kbInstances.set(owner, { kb, lastAccessed: Date.now() });
+  return kb;
 }
 
 /** 获取所有租户列表 */
-export function getAllTenants(): string[] {
-  mkdirSync(KB_BASE, { recursive: true });
+export async function getAllTenants(): Promise<string[]> {
   try {
-    return readdirSync(KB_BASE).filter((name) => {
-      return existsSync(join(KB_BASE, name, "knowledge.db"));
-    });
+    const adapter = getMySQLAdapter();
+    const rows = await adapter.query<{ owner_id: string }>(
+      "SELECT DISTINCT owner_id FROM kb_documents"
+    );
+    return rows.map((r) => r.owner_id);
   } catch {
     return [];
   }
@@ -1094,12 +1459,12 @@ async function searchShared(
   excludeOwner: string,
   limit: number,
 ): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; owner: string; source: "shared" }>> {
-  const tenants = getAllTenants().filter((t) => t !== excludeOwner);
+  const tenants = (await getAllTenants()).filter((t) => t !== excludeOwner);
   const allResults: any[] = [];
 
   for (const tenant of tenants) {
     const kb = getKnowledgeBase(tenant);
-    const sharedDocIds = kb.getSharedDocIds();
+    const sharedDocIds = await kb.getSharedDocIds();
     if (sharedDocIds.length === 0) continue;
 
     const results = await kb.search(query, { limit, docIds: sharedDocIds });
@@ -1140,6 +1505,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
           chunkSize: { type: "number", description: "Maximum tokens per chunk (default: 500)" },
           chunkOverlap: { type: "number", description: "Token overlap between chunks (default: 50)" },
+          _placeholderDocId: { type: "string", description: "Internal: placeholder document ID for async parsing" },
+          _skipQueue: { type: "boolean", description: "Internal: skip Document Mind queue and use local parsing" },
         },
       },
       handler: async (params) => {
@@ -1155,7 +1522,10 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
         if (path && !content) {
           const fullPath = resolve(WORKSPACE_BASE, path);
-          if (!fullPath.startsWith(WORKSPACE_BASE)) {
+          // 跨平台安全路径检查：normalize并确保分隔符一致
+          const normalizedFullPath = normalize(fullPath).replace(/\\/g, '/');
+          const normalizedBase = normalize(WORKSPACE_BASE).replace(/\\/g, '/');
+          if (!normalizedFullPath.startsWith(normalizedBase + '/') && normalizedFullPath !== normalizedBase) {
             return { success: false, error: new Error("路径安全违规") };
           }
           if (!existsSync(fullPath)) {
@@ -1164,40 +1534,127 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
           // 计算原始文件 hash（用于精确去重）
           const rawFileHash = createHash("md5").update(readFileSync(fullPath)).digest("hex");
-          (params as any)._fileHash = rawFileHash;
+          (params as IngestParamsExtension)._fileHash = rawFileHash;
+
+           // 优先尝试使用 Document Mind ParsingQueue（如果已配置）
+            const ext = fullPath.substring(fullPath.lastIndexOf(".")).toLowerCase();
+            console.log(`[kb_ingest] 开始解析文件: ${path}, 文件类型: ${ext}`);
+            const { getParsingQueue } = await import("../services/parsing-queue.js");
+            const queue = getParsingQueue();
+            const binaryExts = [".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".pdf"];
+            const skipQueue = (params as any)._skipQueue;
+
+            // 如果 _skipQueue = true（降级解析），强制跳过队列直接本地解析
+            if (!skipQueue && queue && binaryExts.includes(ext)) {
+             // 使用 Document Mind 异步解析队列
+             console.log(`[kb_ingest] 文件 ${path} 符合二进制文件类型，使用 Document Mind 解析队列`);
+             const docNameForQueue = docName || path.split("/").pop() || `doc_${Date.now()}`;
+             const tags = (params.tags as string[]) ?? [];
+
+             // 使用占位符 docId（如果传入），避免重复创建文档
+             // 如果已经有占位符（异步上传路径），不返回queued，继续本地解析 fallback
+             const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
+             console.log(`[kb_ingest] placeholderDocId: ${placeholderDocId}, params: ${JSON.stringify({ name: params.name, path: params.path, owner: params.owner })}`);
+             const taskDocId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+             console.log(`[kb_ingest] taskDocId: ${taskDocId}`);
+
+             try {
+               const task = await queue.addTask(
+                 taskDocId,
+                 docNameForQueue,
+                 fullPath,
+                 owner,
+                 { tags }
+               );
+               const docId = task.docId;
+
+               if (!placeholderDocId) {
+                 // 非占位模式（同步上传）才返回queued
+                 return {
+                   success: true,
+                   data: {
+                     docId,
+                     queued: true,
+                     message: "文档已加入 Document Mind 解析队列",
+                   },
+                 };
+               }
+               // 如果已有占位符（后台异步上传）
+               // 队列已经开始处理，任务会在后台完成，不需要继续本地解析
+               // 队列会处理，如果 Document Mind 失败自动降级本地解析
+               console.log(`[kb_ingest] Document Mind 解析队列已启动，处理占位文档: ${docId}`);
+
+               // 直接返回，让前端轮询
+               return {
+                 success: true,
+                 data: {
+                   docId,
+                   queued: true,
+                   message: "文档已加入 Document Mind 解析队列",
+                 },
+               };
+             } catch (queueError: any) {
+               console.warn(`[kb_ingest] Document Mind 队列处理失败，降级到本地解析: ${queueError.message}`);
+               // Fall through to local parsing
+             }
+           }
+
+          // 本地解析（Fallback）
+          // 音视频文档必须启用 Document Mind，不允许本地解析
+          const mediaExts = ['mp3', 'wav', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4a', 'aac', 'ogg'];
+          const fileExt = (params.name || params.path || '').split('.').pop()?.toLowerCase() || '';
+          if (mediaExts.includes(fileExt)) {
+            console.error(`[kb_ingest] 音视频文档必须启用 Document Mind: ${fileExt}`);
+            return {
+              success: false,
+              error: '音视频文档必须启用 Document Mind 进行解析',
+              queued: false,
+            };
+          }
+
+          console.log(`[kb_ingest] 开始本地解析文件: ${path}`);
 
           // 获取已有标签列表，避免 AI 重复生成
-          const existingTags = kb.getAllTags().map(t => t.tag);
+          const existingTags = (await kb.getAllTags()).map(t => t.tag);
+          console.log(`[kb_ingest] 已存在的标签列表: ${JSON.stringify(existingTags)}`);
 
           // 使用 parseDocument 统一解析（支持视觉 OCR + 自动标签提取，传入已有标签）
           const parseResult = await parseDocument(fullPath, globalVisionConfig, existingTags);
           if (parseResult.success) {
+            console.log(`[kb_ingest] 本地解析成功，内容长度: ${parseResult.content.length}, 页数: ${parseResult.pages?.length}`);
             content = parseResult.content;
+
             // 保存页面图片（用于双视图查看）
             const pageImages = parseResult.pages?.filter((p) => p.imageBase64).map((p) => ({ page: p.page, imageBase64: p.imageBase64! })) || [];
             if (pageImages.length > 0) {
+              console.log(`[kb_ingest] 保存页面图片: ${pageImages.length} 页`);
               // docId 还没生成，先暂存，后面 ingest 成功后再保存
-              (params as any)._pageImages = pageImages;
+              (params as IngestParamsExtension)._pageImages = pageImages;
             }
+
             // 暂存 pages（含 blocks + bbox）用于页码感知分块
             if (parseResult.pages && parseResult.pages.length > 0) {
-              (params as any)._parsePages = parseResult.pages;
+              console.log(`[kb_ingest] 暂存页面数据（页码感知分块）: ${parseResult.pages.length} 页`);
+              (params as IngestParamsExtension)._parsePages = parseResult.pages;
             }
+
             // 合并自动提取的标签和用户标签（去重）
             if (parseResult.tags && parseResult.tags.length > 0) {
+              console.log(`[kb_ingest] 自动提取标签: ${JSON.stringify(parseResult.tags)}`);
               const userTags = (params.tags as string[]) ?? [];
               const allTags = [...new Set([...userTags, ...parseResult.tags])];
               params.tags = allTags;
+              console.log(`[kb_ingest] 合并后标签: ${JSON.stringify(params.tags)}`);
             }
           } else {
+            console.error(`[kb_ingest] 本地解析失败: ${parseResult.error}`);
             // 二进制格式（xlsx/docx/pptx/pdf）解析失败时不回退到纯文本读取（会产生乱码）
-            const binaryExts = [".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".pdf"];
-            const ext = fullPath.substring(fullPath.lastIndexOf(".")).toLowerCase();
             if (binaryExts.includes(ext)) {
               return { success: false, error: new Error(`文件解析失败: ${parseResult.error}`) };
             }
             // 纯文本格式回退
             try {
+              console.log(`[kb_ingest] 回退到纯文本读取`);
               content = readFileSync(fullPath, "utf-8");
             } catch {
               return { success: false, error: new Error(`文件解析失败: ${parseResult.error}`) };
@@ -1213,9 +1670,11 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         if (!docName) docName = `doc_${Date.now()}`;
 
         try {
+          console.log(`[kb_ingest] 开始调用知识库 ingest，文档名: ${docName}, 内容长度: ${content.length}`);
           // 传递 pages（含 blocks + bbox）给 ingest 用于页码感知分块
-          const parsePages = (params as any)._parsePages as PageResult[] | undefined;
-          const fileHash = (params as any)._fileHash as string | undefined;
+          const parsePages = (params as IngestParamsExtension)._parsePages;
+          const fileHash = (params as IngestParamsExtension)._fileHash;
+          console.log(`[kb_ingest] 调用知识库 ingest，标签: ${JSON.stringify(params.tags)}, 页码感知分块页数: ${parsePages?.length}`);
           const result = await kb.ingest(docName, content, {
             source: path ?? "direct_input",
             tags: (params.tags as string[]) ?? [],
@@ -1225,58 +1684,123 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             pages: parsePages,
             fileHash,
           });
+          console.log(`[kb_ingest] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}, totalTokens: ${result.totalTokens}, 是否更新: ${result.updated}`);
 
           const action = result.updated ? "更新" : "导入";
           // 保存页面图片
-          const pageImages = (params as any)._pageImages as Array<{ page: number; imageBase64: string }> | undefined;
+          const pageImages = (params as IngestParamsExtension)._pageImages;
           if (pageImages && pageImages.length > 0 && result.docId) {
             try { saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
           }
 
-          // 将文档同步到知识图谱（非致命）
-          if (sessionManager && result.docId) {
-            try {
-              const session = sessionManager.getOrCreate(owner);
-              const graphManager = (session as any).graphManager;
-              if (graphManager) {
-                // 1. 同步文档节点
-                await graphManager.onFactStored({
-                  id: `kb_doc_${result.docId}`,
-                  key: `kb:${docName}`,
-                  value: `Knowledge base document: ${docName}`,
-                  tags: ['kb_document', (docName!.split('.').pop() || 'doc')],
-                });
+           // 将文档同步到知识图谱（非致命）
+           if (sessionManager && result.docId) {
+             console.log(`[kb_ingest] 开始同步文档到知识图谱，docId: ${result.docId}`);
+             try {
+               const session = sessionManager.getOrCreate(owner);
+               const sessionWithGraph = session as unknown as SessionWithGraphManager;
+               const graphManager = sessionWithGraph.graphManager;
+               const llmProvider = sessionWithGraph.llmProvider;
+               console.log(`[kb_ingest] 知识图谱管理器: ${!!graphManager}, LLM Provider: ${!!llmProvider}`);
+               if (graphManager) {
+                 // 1. 同步文档节点
+                 console.log(`[kb_ingest] 同步文档节点到知识图谱: ${docName}`);
+                 await graphManager.onFactStored({
+                   id: `kb_doc_${result.docId}`,
+                   key: `kb:${docName}`,
+                   value: `Knowledge base document: ${docName}`,
+                   tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                 });
 
-                // 2. 同步版面数据（Document Mind）
-                const layouts = kb.getLayouts(result.docId);
-                if (layouts.length > 0) {
-                  for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
-                    await graphManager.onFactStored({
-                      id: `kb_layout_${layout.id || layout.uniqueId}`,
-                      key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
-                      value: (layout.content || layout.text || '').slice(0, 200),
-                      tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                      relation: `kb:${docName}`,
-                    });
-                  }
-                }
+                 // 2. 同步版面数据（Document Mind）
+                 const layouts = await kb.getLayouts(result.docId) as Layout[];
+                 console.log(`[kb_ingest] 获取文档版面数据: ${layouts.length} 个`);
+                 if (layouts.length > 0) {
+                   console.log(`[kb_ingest] 同步版面数据到知识图谱（最多20个版面）`);
+                   for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
+                     await graphManager.onFactStored({
+                       id: `kb_layout_${layout.id || layout.uniqueId}`,
+                       key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
+                       value: (layout.content || layout.text || '').slice(0, 200),
+                       tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                       relation: `kb:${docName}`,
+                     });
+                   }
+                 }
 
-                // 3. 同步音视频切片数据
-                const segments = kb.getSegments(result.docId);
-                if (segments.length > 0) {
-                  for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
-                    await graphManager.onFactStored({
-                      id: `kb_seg_${result.docId}_${segment.index}`,
-                      key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
-                      value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
-                      tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                      relation: `kb:${docName}`,
-                    });
-                  }
-                }
-              }
-            } catch { /* 图谱同步失败不影响入库结果 */ }
-          }
+                 // 3. 同步音视频切片数据
+                 const segments = await kb.getSegments(result.docId) as Segment[];
+                 console.log(`[kb_ingest] 获取音视频切片数据: ${segments.length} 个`);
+                 if (segments.length > 0) {
+                   console.log(`[kb_ingest] 同步音视频切片到知识图谱（最多10个切片）`);
+                   for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
+                     await graphManager.onFactStored({
+                       id: `kb_seg_${result.docId}_${segment.index}`,
+                       key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
+                       value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
+                       tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                       relation: `kb:${docName}`,
+                     });
+                   }
+                 }
+
+                 // 4. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（使用数据库中的 parsed_content）
+                 const contentForExtraction = await kb.getDocumentContent(result.docId) || content || '';
+                 if (llmProvider && contentForExtraction && contentForExtraction.length > 100) {
+                   console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${Math.min(contentForExtraction.length, 2000)}`);
+                   const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
+                   const { KnowledgeGraphManager } = await import("../memory/knowledge-graph/manager.js");
+
+                   // 抽取关系（只抽取前 2000 字符避免过长）
+                   const relations = await extractRelationships(contentForExtraction.slice(0, 2000), llmProvider as LLMProvider);
+                   console.log(`[kb_ingest] LLM extracted ${relations.length} relations`);
+                   
+                   // 获取graph store并添加关系
+                   const store = graphManager.getStore();
+                   let createdCount = 0;
+                   
+                   for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
+                     let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
+                     if (!sourceNode) {
+                       sourceNode = await store.addNode({
+                         id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                         label: rel.sourceLabel,
+                         type: "entity",
+                         tags: Array.isArray(params.tags) ? params.tags : [],
+                         properties: { sourceDoc: docName },
+                         createdAt: Date.now(),
+                       });
+                       createdCount++;
+                     }
+                     
+                     let targetNode = await store.findNodeByLabel(rel.targetLabel);
+                     if (!targetNode) {
+                       targetNode = await store.addNode({
+                         id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                         label: rel.targetLabel,
+                         type: "entity",
+                         tags: Array.isArray(params.tags) ? params.tags : [],
+                         properties: { sourceDoc: docName },
+                         createdAt: Date.now(),
+                       });
+                       createdCount++;
+                     }
+                     
+                     // 避免重复边
+                     const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
+                     if (existingEdges.every(e => e.relation !== rel.relation)) {
+                       await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
+                     }
+                   }
+                   
+                   console.log(`[kb_ingest] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes`);
+                 }
+               }
+             } catch (err: unknown) {
+               console.warn("[kb_ingest] 知识图谱同步/关系抽取失败，忽略:", err);
+               /* 图谱同步失败不影响入库结果 */
+             }
+           }
 
           return {
             success: true,
@@ -1289,7 +1813,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                 : `文档 "${docName}" 已${action}（v${result.version}），分为 ${result.chunkCount} 个块，共 ${result.totalTokens} tokens`,
             },
           };
-        } catch (err) {
+        } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
       },
@@ -1349,9 +1873,10 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           if (sessionManager && combined.length > 0) {
             try {
               const session = sessionManager.getOrCreate(owner);
-              if ((session as any).graphManager) {
+              const sessionWithGraph = session as unknown as SessionWithGraphManager;
+              if (sessionWithGraph.graphManager) {
                 for (const result of combined.slice(0, 5)) {
-                  await (session as any).graphManager.onFactStored({
+                  await sessionWithGraph.graphManager.onFactStored({
                     id: `kb_${result.docId}_${result.chunkIndex}`,
                     key: `kb:${result.docName}:chunk${result.chunkIndex}`,
                     value: result.content.slice(0, 200),
@@ -1372,7 +1897,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
               query,
             },
           };
-        } catch (err) {
+        } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
       },
@@ -1396,7 +1921,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const docs = kb.listDocuments({
+        const docs = await kb.listDocuments({
           query: params.query as string | undefined,
           tags: params.tags as string[] | undefined,
           format: params.format as string | undefined,
@@ -1421,7 +1946,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const tags = kb.getAllTags();
+        const tags = await kb.getAllTags();
         return { success: true, data: { owner, tags, total: tags.length } };
       },
     }),
@@ -1439,7 +1964,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const formats = kb.getAllFormats();
+        const formats = await kb.getAllFormats();
         return { success: true, data: { owner, formats, total: formats.length } };
       },
     }),
@@ -1464,15 +1989,20 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         const kb = getKnowledgeBase(owner);
         
         // Get document info before deletion for graph sync
-        const doc = kb.getDocument(docId);
+        const doc = await kb.getDocument(docId);
         const docName = doc?.name || docId;
         
-        const deleted = kb.deleteDocument(docId);
+        const deleted = await kb.deleteDocument(docId);
         
-        // Remove from all users' knowledge graphs
-        if (deleted && sessionManager) {
-          await removeKBFromAllGraphs(docId, docName, owner, sessionManager);
-        }
+         // Remove from all users' knowledge graphs
+         if (deleted && sessionManager) {
+           try {
+             await removeKBFromAllGraphs(docId, docName, owner, sessionManager);
+           } catch (err: any) {
+             // Ignore error if knowledge graph tables don't exist
+             console.warn(`[kb_delete] Failed to remove from knowledge graph (ignored): ${err.message}`);
+           }
+         }
         
         return {
           success: deleted,
@@ -1496,16 +2026,21 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const updated = kb.setShared(docId, shared);
+        const updated = await kb.setShared(docId, shared);
         
-        // Sync to knowledge graphs when sharing
-        if (updated && shared && sessionManager) {
-          const doc = kb.getDocument(docId);
-          if (doc) {
-            const targetUsers = getSharedKBTargetUsers(owner);
-            await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
-          }
-        }
+         // Sync to knowledge graphs when sharing
+         if (updated && shared && sessionManager) {
+           try {
+             const doc = await kb.getDocument(docId);
+             if (doc) {
+               const targetUsers = await getSharedKBTargetUsers(owner);
+               await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
+             }
+           } catch (err: any) {
+             // Ignore error if knowledge graph tables don't exist
+             console.warn(`[kb_share] Failed to sync to knowledge graph (ignored): ${err.message}`);
+           }
+         }
         
         return {
           success: updated,
@@ -1532,9 +2067,9 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
         // 列出所有共享文档
         const allShared: any[] = [];
-        for (const tenant of getAllTenants()) {
+        for (const tenant of await getAllTenants()) {
           const kb = getKnowledgeBase(tenant);
-          const docs = kb.listDocuments({ sharedOnly: true });
+          const docs = await kb.listDocuments({ sharedOnly: true });
           allShared.push(...docs.map((d: any) => ({ ...d, owner: tenant })));
         }
 
@@ -1557,7 +2092,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         try {
           const result = await kb.vectorizeDoc(docId);
           return { success: true, data: { ...result, docId, owner } };
-        } catch (err) {
+        } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
       },
@@ -1571,7 +2106,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        return { success: true, data: kb.stats() };
+        return { success: true, data: await kb.stats() };
       },
     }),
   );
@@ -1590,7 +2125,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             success: true,
             data: { ...result, owner, message: `已重建 ${result.chunksProcessed} 个块的向量索引` },
           };
-        } catch (err) {
+        } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
       },
@@ -1622,4 +2157,40 @@ export function setGlobalKBEmbeddingProvider(provider: EmbeddingProvider): void 
 
 export function setGlobalKBVisionConfig(config: VisionModelConfig | null): void {
   globalVisionConfig = config;
+}
+
+// ===== 类型扩展 =====
+
+interface IngestParamsExtension {
+  _fileHash?: string;
+  _pageImages?: Array<{ page: number; imageBase64: string }>;
+  _parsePages?: PageResult[];
+  _placeholderDocId?: string;
+  _skipQueue?: boolean;
+}
+
+interface SessionWithGraphManager {
+  graphManager: {
+    onFactStored: (fact: {
+      id: string;
+      key: string;
+      value: string;
+      tags?: string[];
+      relation?: string;
+    }) => Promise<void>;
+    getStore: () => {
+      findNodeByLabel: (label: string) => { id: string } | undefined;
+      addNode: (node: {
+        id: string;
+        label: string;
+        type: string;
+        tags: string[];
+        properties: Record<string, unknown>;
+        createdAt: number;
+      }) => { id: string };
+      getEdgesBetween: (sourceId: string, targetId: string) => Array<{ relation: string }>;
+      addEdge: (sourceId: string, targetId: string, type: string, relation: string) => void;
+    };
+  } | undefined;
+  llmProvider: unknown;
 }

@@ -20,7 +20,7 @@ const ZH_TAG_MAP: Record<string, string[]> = {
 };
 
 /** Match query terms against node labels, tags, and value content */
-function scoreNodes(store: GraphStore, queryTerms: string[]): Array<{ node: GraphNode; score: number }> {
+async function scoreNodes(store: GraphStore, queryTerms: string[]): Promise<Array<{ node: GraphNode; score: number }>> {
   const scored: Array<{ node: GraphNode; score: number }> = [];
 
   // 展开中文查询词为英文 tag
@@ -33,7 +33,8 @@ function scoreNodes(store: GraphStore, queryTerms: string[]): Array<{ node: Grap
     }
   }
 
-  for (const node of store.getAllNodes()) {
+  const allNodes = await store.getAllNodes();
+  for (const node of allNodes) {
     let score = 0;
     const labelLower = node.label.toLowerCase();
 
@@ -57,7 +58,7 @@ function scoreNodes(store: GraphStore, queryTerms: string[]): Array<{ node: Grap
 }
 
 /** BFS subgraph extraction from seed nodes */
-export function extractSubgraph(store: GraphStore, query: string, options?: BFSOptions): SubgraphResult {
+export async function extractSubgraph(store: GraphStore, query: string, options?: BFSOptions): Promise<SubgraphResult> {
   const maxSeeds = options?.maxSeeds ?? 3;
   const maxDepth = options?.maxDepth ?? 3;
   const maxNodes = options?.maxNodes ?? 50;
@@ -66,7 +67,7 @@ export function extractSubgraph(store: GraphStore, query: string, options?: BFSO
   const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
   if (terms.length === 0) return { nodes: [], edges: [], seedNodes: [] };
 
-  const scored = scoreNodes(store, terms);
+  const scored = await scoreNodes(store, terms);
   const seeds = scored.slice(0, maxSeeds).map(s => s.node);
   if (seeds.length === 0) return { nodes: [], edges: [], seedNodes: [] };
 
@@ -84,12 +85,12 @@ export function extractSubgraph(store: GraphStore, query: string, options?: BFSO
     if (visited.has(nodeId)) continue;
     visited.add(nodeId);
 
-    const node = store.getNode(nodeId);
+    const node = await store.getNode(nodeId);
     if (!node) continue;
     resultNodes.push(node);
 
     if (depth < maxDepth) {
-      for (const neighbor of store.getNeighbors(nodeId)) {
+      for (const neighbor of await store.getNeighbors(nodeId)) {
         if (!visited.has(neighbor.id)) {
           queue.push({ nodeId: neighbor.id, depth: depth + 1 });
         }
@@ -102,7 +103,7 @@ export function extractSubgraph(store: GraphStore, query: string, options?: BFSO
   const resultEdges: GraphEdge[] = [];
   const seenEdges = new Set<string>();
   for (const node of resultNodes) {
-    for (const edge of store.getEdgesOf(node.id)) {
+    for (const edge of await store.getEdgesOf(node.id)) {
       if (!seenEdges.has(edge.id) && visitedSet.has(edge.source) && visitedSet.has(edge.target)) {
         resultEdges.push(edge);
         seenEdges.add(edge.id);
@@ -114,12 +115,17 @@ export function extractSubgraph(store: GraphStore, query: string, options?: BFSO
 }
 
 /** BFS shortest path between two nodes */
-export function findShortestPath(
+export async function findShortestPath(
   store: GraphStore, sourceId: string, targetId: string, maxDepth = 10,
-): { path: GraphNode[]; edges: GraphEdge[] } | null {
-  if (!store.getNode(sourceId) || !store.getNode(targetId)) return null;
+): Promise<{ path: GraphNode[]; edges: GraphEdge[] } | null> {
+  const [sourceNode, targetNode] = await Promise.all([
+    store.getNode(sourceId),
+    store.getNode(targetId),
+  ]);
+  
+  if (!sourceNode || !targetNode) return null;
   if (sourceId === targetId) {
-    return { path: [store.getNode(sourceId)!], edges: [] };
+    return { path: [sourceNode], edges: [] };
   }
 
   const visited = new Set<string>([sourceId]);
@@ -130,7 +136,7 @@ export function findShortestPath(
     const { nodeId, depth } = queue.shift()!;
     if (depth >= maxDepth) continue;
 
-    for (const edge of store.getEdgesOf(nodeId)) {
+    for (const edge of await store.getEdgesOf(nodeId)) {
       const neighborId = edge.source === nodeId ? edge.target : edge.source;
       if (visited.has(neighborId)) continue;
       visited.add(neighborId);
@@ -142,12 +148,14 @@ export function findShortestPath(
         const edges: GraphEdge[] = [];
         let cur = targetId;
         while (cur !== sourceId) {
-          path.unshift(store.getNode(cur)!);
+          const node = await store.getNode(cur);
+          if (node) path.unshift(node);
           const p = parent.get(cur)!;
-          edges.unshift(store.getEdge(p.edgeId)!);
+          const edge = await store.getEdge(p.edgeId);
+          if (edge) edges.unshift(edge);
           cur = p.nodeId;
         }
-        path.unshift(store.getNode(sourceId)!);
+        path.unshift(sourceNode);
         return { path, edges };
       }
 

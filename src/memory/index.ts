@@ -1,6 +1,6 @@
 export { ShortTermMemory } from "./stm.js";
 export type { STMEntry, STMConfig } from "./stm.js";
-export { FileLTMBackend, LongTermMemory } from "./ltm.js";
+export { MySQLLTMBackend, FileLTMBackend, LongTermMemory } from "./ltm.js";
 export { EnhancedLTMBackend } from "./enhanced/enhanced-ltm-backend.js";
 export type { EnhancedLTMConfig } from "./enhanced/enhanced-ltm-backend.js";
 export type { LTMEntry, LTMConfig, ArchiveManifest } from "./ltm.js";

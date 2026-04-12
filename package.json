@@ -33,10 +33,13 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
+    "@alicloud/docmind-api20220711": "^1.4.15",
+    "@alicloud/tea-util": "^1.4.11",
     "@qdrant/qdrant-js": "^1.17.0",
     "amqplib": "^1.0.3",
     "better-sqlite3": "^12.8.0",
     "docx": "^9.6.1",
+    "dotenv": "^17.4.1",
     "ioredis": "^5.10.1",
     "mammoth": "^1.12.0",
     "marked": "^17.0.4",

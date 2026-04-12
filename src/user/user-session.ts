@@ -4,7 +4,7 @@
 import { join } from "path";
 import { existsSync, renameSync, mkdirSync } from "fs";
 import { ShortTermMemory } from "../memory/stm.js";
-import { FileLTMBackend } from "../memory/ltm.js";
+import { MySQLLTMBackend } from "../memory/ltm.js";
 import { EnhancedLTMBackend } from "../memory/enhanced/enhanced-ltm-backend.js";
 import type { LTMBackend } from "../memory/ltm-backend.js";
 import type { EmbeddingProvider } from "../memory/embedding-provider.js";
@@ -74,7 +74,7 @@ export class UserSessionManager {
       ltm: this.createLTMBackend(userId),
       agentLoop: null,
       lastActiveAt: Date.now(),
-      graphManager: new KnowledgeGraphManager(join(this.baseLtmPath, userId, "graph", "graph.json")),
+      graphManager: new KnowledgeGraphManager(userId),
     };
 
     this.sessions.set(userId, session);
@@ -83,15 +83,21 @@ export class UserSessionManager {
 
   /** 根据配置创建对应的 LTM 后端 */
   private createLTMBackend(userId: string): LTMBackend {
-    // 使用 EnhancedLTMBackend 包装 FileLTMBackend，自动获得版本链、遗忘管理、冲突检测能力
-    const ltmPath = join(this.baseLtmPath, userId);
+    // 创建 MySQL LTM 后端
+    const mysqlBackend = new MySQLLTMBackend(userId, {
+      archiveIntervalMs: 60 * 60 * 1000,
+      embeddingProvider: this.embeddingProvider ?? undefined,
+    });
+    
+    // 使用 EnhancedLTMBackend 包装 MySQLLTMBackend，自动获得版本链、遗忘管理、冲突检测能力
     return new EnhancedLTMBackend(
       {
-        storePath: ltmPath,
+        storePath: join(this.baseLtmPath, userId),
         archiveIntervalMs: 60 * 60 * 1000,
         embeddingProvider: this.embeddingProvider ?? undefined,
       },
       this.llmProvider ?? undefined,
+      mysqlBackend,
     );
   }
 

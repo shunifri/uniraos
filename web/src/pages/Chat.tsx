@@ -19,15 +19,6 @@ import {
   DeleteOutlined,
   MessageOutlined,
   DownloadOutlined,
-  FileOutlined,
-  FilePdfOutlined,
-  FileExcelOutlined,
-  FileWordOutlined,
-  FilePptOutlined,
-  FileTextOutlined,
-  FileImageOutlined,
-  FileZipOutlined,
-  FileMarkdownOutlined,
   BookOutlined,
   ReadOutlined,
   ToolOutlined,
@@ -40,6 +31,7 @@ import {
 import { useI18nStore } from "@/i18n";
 import { apiFetch, pageImageUrl } from "@/api";
 import ConfirmCard from "@/components/ConfirmCard";
+import { getFileIcon, formatFileSize } from "@/components/chat/utils";
 
 const { Text } = Typography;
 
@@ -62,33 +54,7 @@ interface FileDownloadData {
   zipPaths?: string[];
 }
 
-function getFileIcon(ext: string) {
-  const iconMap: Record<string, React.ReactNode> = {
-    ".pdf": <FilePdfOutlined style={{ color: "#ff4d4f" }} />,
-    ".xlsx": <FileExcelOutlined style={{ color: "#52c41a" }} />,
-    ".xls": <FileExcelOutlined style={{ color: "#52c41a" }} />,
-    ".csv": <FileExcelOutlined style={{ color: "#52c41a" }} />,
-    ".docx": <FileWordOutlined style={{ color: "#1677ff" }} />,
-    ".doc": <FileWordOutlined style={{ color: "#1677ff" }} />,
-    ".pptx": <FilePptOutlined style={{ color: "#fa8c16" }} />,
-    ".ppt": <FilePptOutlined style={{ color: "#fa8c16" }} />,
-    ".txt": <FileTextOutlined style={{ color: "#8c8c8c" }} />,
-    ".md": <FileMarkdownOutlined style={{ color: "#722ed1" }} />,
-    ".png": <FileImageOutlined style={{ color: "#13c2c2" }} />,
-    ".jpg": <FileImageOutlined style={{ color: "#13c2c2" }} />,
-    ".jpeg": <FileImageOutlined style={{ color: "#13c2c2" }} />,
-    ".gif": <FileImageOutlined style={{ color: "#13c2c2" }} />,
-    ".zip": <FileZipOutlined style={{ color: "#faad14" }} />,
-    ".rar": <FileZipOutlined style={{ color: "#faad14" }} />,
-  };
-  return iconMap[ext] || <FileOutlined style={{ color: "#8c8c8c" }} />;
-}
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-}
 
 // ---- KB Reference types ----
 interface KbReference {
@@ -356,7 +322,9 @@ export default function ChatPage() {
           loadMessages(latest.id);
         }
       }
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Failed to load conversations:', err);
+    }
   };
 
   /** 加载最新一页消息 */
@@ -371,7 +339,9 @@ export default function ChatPage() {
         // 加载完成后滚动到底部
         setTimeout(scrollToBottom, 50);
       }
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Failed to load messages:', err);
+    }
   };
 
   /** 向上加载更早消息 */
@@ -407,7 +377,9 @@ export default function ChatPage() {
           setHasMore(false);
         }
       }
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Failed to load older messages:', err);
+    }
     setLoadingMore(false);
   };
 
@@ -438,7 +410,9 @@ export default function ChatPage() {
       await apiFetch(`/api/conversations/${convId}`, { method: "DELETE" });
       if (convId === activeConvIdRef.current) { setActiveConvId(null); setMessages([]); }
       loadConversations();
-    } catch { /* ignore */ }
+    } catch (err: unknown) { 
+      console.warn('Failed to delete conversation:', err);
+    }
   };
 
   // 附件状态：文件上传后暂存，等用户发送消息时一起提交

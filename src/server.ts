@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from "express";
 import { fileURLToPath } from "url";
 import { dirname, join, resolve } from "path";
@@ -53,6 +54,9 @@ import {
   EvolutionEngine,
   createFederationSkills,
 } from "./federation/index.js";
+import { mountRoutes } from "./routes/index.js";
+import { DocMindParser } from "./services/docmind-parser.js";
+import { initParsingQueue, getParsingQueue } from "./services/parsing-queue.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -83,6 +87,30 @@ const wal = new WALManager(walStore);
 const configManager = new ConfigManager();
 const sessionManager = new UserSessionManager(join(process.cwd(), ".raos", "ltm"), configManager.getMemory());
 const taskManager = new AsyncTaskManager();
+
+// 初始化 Document Mind ParsingQueue（如果已配置）
+if (configManager.isDocMindConfigured()) {
+  const docMindConfig = configManager.getDocMind();
+  if (docMindConfig.accessKeyId && docMindConfig.accessKeySecret) {
+    const parser = new DocMindParser({
+      accessKeyId: docMindConfig.accessKeyId,
+      accessKeySecret: docMindConfig.accessKeySecret,
+      endpoint: docMindConfig.endpoint,
+      regionId: docMindConfig.regionId,
+    });
+    const visionConfig = getVisionConfig();
+    initParsingQueue(parser, (owner) => getKnowledgeBase(owner), {
+      maxConcurrent: 3,
+      pollingIntervalMs: 3000,
+      maxPollingTimeMs: 30 * 60 * 1000,
+      enableIncrementalIndex: true,
+      kbImagesDir: resolve(process.cwd(), ".raos/kb_images"),
+    }, sessionManager, visionConfig);
+    // 确保获取队列实例触发任何必要的启动逻辑
+    getParsingQueue();
+    console.log("   Document Mind parsing queue initialized");
+  }
+}
 let engine = new ExecutionEngine(registry, wal);
 const evolutionController = new EvolutionController(
   undefined,
@@ -426,7 +454,7 @@ createChartSkills(registry);
 createProtocolSkills(registry);
 
 // 注册知识库 Skills (kb_ingest/kb_search/kb_list/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)
-createKnowledgeSkills(registry);
+createKnowledgeSkills(registry, sessionManager);
 
 // 注册 API 文档自动生成 Skills (api_import/api_auth_config/api_list/api_delete/api_test)
 createApiGenSkills(registry);
@@ -589,8 +617,8 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 });
 
 // 获取当前用户信息
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  const details = userRepo.getUserWithDetails(req.user!.id);
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  const details = await userRepo.getUserWithDetails(req.user!.id);
   if (!details) {
     res.status(404).json({ success: false, error: "User not found" });
     return;
@@ -600,11 +628,11 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 
 // ===== 用户管理 API（需要 admin） =====
 
-app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
   // If ?id= query param is present, return user details
   const userId = req.query.id as string | undefined;
   if (userId) {
-    const details = userRepo.getUserWithDetails(userId);
+    const details = await userRepo.getUserWithDetails(userId);
     if (!details) {
       res.status(404).json({ success: false, error: "User not found" });
       return;
@@ -612,28 +640,28 @@ app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
     res.json({ success: true, user: details });
     return;
   }
-  const users = userRepo.listUsers();
+  const users = await userRepo.listUsers();
   res.json({ success: true, users });
 });
 
-app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const { username, password, displayName, departmentId } = req.body;
   if (!username || !password) {
     res.status(400).json({ success: false, error: "username and password are required" });
     return;
   }
   try {
-    const user = userRepo.createUser({ username, password, displayName, departmentId });
+    const user = await userRepo.createUser({ username, password, displayName, departmentId });
     res.json({ success: true, user });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
   const { displayName, avatar, status, departmentId } = req.body;
   const id = req.params.id as string;
-  const user = userRepo.updateUser(id, { displayName, avatar, status, departmentId });
+  const user = await userRepo.updateUser(id, { displayName, avatar, status, departmentId });
   if (!user) {
     res.status(404).json({ success: false, error: "User not found" });
     return;
@@ -641,13 +669,13 @@ app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ success: true, user });
 });
 
-app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   if (id === req.user!.id) {
     res.status(400).json({ success: false, error: "Cannot delete yourself" });
     return;
   }
-  const deleted = userRepo.deleteUser(id);
+  const deleted = await userRepo.deleteUser(id);
   res.json({ success: true, deleted });
 });
 
@@ -660,51 +688,51 @@ app.post("/api/users/:id/roles", requireAuth, requireAdmin, async (req, res) => 
     return;
   }
   if (action === "assign") {
-    userRepo.assignRole(id, roleId);
+    await userRepo.assignRole(id, roleId);
   } else {
-    userRepo.removeRole(id, roleId);
+    await userRepo.removeRole(id, roleId);
   }
   const roles = await userRepo.getUserRoles(id);
   res.json({ success: true, roles });
 });
 
 // 用户密码修改
-app.post("/api/users/:id/password", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/users/:id/password", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { password } = req.body as { password: string };
   if (!password) {
     res.status(400).json({ success: false, error: "password is required" });
     return;
   }
-  const changed = userRepo.changePassword(id, password);
+  const changed = await userRepo.changePassword(id, password);
   res.json({ success: true, changed });
 });
 
 // ===== 部门管理 API（需要 admin） =====
 
-app.get("/api/departments", requireAuth, requireAdmin, (_req, res) => {
-  const departments = deptRepo.getDepartmentTree();
+app.get("/api/departments", requireAuth, requireAdmin, async (_req, res) => {
+  const departments = await deptRepo.getDepartmentTree();
   res.json({ success: true, departments });
 });
 
-app.post("/api/departments", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/departments", requireAuth, requireAdmin, async (req, res) => {
   const { name, parentId, description } = req.body;
   if (!name) {
     res.status(400).json({ success: false, error: "name is required" });
     return;
   }
   try {
-    const dept = deptRepo.createDepartment({ name, parentId, description });
+    const dept = await deptRepo.createDepartment({ name, parentId, description });
     res.json({ success: true, department: dept });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-app.put("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/departments/:id", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { name, description } = req.body;
-  const dept = deptRepo.updateDepartment(id, { name, description });
+  const dept = await deptRepo.updateDepartment(id, { name, description });
   if (!dept) {
     res.status(404).json({ success: false, error: "Department not found" });
     return;
@@ -712,10 +740,10 @@ app.put("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ success: true, department: dept });
 });
 
-app.delete("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/departments/:id", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   try {
-    deptRepo.deleteDepartment(id);
+    await deptRepo.deleteDepartment(id);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -723,67 +751,67 @@ app.delete("/api/departments/:id", requireAuth, requireAdmin, (req, res) => {
 });
 
 // 部门资源分配
-app.post("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { resourceIds } = req.body as { resourceIds: string[] };
   if (!resourceIds || !Array.isArray(resourceIds)) {
     res.status(400).json({ success: false, error: "resourceIds array is required" });
     return;
   }
-  deptRepo.assignResources(id, resourceIds);
-  const resources = deptRepo.getDepartmentResources(id);
+  await deptRepo.assignResources(id, resourceIds);
+  const resources = await deptRepo.getDepartmentResources(id);
   res.json({ success: true, resources });
 });
 
-app.delete("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { resourceIds } = req.body as { resourceIds: string[] };
   if (!resourceIds || !Array.isArray(resourceIds)) {
     res.status(400).json({ success: false, error: "resourceIds array is required" });
     return;
   }
-  deptRepo.removeResources(id, resourceIds);
-  const resources = deptRepo.getDepartmentResources(id);
+  await deptRepo.removeResources(id, resourceIds);
+  const resources = await deptRepo.getDepartmentResources(id);
   res.json({ success: true, resources });
 });
 
-app.get("/api/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const effective = req.query.effective === "true";
   const resources = effective
-    ? deptRepo.getDepartmentEffectiveResources(id)
-    : deptRepo.getDepartmentResources(id);
+    ? await deptRepo.getDepartmentEffectiveResources(id)
+    : await deptRepo.getDepartmentResources(id);
   res.json({ success: true, resources });
 });
 
 // ===== 资源管理 API（需要 admin） =====
 
-app.get("/api/resources", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/resources", requireAuth, requireAdmin, async (req, res) => {
   const type = req.query.type as string | undefined;
-  const resources = resRepo.listResources(type);
+  const resources = await resRepo.listResources(type);
   res.json({ success: true, resources });
 });
 
-app.post("/api/resources/sync", requireAuth, requireAdmin, (_req, res) => {
-  syncSkillsToResources();
-  const resources = resRepo.listResources("skill");
+app.post("/api/resources/sync", requireAuth, requireAdmin, async (_req, res) => {
+  await syncSkillsToResources();
+  const resources = await resRepo.listResources("skill");
   res.json({ success: true, resources });
 });
 
 // ===== 角色权限管理 API（需要 admin） =====
 
-app.get("/api/roles", requireAuth, requireAdmin, (_req, res) => {
-  const roles = userRepo.listRoles();
+app.get("/api/roles", requireAuth, requireAdmin, async (_req, res) => {
+  const roles = await userRepo.listRoles();
   res.json({ success: true, roles });
 });
 
-app.get("/api/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/roles/:id/permissions", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
-  const permissions = resRepo.getPermissionsByRole(id);
+  const permissions = await resRepo.getPermissionsByRole(id);
   res.json({ success: true, permissions });
 });
 
-app.post("/api/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/roles/:id/permissions", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
   if (!permissionIds || !action) {
@@ -791,37 +819,37 @@ app.post("/api/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => 
     return;
   }
   if (action === "assign") {
-    resRepo.assignPermissionsToRole(id, permissionIds);
+    await resRepo.assignPermissionsToRole(id, permissionIds);
   } else {
-    resRepo.removePermissionsFromRole(id, permissionIds);
+    await resRepo.removePermissionsFromRole(id, permissionIds);
   }
-  const permissions = resRepo.getPermissionsByRole(id);
+  const permissions = await resRepo.getPermissionsByRole(id);
   res.json({ success: true, permissions });
 });
 
-app.get("/api/permissions", requireAuth, requireAdmin, (_req, res) => {
-  const permissions = resRepo.listPermissions();
+app.get("/api/permissions", requireAuth, requireAdmin, async (_req, res) => {
+  const permissions = await resRepo.listPermissions();
   res.json({ success: true, permissions });
 });
 
-app.post("/api/roles", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/roles", requireAuth, requireAdmin, async (req, res) => {
   const { name, description } = req.body as { name: string; description?: string };
   if (!name) {
     res.status(400).json({ success: false, error: "name is required" });
     return;
   }
   try {
-    const role = userRepo.createRole({ name, description });
+    const role = await userRepo.createRole({ name, description });
     res.json({ success: true, role });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-app.delete("/api/roles/:id", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/roles/:id", requireAuth, requireAdmin, async (req, res) => {
   const id = req.params.id as string;
   try {
-    const ok = userRepo.deleteRole(id);
+    const ok = await userRepo.deleteRole(id);
     if (!ok) {
       res.status(404).json({ success: false, error: "Role not found" });
       return;
@@ -830,6 +858,85 @@ app.delete("/api/roles/:id", requireAuth, requireAdmin, (req, res) => {
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ===== Admin API 兼容路由 (/api/admin/*) =====
+
+// 用户管理兼容路由
+app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+  const users = await userRepo.listUsers();
+  res.json({ success: true, users });
+});
+app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+  const { username, password, displayName, departmentId } = req.body;
+  if (!username || !password) {
+    res.status(400).json({ success: false, error: "username and password are required" });
+    return;
+  }
+  try {
+    const user = await userRepo.createUser({ username, password, displayName, departmentId });
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+app.put("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await userRepo.updateUser(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+app.delete("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await userRepo.deleteUser(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 部门管理兼容路由
+app.get("/api/admin/departments", requireAuth, requireAdmin, async (_req, res) => {
+  const departments = await deptRepo.listDepartments();
+  res.json({ success: true, departments });
+});
+app.post("/api/admin/departments", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const dept = await deptRepo.createDepartment(req.body);
+    res.json({ success: true, department: dept });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+app.delete("/api/admin/departments/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deptRepo.deleteDepartment(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 角色管理兼容路由
+app.get("/api/admin/roles", requireAuth, requireAdmin, async (_req, res) => {
+  const roles = await resRepo.listRoles();
+  res.json({ success: true, roles });
+});
+app.post("/api/admin/roles", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const role = await resRepo.createRole(req.body);
+    res.json({ success: true, role });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 资源管理兼容路由
+app.get("/api/admin/resources", requireAuth, requireAdmin, async (_req, res) => {
+  const resources = await resRepo.listResources();
+  res.json({ success: true, resources });
 });
 
 // ===== Skill Routes（带权限守卫） =====
@@ -965,8 +1072,14 @@ app.get("/api/config", requireAuth, requirePermission("config.read"), (_req, res
     },
     engine: config.engine,
     agent: config.agent,
+    docMind: config.docMind ? {
+      ...config.docMind,
+      accessKeyId: config.docMind.accessKeyId ? "***" + config.docMind.accessKeyId.slice(-4) : "",
+      accessKeySecret: config.docMind.accessKeySecret ? "***" + config.docMind.accessKeySecret.slice(-4) : "",
+    } : null,
     isLLMConfigured: configManager.isLLMConfigured(),
     isMultimodalConfigured: configManager.isMultimodalConfigured(),
+    isDocMindConfigured: configManager.isDocMindConfigured(),
   });
 });
 
@@ -1224,6 +1337,305 @@ app.post("/api/llm/test", requireAuth, requirePermission("config.read"), async (
       model: currentProvider.model,
       usage: response.usage,
     });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// PUT 兼容路由
+app.put("/api/config/llm", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { type, apiKey, baseUrl, model, maxTokens, temperature } = req.body;
+  if (!type || !apiKey || !model) {
+    res.status(400).json({ success: false, error: "type, apiKey, and model are required" });
+    return;
+  }
+  const llmConfig = { type, apiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 };
+  configManager.setLLM(llmConfig);
+  currentProvider = createProvider(llmConfig);
+  rebuildAllAgentLoops();
+  rebuildOrchestrator();
+  res.json({ success: true, message: `LLM configured: ${type} / ${model}` });
+});
+
+app.put("/api/config/agent", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { maxIterations, systemPrompt, includeTrace } = req.body;
+  configManager.setAgent({ maxIterations, systemPrompt, includeTrace });
+  rebuildAllAgentLoops();
+  rebuildOrchestrator();
+  res.json({ success: true });
+});
+
+app.put("/api/config/multimodal", requireAuth, requirePermission("config.write"), (req, res) => {
+  const { enabled, apiKey, baseUrl, imageModel, visionModel, ttsModel, whisperModel } = req.body;
+  configManager.setMultimodal({ enabled, apiKey, baseUrl, imageModel, visionModel, ttsModel, whisperModel });
+  rebuildMultimodalProvider();
+  res.json({ success: true, message: "Multimodal config saved" });
+});
+
+app.put("/api/config/federation", requireAuth, requireAdmin, (req, res) => {
+  const { instanceId: iid, federationKey, heartbeatIntervalMs, syncIntervalMs } = req.body;
+  configManager.setFederation({ ...(iid !== undefined && { instanceId: iid }), ...(federationKey !== undefined && { federationKey }), ...(heartbeatIntervalMs !== undefined && { heartbeatIntervalMs }), ...(syncIntervalMs !== undefined && { syncIntervalMs }) });
+  if (federationKey !== undefined) {
+    (federationTransport as any).apiKey = federationKey;
+  }
+  res.json({ success: true, message: "Federation config saved" });
+});
+
+// GET /api/config/evolution 兼容路由
+app.get("/api/config/evolution", requireAuth, (req, res) => {
+  res.json({ success: true, config: configManager.getEvolution() });
+});
+
+app.put("/api/config/evolution", requireAuth, requireAdmin, (req, res) => {
+  const updates: Record<string, unknown> = {};
+  const fields = ["autoExecute", "cycleIntervalMs", "maxActionsPerCycle", "skipApprovalRequired", "successRateThreshold", "latencyThresholdMs", "inactiveDays", "minFederationConfidence"];
+  for (const f of fields) {
+    if (req.body[f] !== undefined) updates[f] = req.body[f];
+  }
+  configManager.setEvolution(updates as any);
+  evolutionEngine.updateConfig(updates as any);
+  res.json({ success: true, config: configManager.getEvolution() });
+});
+
+// 测试 LLM 连接 (config 路径兼容)
+app.post("/api/config/llm/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  if (!currentProvider) {
+    res.status(400).json({ success: false, error: "LLM not configured" });
+    return;
+  }
+
+  try {
+    const response = await currentProvider.chat([
+      { role: "user", content: "Say hello in one sentence." },
+    ]);
+    res.json({
+      success: true,
+      response: response.content,
+      model: currentProvider.model,
+      usage: response.usage,
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// 测试 Model Card 连接 (vision, imageGen, tts, stt, embedding)
+app.post("/api/config/model-cards/:type/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  const cardType = req.params.type as any;
+  const validTypes = ["vision", "imageGen", "tts", "stt", "embedding"];
+  if (!validTypes.includes(cardType)) {
+    res.status(400).json({ success: false, error: `Invalid model card type: ${cardType}` });
+    return;
+  }
+
+  const config = configManager.getResolvedModelConfig(cardType);
+  if (!config.apiKey || !config.model) {
+    res.status(400).json({ success: false, error: `${cardType} not configured` });
+    return;
+  }
+
+  try {
+    switch (cardType) {
+      case "vision": {
+        // 根据 apiMode 选择端点格式
+        const isVolcengine = config.apiMode === "volcengine" || config.baseUrl?.includes("volces.com");
+        const url = isVolcengine
+          ? `${config.baseUrl}/chat/completions`
+          : `${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`;
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: config.model,
+            messages: [{ role: "user", content: "Hello" }],
+            max_tokens: 10,
+          }),
+        });
+        if (!response.ok) {
+          const error = await response.text();
+          if (response.status === 429 || response.status === 400 || response.status === 404) {
+            res.json({
+              success: true,
+              model: config.model,
+              message: response.status === 404
+                ? "Vision API endpoint not found (provider may use different path)"
+                : "Vision API accessible (quota or content policy may apply)",
+            });
+            return;
+          }
+          throw new Error(`API error: ${response.status} ${error}`);
+        }
+        res.json({
+          success: true,
+          model: config.model,
+          message: "Vision model connection successful",
+        });
+        break;
+      }
+      case "imageGen": {
+        // 根据 apiMode 选择端点格式
+        const isVolcengine = config.apiMode === "volcengine" || config.baseUrl?.includes("volces.com");
+        const url = isVolcengine
+          ? `${config.baseUrl}/images/generations`
+          : `${config.baseUrl || "https://api.openai.com/v1"}/images/generations`;
+        
+        const body = isVolcengine
+          ? JSON.stringify({ model: config.model, prompt: "test" })
+          : JSON.stringify({ model: config.model, prompt: "test", n: 1, size: "1024x1024" });
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body,
+        });
+        if (!response.ok) {
+          const error = await response.text();
+          // 429 = quota exceeded, 400 = bad request (endpoint exists), 404 = endpoint not found (different provider format)
+          if (response.status === 429 || response.status === 400 || response.status === 404) {
+            res.json({
+              success: true,
+              model: config.model,
+              message: response.status === 404 
+                ? "Image generation API endpoint not found (provider may use different path)" 
+                : "Image generation API accessible (quota or content policy may apply)",
+            });
+            return;
+          }
+          throw new Error(`API error: ${response.status} ${error}`);
+        }
+        res.json({
+          success: true,
+          model: config.model,
+          message: "Image generation connection successful",
+        });
+        break;
+      }
+      case "tts": {
+        // 根据 apiMode 选择端点格式
+        const isVolcengine = config.apiMode === "volcengine" || config.baseUrl?.includes("volces.com");
+        const url = isVolcengine
+          ? `${config.baseUrl}/audio/speech`
+          : `${config.baseUrl || "https://api.openai.com/v1"}/audio/speech`;
+        
+        const body = isVolcengine
+          ? JSON.stringify({ model: config.model, input: "Hello" })
+          : JSON.stringify({ model: config.model, input: "Hello", voice: "alloy" });
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body,
+        });
+        if (!response.ok) {
+          const error = await response.text();
+          if (response.status === 429 || response.status === 400 || response.status === 404) {
+            res.json({
+              success: true,
+              model: config.model,
+              message: response.status === 404
+                ? "TTS API endpoint not found (provider may use different path)"
+                : "TTS API accessible (quota may apply)",
+            });
+            return;
+          }
+          throw new Error(`API error: ${response.status} ${error}`);
+        }
+        res.json({
+          success: true,
+          model: config.model,
+          message: "TTS connection successful",
+        });
+        break;
+      }
+      case "stt": {
+        // 根据 apiMode 选择端点格式
+        const isVolcengine = config.apiMode === "volcengine" || config.baseUrl?.includes("volces.com");
+        const url = isVolcengine
+          ? `${config.baseUrl}/audio/transcriptions`
+          : `${config.baseUrl || "https://api.openai.com/v1"}/audio/transcriptions`;
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body: new FormData(),
+        });
+        if (response.status === 400 || response.status === 404) {
+          res.json({
+            success: true,
+            model: config.model,
+            message: response.status === 404
+              ? "STT API endpoint not found (provider may use different path)"
+              : "STT API accessible",
+          });
+          return;
+        }
+        if (!response.ok) {
+          const error = await response.text();
+          throw new Error(`API error: ${response.status} ${error}`);
+        }
+        res.json({
+          success: true,
+          model: config.model,
+          message: "STT connection successful",
+        });
+        break;
+      }
+      case "embedding": {
+        const isVolcengine = config.embeddingMode === "volcengine-multimodal";
+        const url = isVolcengine 
+          ? `${config.baseUrl}/embeddings/multimodal` 
+          : `${config.baseUrl || "https://api.openai.com/v1"}/embeddings`;
+        
+        const body = isVolcengine
+          ? JSON.stringify({
+              model: config.model,
+              input: [{ type: "text", text: "Hello world" }],
+            })
+          : JSON.stringify({
+              model: config.model,
+              input: "Hello world",
+            });
+        
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body,
+        });
+        if (!response.ok) {
+          const error = await response.text();
+          throw new Error(`API error: ${response.status} ${error}`);
+        }
+        const data = await response.json();
+        res.json({
+          success: true,
+          model: config.model,
+          dimensions: data.data?.[0]?.embedding?.length,
+          message: "Embedding connection successful",
+        });
+        break;
+      }
+    }
   } catch (err) {
     res.status(400).json({
       success: false,
@@ -1560,106 +1972,214 @@ app.post("/api/agent/clear", requireAuth, (req, res) => {
 
 // ===== 聊天历史持久化 API =====
 
+// MySQL adapter for conversations
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import('./db/mysql-adapter.js');
+  return getAdapter();
+}
+
 // 获取当前用户的会话列表
-app.get("/api/conversations", requireAuth, (req, res) => {
+app.get("/api/conversations", requireAuth, async (req, res) => {
   const userId = req.user!.id;
-  const rows = getDb().prepare(
-    "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
-  ).all(userId);
-  res.json({ success: true, conversations: rows });
+  try {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query(
+        "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
+        [userId]
+      );
+      res.json({ success: true, conversations: rows });
+    } else {
+      const rows = getDb().prepare(
+        "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
+      ).all(userId);
+      res.json({ success: true, conversations: rows });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // 创建新会话
-app.post("/api/conversations", requireAuth, (req, res) => {
+app.post("/api/conversations", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const id = "conv_" + crypto.randomUUID().slice(0, 12);
   const title = req.body.title || "新对话";
-  getDb().prepare(
-    "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
-  ).run(id, userId, title);
-  res.json({ success: true, id, title });
+  try {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      await adapter.execute(
+        "INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000)",
+        [id, userId, title]
+      );
+    } else {
+      getDb().prepare(
+        "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
+      ).run(id, userId, title);
+    }
+    res.json({ success: true, id, title });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // 获取某个会话的消息
-app.get("/api/conversations/:id/messages", requireAuth, (req, res) => {
+app.get("/api/conversations/:id/messages", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const convId = req.params.id as string;
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const beforeId = parseInt(req.query.before_id as string) || 0;
 
-  const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-  if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
+  try {
+    let conv;
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+      conv = rows[0];
+    } else {
+      conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
+    }
+    if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
-  let rows: any[];
-  if (beforeId > 0) {
-    // 加载 before_id 之前的消息（向上翻页）
-    rows = getDb().prepare(
-      "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
-    ).all(convId, beforeId, limit) as any[];
-    rows.reverse(); // 恢复正序
-  } else {
-    // 加载最新 N 条（首次加载）
-    rows = getDb().prepare(
-      "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
-    ).all(convId, limit) as any[];
-    rows.reverse();
+    let rows: any[];
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      if (beforeId > 0) {
+        rows = await adapter.query(
+          "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+          [convId, beforeId, limit]
+        );
+        rows.reverse();
+      } else {
+        rows = await adapter.query(
+          "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+          [convId, limit]
+        );
+        rows.reverse();
+      }
+    } else {
+      if (beforeId > 0) {
+        rows = getDb().prepare(
+          "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+        ).all(convId, beforeId, limit) as any[];
+        rows.reverse();
+      } else {
+        rows = getDb().prepare(
+          "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
+        ).all(convId, limit) as any[];
+        rows.reverse();
+      }
+    }
+
+    const msgs = rows.map((r) => ({
+      ...r,
+      extra: r.extra ? (typeof r.extra === 'string' ? JSON.parse(r.extra) : r.extra) : undefined,
+    }));
+
+    // 检查是否还有更早的消息
+    let hasMore = false;
+    if (rows.length > 0) {
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?", [convId, rows[0].id]);
+        hasMore = countRows[0]?.c > 0;
+      } else {
+        hasMore = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?").get(convId, rows[0].id) as any).c > 0;
+      }
+    }
+
+    res.json({ success: true, messages: msgs, hasMore });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
   }
-
-  const msgs = rows.map((r) => ({
-    ...r,
-    extra: r.extra ? JSON.parse(r.extra) : undefined,
-  }));
-
-  // 检查是否还有更早的消息
-  const hasMore = rows.length > 0 && (getDb().prepare(
-    "SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?"
-  ).get(convId, rows[0].id) as any).c > 0;
-
-  res.json({ success: true, messages: msgs, hasMore });
 });
 
 // 向会话追加消息
-app.post("/api/conversations/:id/messages", requireAuth, (req, res) => {
+app.post("/api/conversations/:id/messages", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const convId = req.params.id as string;
   console.log(`   [CHAT] Save messages to ${convId}: ${JSON.stringify((req.body.messages || []).map((m: any) => ({ role: m.role, len: m.content?.length })))}`);
-  const conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-  if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
-
-  const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
-  const insert = getDb().prepare(
-    "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  );
-  const insertMany = getDb().transaction((items: typeof msgs) => {
-    for (const m of items) {
-      const extraJson = m.extra ? JSON.stringify(m.extra) : null;
-      insert.run(convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson);
-    }
-  });
-  insertMany(msgs);
-
-  // 更新会话标题（如果是第一条用户消息，自动设置标题）
-  const firstUser = msgs.find(m => m.role === "user");
-  if (firstUser) {
-    const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
-    if (msgCount <= msgs.length) {
-      // 这是新会话的第一批消息，用用户消息内容设置标题
-      const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
-      getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+  
+  try {
+    let conv;
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+      conv = rows[0];
     } else {
-      getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+      conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
     }
-  }
+    if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
-  res.json({ success: true });
+    const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
+    
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      for (const m of msgs) {
+        const extraJson = m.extra ? JSON.stringify(m.extra) : null;
+        await adapter.execute(
+          "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+          [convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson]
+        );
+      }
+    } else {
+      const insert = getDb().prepare(
+        "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+      const insertMany = getDb().transaction((items: typeof msgs) => {
+        for (const m of items) {
+          const extraJson = m.extra ? JSON.stringify(m.extra) : null;
+          insert.run(convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson);
+        }
+      });
+      insertMany(msgs);
+    }
+
+    // 更新会话标题（如果是第一条用户消息，自动设置标题）
+    const firstUser = msgs.find(m => m.role === "user");
+    if (firstUser) {
+      if (isMySQL()) {
+        const adapter = await getMySQLAdapter();
+        const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
+        const msgCount = countRows[0]?.c || 0;
+        if (msgCount <= msgs.length) {
+          const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
+          await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
+        } else {
+          await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
+        }
+      } else {
+        const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+        if (msgCount <= msgs.length) {
+          const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
+          getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+        } else {
+          getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // 删除会话
-app.delete("/api/conversations/:id", requireAuth, (req, res) => {
+app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const convId = req.params.id as string;
-  getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
-  res.json({ success: true });
+  try {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      await adapter.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
+    } else {
+      getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // 获取 Tool 定义（LLM 视角看到的 Skills）
@@ -1695,6 +2215,12 @@ app.get("/api/evolution/config", requireAuth, requireAdmin, (_req, res) => {
 });
 
 app.post("/api/evolution/config", requireAuth, requireAdmin, (req, res) => {
+  evolutionController.updateConfig(req.body);
+  res.json({ success: true, config: evolutionController.getConfig() });
+});
+
+// PUT 兼容路由
+app.put("/api/evolution/config", requireAuth, requireAdmin, (req, res) => {
   evolutionController.updateConfig(req.body);
   res.json({ success: true, config: evolutionController.getConfig() });
 });
@@ -1753,6 +2279,13 @@ app.post("/api/evolution/reject/:id", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/marketplace", requireAuth, requirePermission("skills.read"), (req, res) => {
   const query = req.query.q as string | undefined;
   res.json({ success: true, packages: marketplace.search(query), stats: marketplace.stats() });
+});
+
+// POST /api/marketplace/search - 兼容前端调用
+app.post("/api/marketplace/search", requireAuth, requirePermission("skills.read"), (req, res) => {
+  const { query, filters } = req.body;
+  const results = marketplace.search(query, filters);
+  res.json({ success: true, packages: results, stats: marketplace.stats() });
 });
 
 app.post("/api/marketplace/export/:name", requireAuth, requireAdmin, (req, res) => {
@@ -1924,6 +2457,25 @@ app.post("/api/memory/schedule", requireAuth, requirePermission("memory.write"),
   } else {
     res.status(400).json({ success: false, error: "action must be 'start' or 'stop'" });
   }
+});
+
+// 兼容路由: /api/memory/schedule/start
+app.post("/api/memory/schedule/start", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  const minutes = req.body?.intervalMinutes ?? 60;
+  if (minutes < 1) {
+    res.status(400).json({ success: false, error: "intervalMinutes must be >= 1" });
+    return;
+  }
+  ltm.startScheduledArchive(minutes * 60 * 1000);
+  res.json({ success: true, action: "started", intervalMinutes: minutes });
+});
+
+// 兼容路由: /api/memory/schedule/stop
+app.post("/api/memory/schedule/stop", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const { ltm } = sessionManager.getOrCreate(req.user!.id);
+  ltm.stopScheduledArchive();
+  res.json({ success: true, action: "stopped" });
 });
 
 // 手动触发一次归档
@@ -2303,18 +2855,21 @@ app.post("/api/knowledge/ingest", requireAuth, async (req, res) => {
     // 如果是文件路径（需要解析），先建占位记录立即返回，后台异步解析
     if (path && !content) {
       const kb = getKnowledgeBase(userId);
-      const docId = kb.createPlaceholder(name, { source: path, tags: tags || [] });
+      const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [] });
+      console.log(`[Server] 创建占位符 docId: ${docId}`);
       // 立即返回
       res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
 
       // 后台异步：解析 → 入库 → 向量化
       requestContext.run({ userId }, () => {
+        console.log(`[Server] 调用 kb_ingest 传入 _placeholderDocId: ${docId}`);
         engine.execute("kb_ingest", {
           name,
           path,
           tags: tags || [],
           owner: userId,
           skipEmbedding: true,
+          _placeholderDocId: docId,
         }).then((result) => {
           if (result.success) {
             const docId = (result.data as any).docId;
@@ -2367,10 +2922,10 @@ app.get("/api/knowledge/search", requireAuth, async (req, res) => {
 });
 
 // 获取文档解析内容
-app.get("/api/knowledge/documents/:docId/content", requireAuth, (req, res) => {
+app.get("/api/knowledge/documents/:docId/content", requireAuth, async (req, res) => {
   try {
     const kb = getKnowledgeBase(req.user!.id);
-    const content = kb.getDocumentContent(req.params.docId as string);
+    const content = await kb.getDocumentContent(req.params.docId as string);
     if (content === null) {
       res.status(404).json({ success: false, error: "文档不存在" });
     } else {
@@ -2558,20 +3113,6 @@ app.post("/api/wal/compact", requireAuth, (req, res) => {
 
 // ===== 联邦 API 端点 =====
 
-// 联邦请求入口：远程实例通过此端点发送迁移/心跳/指标请求
-app.post("/api/federation/:action", express.json(), async (req, res) => {
-  try {
-    const action = req.params.action;
-    const from = (req.headers["x-raos-instance"] as string) ?? "unknown";
-    const result = await federationTransport.handleRequest(action, req.body, from);
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
 // 联邦状态概览
 app.get("/api/federation/status", requireAuth, (_req, res) => {
   res.json({
@@ -2585,6 +3126,123 @@ app.get("/api/federation/status", requireAuth, (_req, res) => {
       historyCount: migrationManager.getHistory().length,
     },
   });
+});
+
+// 获取联邦节点列表
+app.get("/api/federation/peers", requireAuth, (_req, res) => {
+  const peers = configManager.getFederation().peers || [];
+  res.json({ success: true, peers });
+});
+
+// 添加联邦节点
+app.post("/api/federation/peers", requireAuth, requireAdmin, (req, res) => {
+  const { endpoint, name } = req.body;
+  if (!endpoint) {
+    res.status(400).json({ success: false, error: "endpoint is required" });
+    return;
+  }
+  configManager.addFederationPeer({ endpoint, name });
+  federationTransport.addPeer({
+    instanceId: endpoint,
+    endpoint,
+    version: "2.0",
+    capabilities: [],
+    skillCount: 0,
+    lastHeartbeat: Date.now(),
+  });
+  res.json({ success: true, message: `Peer ${endpoint} added` });
+});
+
+// 删除联邦节点
+app.delete("/api/federation/peers/:id", requireAuth, requireAdmin, (req, res) => {
+  const peerId = req.params.id;
+  configManager.removeFederationPeer(peerId);
+  federationTransport.removePeer(peerId);
+  res.json({ success: true, message: `Peer ${peerId} removed` });
+});
+
+// 获取联邦推荐
+app.get("/api/federation/recommendations", requireAuth, (req, res) => {
+  const recommendations = federationManager.getRecommendations();
+  res.json({ success: true, recommendations });
+});
+
+// 联邦请求入口：远程实例通过此端点发送迁移/心跳/指标请求
+// 注意：这个通用路由必须放在所有具体的 /api/federation/* 路由之后
+app.post("/api/federation/:action", express.json(), async (req, res) => {
+  try {
+    const action = req.params.action;
+    const from = (req.headers["x-raos-instance"] as string) ?? "unknown";
+    const result = await federationTransport.handleRequest(action, req.body, from);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// ===== Graph API =====
+
+function getGraphManagerForUser(userId: string) {
+  const session = sessionManager.getOrCreate(userId);
+  return session.graphManager;
+}
+
+// GET /api/graph/data — full graph for visualization
+app.get("/api/graph/data", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const userId = (req as any).user?.id ?? "default";
+  const gm = getGraphManagerForUser(userId);
+  if (!gm) { res.json({ nodes: [], edges: [] }); return; }
+  const store = gm.getStore();
+  const [nodes, edges] = await Promise.all([
+    store.getAllNodes(),
+    store.getAllEdges(),
+  ]);
+  res.json({ nodes, edges });
+});
+
+// GET /api/graph/stats
+app.get("/api/graph/stats", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const userId = (req as any).user?.id ?? "default";
+  const gm = getGraphManagerForUser(userId);
+  if (!gm) { res.json({ nodeCount: 0, edgeCount: 0 }); return; }
+  res.json(await gm.getStats());
+});
+
+// POST /api/graph/query
+app.post("/api/graph/query", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const userId = (req as any).user?.id ?? "default";
+  const gm = getGraphManagerForUser(userId);
+  if (!gm) { res.json({ nodes: [], edges: [], seedNodes: [] }); return; }
+  const { query, maxDepth, maxNodes } = req.body;
+  const result = await gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
+  res.json(result);
+});
+
+// POST /api/graph/sync — sync from LTM
+app.post("/api/graph/sync", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  const userId = (req as any).user?.id ?? "default";
+  const session = sessionManager.getOrCreate(userId);
+  const gm = session.graphManager;
+  if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
+  const entries = await session.ltm.list();
+  const result = await gm.syncFromLTM(entries.map((e: any) => ({
+    id: e.id, key: e.key, value: e.value, tags: e.tags ?? [],
+  })));
+  res.json(result);
+});
+
+// POST /api/graph/communities
+app.post("/api/graph/communities", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  const userId = (req as any).user?.id ?? "default";
+  const gm = getGraphManagerForUser(userId);
+  if (!gm) { res.json({ communities: [], stats: { count: 0, avgSize: 0 } }); return; }
+  const result = await gm.getCommunities();
+  const commList = [...result.communities.entries()].map(([id, nodes]: [number, string[]]) => ({
+    id, size: nodes.length, nodes: nodes.slice(0, 20),
+  }));
+  res.json({ communities: commList, stats: result.stats });
 });
 
 // ===== 文件上传 API（委托给 file_upload Skill） =====
@@ -2938,11 +3596,11 @@ app.get("/api/files/list", requireAuth, (req, res) => {
 });
 
 // 检查哪些文件已导入知识库（返回详细的向量化状态）
-app.get("/api/files/kb-status", requireAuth, (req, res) => {
+app.get("/api/files/kb-status", requireAuth, async (req, res) => {
   const userId = req.user?.id || "default";
   try {
     const kb = getKnowledgeBase(userId);
-    const docs = kb.listDocuments();
+    const docs = await kb.listDocuments();
     // 返回文档名称 → 向量化状态映射
     const kbNames = docs.map((d: any) => d.name);
     const kbDocs: Record<string, { docId: string; vectorized: number; vectorTotal: number; chunkCount: number; status: string }> = {};
@@ -2959,7 +3617,7 @@ app.get("/api/files/kb-status", requireAuth, (req, res) => {
 });
 
 // 获取用户文档列表（聚合上传文件 + KB状态，去重去时间戳）
-app.get("/api/files/user-documents", requireAuth, (req, res) => {
+app.get("/api/files/user-documents", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const userUploadDir = join(WS_BASE, "uploads", userId);
 
@@ -3011,7 +3669,7 @@ app.get("/api/files/user-documents", requireAuth, (req, res) => {
   // 2. 获取 KB 文档状态
   try {
     const kb = getKnowledgeBase(userId);
-    const docs = kb.listDocuments();
+    const docs = await kb.listDocuments();
     for (const d of docs) {
       let status = "done";
       if (d.chunkCount === 0) status = "parsing";
@@ -3577,7 +4235,15 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
   // 如果不在内置主题中，尝试从 DB 查询自定义主题
   if (!PPTX_THEMES[resolvedTheme]) {
     try {
-      const row = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?").get(resolvedTheme, resolvedTheme) as any;
+      let row: any;
+      if (isMySQL()) {
+        const { getMySQLAdapter } = await import('./db/mysql-adapter.js');
+        const adapter = getMySQLAdapter();
+        const rows = await adapter.query("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?", [resolvedTheme, resolvedTheme]);
+        row = rows[0];
+      } else {
+        row = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?").get(resolvedTheme, resolvedTheme) as any;
+      }
       if (row) {
         const colors = JSON.parse(row.colors_json);
         const fonts = JSON.parse(row.fonts_json);
@@ -3769,7 +4435,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
 }
 
 // PPTX 主题列表 API（内置 + 自定义）
-app.get("/api/pptx/themes", requireAuth, (req: any, res) => {
+app.get("/api/pptx/themes", requireAuth, async (req: any, res) => {
   const builtIn = Object.values(PPTX_THEMES).map((t) => ({
     name: t.name, label: t.label, custom: false,
     preview: { bg: t.background, title: t.titleColor, accent: t.accentColor },
@@ -3779,7 +4445,14 @@ app.get("/api/pptx/themes", requireAuth, (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (userId) {
-      const rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+      let rows: any[];
+      if (isMySQL()) {
+        const { getMySQLAdapter } = await import('./db/mysql-adapter.js');
+        const adapter = getMySQLAdapter();
+        rows = await adapter.query("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC", [userId]);
+      } else {
+        rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+      }
       custom = rows.map((r) => {
         const colors = JSON.parse(r.colors_json);
         return {
@@ -3823,9 +4496,18 @@ app.post("/api/pptx/themes/learn", requireAuth, express.raw({ type: "multipart/f
       return;
     }
 
-    getDb().prepare(
-      "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+    if (isMySQL()) {
+      const { getMySQLAdapter } = await import('./db/mysql-adapter.js');
+      const adapter = getMySQLAdapter();
+      await adapter.execute(
+        "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file, created_at) VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+        [id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile]
+      );
+    } else {
+      getDb().prepare(
+        "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
+    }
 
     res.json({
       success: true,
@@ -3844,7 +4526,7 @@ app.post("/api/pptx/themes/learn", requireAuth, express.raw({ type: "multipart/f
 });
 
 // 删除自定义 PPTX 主题
-app.delete("/api/pptx/themes/:id", requireAuth, (req: any, res) => {
+app.delete("/api/pptx/themes/:id", requireAuth, async (req: any, res) => {
   try {
     const themeId = req.params.id;
     const userId = req.user?.id;
@@ -3853,8 +4535,17 @@ app.delete("/api/pptx/themes/:id", requireAuth, (req: any, res) => {
       return;
     }
 
-    const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
-    if (result.changes === 0) {
+    let success = false;
+    if (isMySQL()) {
+      const { getMySQLAdapter } = await import('./db/mysql-adapter.js');
+      const adapter = getMySQLAdapter();
+      const result = await adapter.execute("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?", [themeId, userId]);
+      success = result.affectedRows > 0;
+    } else {
+      const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
+      success = result.changes > 0;
+    }
+    if (!success) {
       res.status(404).json({ success: false, error: "主题不存在或无权删除" });
       return;
     }
@@ -3951,6 +4642,74 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT ?? 3000;
 
+// 挂载 routes/ 目录下的所有路由
+mountRoutes(app, {
+  registry,
+  engine,
+  wal,
+  configManager,
+  sessionManager,
+  taskManager,
+  pluginLoader,
+  marketplace,
+  evolutionController,
+  emergenceDetector,
+  lifecycleManager,
+  promptManager,
+  modelRouter,
+  federationTransport,
+  migrationManager,
+  federationManager,
+  evolutionEngine,
+  instanceId,
+  getCurrentProvider: () => currentProvider,
+  getCurrentMultimodalProvider: () => currentMultimodalProvider,
+  createProvider,
+  setCurrentProvider: (p) => { currentProvider = p; },
+  getAgentLoop: (userId: string) => agentLoops.get(userId) ?? null,
+  getOrchestrator: () => orchestrator,
+  getAgentConfig: () => configManager.getAgent(),
+  getVisionConfig: () => {
+    const mm = configManager.getMultimodal();
+    if (!mm.enabled || !mm.apiKey || !mm.visionModel) return null;
+    return { apiKey: mm.apiKey, baseUrl: mm.baseUrl || "", model: mm.visionModel };
+  },
+  rebuildMultimodalProvider: () => {
+    const mm = configManager.getMultimodal();
+    if (!mm.enabled || !mm.apiKey) {
+      currentMultimodalProvider = null;
+      return;
+    }
+    currentMultimodalProvider = new OpenAIMultimodalProvider(mm.apiKey, mm.baseUrl || undefined, mm.imageModel, mm.visionModel, mm.ttsModel, mm.whisperModel);
+  },
+  rebuildAllAgentLoops: () => {
+    for (const [userId, loop] of agentLoops) {
+      const config = configManager.getLLM();
+      if (!config) continue;
+      const provider = createProvider(config);
+      loop.updateProvider(provider);
+      const agentCfg = configManager.getAgent();
+      loop.updateConfig({
+        maxIterations: agentCfg.maxIterations ?? 10,
+        systemPrompt: agentCfg.systemPrompt,
+        includeTrace: agentCfg.includeTrace ?? false,
+      });
+    }
+  },
+  rebuildOrchestrator: () => {
+    if (!currentProvider) return;
+    orchestrator = new Orchestrator(registry, engine, currentProvider, configManager.getAgent().maxIterations);
+  },
+  syncSkillsToResources: () => {
+    // 同步技能到资源
+    const skills = registry.getAll();
+    const resourceSkills = skills.filter((s: any) => s.type === "resource").map((s: any) => s.name);
+    if (resourceSkills.length > 0) {
+      console.log(`   Skills synced to resources: ${resourceSkills.length} total`);
+    }
+  },
+});
+
 // 启动时自动 WAL 恢复
 const walRecoveryPlan = wal.recover();
 if (walRecoveryPlan.entries.length > 0) {
@@ -3988,6 +4747,17 @@ app.listen(PORT, () => {
   const evoConfig = configManager.getEvolution();
   evolutionEngine.start();
   console.log(`   Evolution engine: started (auto=${evoConfig.autoExecute})\n`);
+});
+
+// 处理未捕获的异常，防止进程崩溃
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught Exception:", err);
+  // 记录错误但不退出，保持服务可用
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[FATAL] Unhandled Rejection at:", promise, "reason:", reason);
+  // 记录错误但不退出
 });
 
 // 优雅关闭：处理 SIGTERM 和 SIGINT

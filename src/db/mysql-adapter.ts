@@ -116,7 +116,7 @@ export class MySQLAdapter {
         target: pool === this.primaryPool ? 'primary' : 'replica',
       });
 
-      const [rows] = await pool.execute<mysql.RowDataPacket[]>(sql, params);
+      const [rows] = await pool.query<mysql.RowDataPacket[]>(sql, params);
 
       log('debug', 'mysql_adapter_query_success', {
         rowCount: Array.isArray(rows) ? rows.length : 0,
@@ -142,7 +142,7 @@ export class MySQLAdapter {
         params: params?.length,
       });
 
-      const [rows] = await this.primaryPool.execute<mysql.RowDataPacket[]>(sql, params);
+      const [rows] = await this.primaryPool.query<mysql.RowDataPacket[]>(sql, params);
 
       log('debug', 'mysql_adapter_query_primary_success', {
         rowCount: Array.isArray(rows) ? rows.length : 0,

@@ -23,14 +23,6 @@ import {
   FolderOutlined,
   FolderOpenOutlined,
   FileOutlined,
-  FilePdfOutlined,
-  FileExcelOutlined,
-  FileWordOutlined,
-  FilePptOutlined,
-  FileTextOutlined,
-  FileImageOutlined,
-  FileZipOutlined,
-  FileMarkdownOutlined,
   DeleteOutlined,
   DownloadOutlined,
   UploadOutlined,
@@ -48,6 +40,7 @@ import {
 } from "@ant-design/icons";
 import ShareDialog from "@/components/ShareDialog";
 import { XMarkdown } from "@ant-design/x-markdown";
+import { getFileIcon } from "@/components/chat/utils";
 import { useI18nStore } from "@/i18n";
 import { api, apiFetch, pageImageUrl } from "@/api";
 
@@ -93,29 +86,7 @@ interface KbDocInfo {
   status: string; // "parsing" | "vectorizing" | "done"
 }
 
-function getFileIcon(ext: string, size = 16) {
-  const style = { fontSize: size };
-  const map: Record<string, React.ReactNode> = {
-    ".pdf": <FilePdfOutlined style={{ ...style, color: "#ff4d4f" }} />,
-    ".xlsx": <FileExcelOutlined style={{ ...style, color: "#52c41a" }} />,
-    ".xls": <FileExcelOutlined style={{ ...style, color: "#52c41a" }} />,
-    ".csv": <FileExcelOutlined style={{ ...style, color: "#52c41a" }} />,
-    ".docx": <FileWordOutlined style={{ ...style, color: "#1677ff" }} />,
-    ".doc": <FileWordOutlined style={{ ...style, color: "#1677ff" }} />,
-    ".pptx": <FilePptOutlined style={{ ...style, color: "#fa8c16" }} />,
-    ".ppt": <FilePptOutlined style={{ ...style, color: "#fa8c16" }} />,
-    ".txt": <FileTextOutlined style={{ ...style, color: "#8c8c8c" }} />,
-    ".log": <FileTextOutlined style={{ ...style, color: "#8c8c8c" }} />,
-    ".md": <FileMarkdownOutlined style={{ ...style, color: "#722ed1" }} />,
-    ".png": <FileImageOutlined style={{ ...style, color: "#13c2c2" }} />,
-    ".jpg": <FileImageOutlined style={{ ...style, color: "#13c2c2" }} />,
-    ".jpeg": <FileImageOutlined style={{ ...style, color: "#13c2c2" }} />,
-    ".gif": <FileImageOutlined style={{ ...style, color: "#13c2c2" }} />,
-    ".zip": <FileZipOutlined style={{ ...style, color: "#faad14" }} />,
-    ".rar": <FileZipOutlined style={{ ...style, color: "#faad14" }} />,
-  };
-  return map[ext] || <FileOutlined style={{ ...style, color: "#8c8c8c" }} />;
-}
+
 
 function formatSize(bytes: number): string {
   if (!bytes) return "--";

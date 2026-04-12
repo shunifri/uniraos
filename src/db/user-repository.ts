@@ -165,9 +165,10 @@ export async function listUsers(opts?: { limit?: number; offset?: number; status
 
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
+    // mysql2 requires strict integer types for LIMIT/OFFSET
     const rows = await adapter.query(
       `SELECT * FROM users WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [status, limit, offset]
+      [status, parseInt(String(limit), 10), parseInt(String(offset), 10)]
     );
     return rows.map(mapUser);
   } else {

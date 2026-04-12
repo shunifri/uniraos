@@ -71,9 +71,11 @@ export class RecallContextSkill {
     const memories = raw.slice(0, this.maxRecallEntries);
 
     // 图遍历增强：发现关联知识
-    if (this.graphManager && this.graphManager.getStore().nodeCount > 0) {
+    if (this.graphManager) {
+      const nodeCount = await this.graphManager.getStore().countNodes();
+      if (nodeCount > 0) {
       try {
-        const subgraph = this.graphManager.querySubgraph(query, { maxNodes: 3, maxDepth: 2 });
+        const subgraph = await this.graphManager.querySubgraph(query, { maxNodes: 3, maxDepth: 2 });
         for (const node of subgraph.nodes) {
           if (!memories.some(m => m.key === node.label)) {
             memories.push({
@@ -84,6 +86,7 @@ export class RecallContextSkill {
           }
         }
       } catch { /* graph query failure is non-fatal */ }
+      }
     }
 
     // 逐条注入 STM（key 格式：recall:<ltm_key>）

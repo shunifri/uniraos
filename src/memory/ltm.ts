@@ -1,8 +1,9 @@
 /**
- * 长期记忆 (Long-Term Memory) - 文件后端实现
+ * 长期记忆 (Long-Term Memory) - MySQL 后端实现
  * 支持：持久化、搜索、归档（冷记忆拆分备份）、向量语义搜索
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { randomBytes } from "crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { EmbeddingProvider } from "./embedding-provider.js";
 import { cosineSimilarity } from "./embedding-provider.js";
@@ -14,6 +15,7 @@ import type {
   LTMStats,
   LTMArchiveResult,
 } from "./ltm-backend.js";
+import { getMySQLAdapter, type MySQLAdapter } from "../db/mysql-adapter.js";
 
 export interface LTMEntry {
   id: string;
@@ -67,6 +69,488 @@ const DEFAULT_LTM_CONFIG: LTMConfig = {
   activeLimit: 150,
 };
 
+/**
+ * MySQL 长期记忆后端实现
+ */
+export class MySQLLTMBackend implements LTMBackend {
+  private adapter: MySQLAdapter;
+  private config: LTMConfig;
+  private owner: string;
+  private archiveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastScheduledArchiveAt: number = 0;
+
+  constructor(owner: string, config?: Partial<LTMConfig>) {
+    this.config = { ...DEFAULT_LTM_CONFIG, ...config };
+    this.owner = owner;
+    this.adapter = getMySQLAdapter();
+
+    // 如果配置了定时归档，自动启动
+    if (this.config.archiveIntervalMs && this.config.archiveIntervalMs > 0) {
+      this.startScheduledArchive(this.config.archiveIntervalMs);
+    }
+  }
+
+  /** 存储记忆 */
+  async store(key: string, value: unknown, options?: LTMStoreOptions): Promise<string> {
+    const now = Date.now();
+
+    // 检查是否已存在相同 key 的记忆
+    const existing = await this.getByKey(key);
+    if (existing) {
+      // 更新现有记忆
+      await this.adapter.execute(
+        `UPDATE kb_ltm_entries 
+         SET value = ?, updated_at = ?, last_accessed_at = ?, access_count = access_count + 1,
+             tags = ?, source = ?, summary = ?
+         WHERE id = ? AND owner_id = ?`,
+        [
+          JSON.stringify(value),
+          now,
+          now,
+          JSON.stringify(options?.tags ?? existing.tags),
+          options?.source ?? existing.source ?? '',
+          options?.summary ?? existing.summary ?? '',
+          existing.id,
+          this.owner,
+        ]
+      );
+      return existing.id;
+    }
+
+    // 创建新记忆
+    const id = `ltm_${Date.now()}_${randomBytes(4).toString("hex")}`;
+
+    // 计算向量（如果有 embedding provider）
+    let vector: Buffer | null = null;
+    if (this.config.embeddingProvider) {
+      try {
+        const text = typeof value === 'string' ? value : JSON.stringify(value);
+        const [vectorArray] = await this.config.embeddingProvider.embed([text]);
+        vector = Buffer.from(new Float32Array(vectorArray).buffer);
+      } catch (e) {
+        console.warn('[MySQLLTMBackend] Failed to generate embedding:', e);
+      }
+    }
+
+    await this.adapter.execute(
+      `INSERT INTO kb_ltm_entries 
+       (id, owner_id, entry_key, value, tags, source, summary, created_at, updated_at, last_accessed_at, access_count, vector, is_archived) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      [
+        id,
+        this.owner,
+        key,
+        JSON.stringify(value),
+        JSON.stringify(options?.tags ?? []),
+        options?.source ?? '',
+        options?.summary ?? '',
+        now,
+        now,
+        now,
+        1,
+        vector,
+      ]
+    );
+
+    // 检查是否需要归档
+    await this.checkArchive();
+
+    return id;
+  }
+
+  /** 按 key 精确查找 */
+  async getByKey(key: string): Promise<LTMEntry | undefined> {
+    const rows = await this.adapter.query(
+      `SELECT * FROM kb_ltm_entries 
+       WHERE owner_id = ? AND entry_key = ? AND is_archived = 0
+       ORDER BY updated_at DESC LIMIT 1`,
+      [this.owner, key]
+    );
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+
+    // 更新访问时间和次数
+    await this.adapter.execute(
+      `UPDATE kb_ltm_entries 
+       SET access_count = access_count + 1, last_accessed_at = ? 
+       WHERE id = ?`,
+      [Date.now(), row.id]
+    );
+
+    return this.rowToEntry(row);
+  }
+
+  /** 按 ID 查找 */
+  async getById(id: string): Promise<LTMEntry | undefined> {
+    const rows = await this.adapter.query(
+      `SELECT * FROM kb_ltm_entries WHERE id = ? AND owner_id = ? AND is_archived = 0`,
+      [id, this.owner]
+    );
+
+    if (rows.length === 0) return undefined;
+
+    return this.rowToEntry(rows[0]);
+  }
+
+  /** 搜索记忆 */
+  async search(query: string, options?: LTMSearchOptions): Promise<LTMEntry[]> {
+    const limit = options?.limit ?? 10;
+    const includeArchive = options?.includeArchive ?? false;
+
+    // 语义搜索
+    if (options?.semantic && this.config.embeddingProvider) {
+      const queryVector = (await this.config.embeddingProvider.embed([query]))[0];
+
+      // 获取所有符合条件的条目
+      let sql = `SELECT * FROM kb_ltm_entries WHERE owner_id = ?`;
+      const params: any[] = [this.owner];
+
+      if (!includeArchive) {
+        sql += ` AND is_archived = 0`;
+      }
+
+      if (options?.tags && options.tags.length > 0) {
+        // JSON 包含查询 - 使用 JSON_CONTAINS
+        sql += ` AND (${options.tags.map(() => `JSON_CONTAINS(tags, ?)`).join(' OR ')})`;
+        params.push(...options.tags.map(t => JSON.stringify(t)));
+      }
+
+      const rows = await this.adapter.query(sql, params);
+
+      // 计算相似度并排序
+      const scored = rows
+        .filter((row: any) => row.vector !== null)
+        .map((row: any) => {
+          const entryVector = Array.from(new Float32Array(row.vector));
+          const score = cosineSimilarity(queryVector, entryVector);
+          return { row, score };
+        })
+        .sort((a: any, b: any) => b.score - a.score)
+        .slice(0, limit);
+
+      return scored.map(({ row }: { row: any }) => this.rowToEntry(row));
+    }
+
+    // 关键词搜索
+    let sql = `SELECT * FROM kb_ltm_entries WHERE owner_id = ?`;
+    const params: any[] = [this.owner];
+
+    if (!includeArchive) {
+      sql += ` AND is_archived = 0`;
+    }
+
+    if (options?.tags && options.tags.length > 0) {
+      sql += ` AND (${options.tags.map(() => `JSON_CONTAINS(tags, ?)`).join(' OR ')})`;
+      params.push(...options.tags.map(t => JSON.stringify(t)));
+    }
+
+    sql += ` AND (entry_key LIKE ? OR value LIKE ? OR summary LIKE ?)`;
+    params.push(`%${query}%`, `%${query}%`, `%${query}%`);
+
+    sql += ` ORDER BY last_accessed_at DESC LIMIT ?`;
+    params.push(limit);
+
+    const rows = await this.adapter.query(sql, params);
+    return rows.map((row: any) => this.rowToEntry(row));
+  }
+
+  /** 删除记忆 */
+  async delete(id: string): Promise<boolean> {
+    const result = await this.adapter.execute(
+      `DELETE FROM kb_ltm_entries WHERE id = ? AND owner_id = ?`,
+      [id, this.owner]
+    );
+    return result.affectedRows > 0;
+  }
+
+  /** 按 key 删除 */
+  async deleteByKey(key: string): Promise<boolean> {
+    const result = await this.adapter.execute(
+      `DELETE FROM kb_ltm_entries WHERE entry_key = ? AND owner_id = ?`,
+      [key, this.owner]
+    );
+    return result.affectedRows > 0;
+  }
+
+  /** 列出所有活跃记忆 */
+  async list(options?: LTMListOptions): Promise<LTMEntry[]> {
+    const limit = options?.limit ?? 100;
+    const offset = options?.offset ?? 0;
+
+    const rows = await this.adapter.query(
+      `SELECT * FROM kb_ltm_entries 
+       WHERE owner_id = ? AND is_archived = 0
+       ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+      [this.owner, limit, offset]
+    );
+
+    return rows.map((row: any) => this.rowToEntry(row));
+  }
+
+  /** 获取统计 */
+  async stats(): Promise<LTMStats> {
+    const [activeResult, archivedResult, tagsResult] = await Promise.all([
+      this.adapter.query(
+        `SELECT COUNT(*) as count FROM kb_ltm_entries WHERE owner_id = ? AND is_archived = 0`,
+        [this.owner]
+      ),
+      this.adapter.query(
+        `SELECT COUNT(*) as count FROM kb_ltm_entries WHERE owner_id = ? AND is_archived = 1`,
+        [this.owner]
+      ),
+      this.adapter.query(
+        `SELECT tags FROM kb_ltm_entries WHERE owner_id = ?`,
+        [this.owner]
+      ),
+    ]);
+
+    const active = (activeResult[0]?.count as number) || 0;
+    const archived = (archivedResult[0]?.count as number) || 0;
+    const total = active + archived;
+
+    // 统计标签
+    const tagCounts: Record<string, number> = {};
+    for (const row of tagsResult as any[]) {
+      const tags = JSON.parse(row.tags || '[]');
+      for (const tag of tags) {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      }
+    }
+
+    return {
+      total: active,
+      archived,
+      archives: 0, // MySQL 版本不单独存储归档清单
+      tags: tagCounts,
+      scheduledArchive: {
+        running: this.isScheduledArchiveRunning(),
+        lastRunAt: this.lastScheduledArchiveAt,
+      },
+      vectorIndex: {
+        indexed: 0, // MySQL 版本中向量存储在表中
+        total: active,
+        provider: this.config.embeddingProvider ? 'embedding' : null,
+      },
+    };
+  }
+
+  get size(): number {
+    // 注意：这是一个同步 getter，但实际需要异步查询
+    // 调用者应该使用 stats() 获取准确的数量
+    return 0;
+  }
+
+  // ===== 归档系统 =====
+
+  /** 手动触发归档 */
+  async archive(reason?: string): Promise<LTMArchiveResult> {
+    const config = this.config;
+    const now = Date.now();
+
+    // 找出冷记忆（超过冷判定天数且访问次数低）
+    const coldThreshold = now - config.coldDays * 24 * 60 * 60 * 1000;
+
+    const rows = await this.adapter.query(
+      `SELECT * FROM kb_ltm_entries 
+       WHERE owner_id = ? AND is_archived = 0
+       AND last_accessed_at < ? AND access_count <= ?
+       ORDER BY last_accessed_at ASC`,
+      [this.owner, coldThreshold, config.coldAccessCount]
+    );
+
+    const coldEntries = rows as any[];
+
+    if (coldEntries.length === 0) {
+      return { archived: 0, manifest: null };
+    }
+
+    // 归档这些条目
+    const ids = coldEntries.map((e: any) => e.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    await this.adapter.execute(
+      `UPDATE kb_ltm_entries SET is_archived = 1 WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    // 生成归档清单
+    const manifest: ArchiveManifest = {
+      id: `archive_${Date.now()}`,
+      createdAt: now,
+      reason: reason || 'cold_memory',
+      entryCount: coldEntries.length,
+      fileName: '', // MySQL 版本不使用文件
+      keySummary: coldEntries.map((e: any) => e.entry_key).slice(0, 100),
+      tagSummary: [...new Set(coldEntries.flatMap((e: any) => JSON.parse(e.tags || '[]')))],
+    };
+
+    return { archived: coldEntries.length, manifest };
+  }
+
+  /** 获取所有归档清单 */
+  async getArchiveManifests(): Promise<ArchiveManifest[]> {
+    // MySQL 版本返回空数组（归档信息存储在表中的 is_archived 字段）
+    return [];
+  }
+
+  /** 从归档中恢复 */
+  async restoreFromArchive(_archiveId: string, keys?: string[]): Promise<number> {
+    if (keys && keys.length > 0) {
+      // 恢复指定键
+      const placeholders = keys.map(() => '?').join(',');
+      const result = await this.adapter.execute(
+        `UPDATE kb_ltm_entries SET is_archived = 0 
+         WHERE owner_id = ? AND entry_key IN (${placeholders})`,
+        [this.owner, ...keys]
+      );
+      return result.affectedRows || 0;
+    }
+
+    // 恢复所有归档
+    const result = await this.adapter.execute(
+      `UPDATE kb_ltm_entries SET is_archived = 0 WHERE owner_id = ? AND is_archived = 1`,
+      [this.owner]
+    );
+    return result.affectedRows || 0;
+  }
+
+  // ===== 定时归档调度 =====
+
+  /** 启动定时归档 */
+  startScheduledArchive(intervalMs: number): void {
+    this.stopScheduledArchive();
+    this.archiveTimer = setInterval(() => {
+      this.runScheduledArchive().catch(console.error);
+    }, intervalMs);
+    // 不阻止进程退出
+    if (this.archiveTimer && typeof this.archiveTimer === "object" && "unref" in this.archiveTimer) {
+      this.archiveTimer.unref();
+    }
+  }
+
+  /** 停止定时归档 */
+  stopScheduledArchive(): void {
+    if (this.archiveTimer) {
+      clearInterval(this.archiveTimer);
+      this.archiveTimer = null;
+    }
+  }
+
+  /** 定时归档是否运行中 */
+  isScheduledArchiveRunning(): boolean {
+    return this.archiveTimer !== null;
+  }
+
+  /** 上次定时归档时间 */
+  getLastScheduledArchiveAt(): number {
+    return this.lastScheduledArchiveAt;
+  }
+
+  /** 销毁实例 */
+  destroy(): void {
+    this.stopScheduledArchive();
+  }
+
+  // ===== 可选的高级能力 =====
+
+  /** 设置 Embedding Provider */
+  setEmbeddingProvider(provider: EmbeddingProvider): void {
+    this.config.embeddingProvider = provider;
+  }
+
+  /** 构建向量索引（MySQL 版本：为所有缺少向量的条目生成向量） */
+  async buildVectorIndex(): Promise<{ indexed: number; failed: number }> {
+    if (!this.config.embeddingProvider) return { indexed: 0, failed: 0 };
+
+    // 获取所有没有向量的条目
+    const rows = await this.adapter.query(
+      `SELECT id, entry_key, value, summary, tags FROM kb_ltm_entries 
+       WHERE owner_id = ? AND vector IS NULL AND is_archived = 0`,
+      [this.owner]
+    );
+
+    if (rows.length === 0) return { indexed: 0, failed: 0 };
+
+    let indexed = 0;
+    let failed = 0;
+
+    // 分批处理
+    const batchSize = 50;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = (rows as any[]).slice(i, i + batchSize);
+      const texts = batch.map((row: any) => this.entryToText(row));
+
+      try {
+        const embeddings = await this.config.embeddingProvider.embed(texts);
+        for (let j = 0; j < batch.length; j++) {
+          const vector = Buffer.from(new Float32Array(embeddings[j]).buffer);
+          await this.adapter.execute(
+            `UPDATE kb_ltm_entries SET vector = ? WHERE id = ?`,
+            [vector, batch[j].id]
+          );
+          indexed++;
+        }
+      } catch {
+        failed += batch.length;
+      }
+    }
+
+    return { indexed, failed };
+  }
+
+  // ===== 私有方法 =====
+
+  private rowToEntry(row: any): LTMEntry {
+    return {
+      id: row.id,
+      key: row.entry_key,
+      value: JSON.parse(row.value),
+      tags: JSON.parse(row.tags || '[]'),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      accessCount: row.access_count,
+      lastAccessedAt: row.last_accessed_at,
+      source: row.source,
+      summary: row.summary,
+    };
+  }
+
+  private entryToText(row: any): string {
+    const parts = [row.entry_key];
+    if (row.summary) parts.push(row.summary);
+    const tags = JSON.parse(row.tags || '[]');
+    if (tags.length > 0) parts.push(tags.join(" "));
+    const valueStr = typeof row.value === "string" ? row.value : JSON.stringify(row.value);
+    parts.push(valueStr.substring(0, 1000));
+    return parts.join(" ");
+  }
+
+  private async checkArchive(): Promise<void> {
+    // 检查活跃记忆数量是否超过阈值
+    const result = await this.adapter.query(
+      `SELECT COUNT(*) as count FROM kb_ltm_entries WHERE owner_id = ? AND is_archived = 0`,
+      [this.owner]
+    );
+
+    const count = (result[0] as any)?.count || 0;
+
+    if (count >= this.config.archiveThreshold) {
+      await this.archive("auto:threshold_exceeded");
+    }
+  }
+
+  private async runScheduledArchive(): Promise<{ archived: number; manifest: ArchiveManifest | null }> {
+    this.lastScheduledArchiveAt = Date.now();
+    return this.archive("scheduled");
+  }
+}
+
+/**
+ * 文件存储长期记忆后端（保留以向后兼容）
+ * @deprecated 请使用 MySQLLTMBackend
+ */
 export class FileLTMBackend implements LTMBackend {
   private entries = new Map<string, LTMEntry>();
   private config: LTMConfig;
@@ -82,6 +566,7 @@ export class FileLTMBackend implements LTMBackend {
 
   constructor(config?: Partial<LTMConfig>) {
     this.config = { ...DEFAULT_LTM_CONFIG, ...config };
+    
     if (!existsSync(this.config.storePath)) {
       mkdirSync(this.config.storePath, { recursive: true });
     }
@@ -147,7 +632,7 @@ export class FileLTMBackend implements LTMBackend {
   private async embedEntry(entry: LTMEntry): Promise<void> {
     if (!this.config.embeddingProvider) return;
     try {
-      const text = this.entryToText(entry);
+      const text = this.entryToTextForEmbed(entry);
       const [vector] = await this.config.embeddingProvider.embed([text]);
       this.vectors.set(entry.id, vector);
       this.saveVectors();
@@ -157,7 +642,7 @@ export class FileLTMBackend implements LTMBackend {
   }
 
   /** 将记忆条目转为可向量化的文本 */
-  private entryToText(entry: LTMEntry): string {
+  private entryToTextForEmbed(entry: LTMEntry): string {
     const parts = [entry.key];
     if (entry.summary) parts.push(entry.summary);
     if (entry.tags.length > 0) parts.push(entry.tags.join(" "));
@@ -186,7 +671,7 @@ export class FileLTMBackend implements LTMBackend {
     const batchSize = 50;
     for (let i = 0; i < toEmbed.length; i += batchSize) {
       const batch = toEmbed.slice(i, i + batchSize);
-      const texts = batch.map((e) => this.entryToText(e));
+      const texts = batch.map((e) => this.entryToTextForEmbed(e));
 
       try {
         const embeddings = await this.config.embeddingProvider.embed(texts);
@@ -702,6 +1187,6 @@ export class FileLTMBackend implements LTMBackend {
   }
 }
 
-/** 向后兼容别名 */
-export const LongTermMemory = FileLTMBackend;
-export type LongTermMemory = FileLTMBackend;
+/** 向后兼容别名 - 现在使用 MySQL 实现 */
+export const LongTermMemory = MySQLLTMBackend;
+export type LongTermMemory = MySQLLTMBackend;
