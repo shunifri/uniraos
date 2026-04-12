@@ -60,7 +60,7 @@ interface SkillInfo {
   paramSchema?: ParamSchema | null;
   isSystem?: boolean;
   owner?: string;
-  source?: "own" | "role" | "shared";
+  source?: "own" | "shared" | "role" | "system";
 }
 
 type SkillFilter = "all" | "own" | "system" | "shared";

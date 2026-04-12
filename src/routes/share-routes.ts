@@ -2,7 +2,7 @@
  * 共享规则 API 路由
  */
 import { Router } from "express";
-import { requireAuth, requireAdmin } from "../db/auth-middleware.js";
+import { requireAuth } from "../db/auth-middleware.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
 import type { ShareRepository } from "../db/share-repository.js";
@@ -60,20 +60,24 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
           return;
         }
         
-        // 系统 Skill 不允许分享（除非管理员）
+        // 获取用户信息
+        const userPermissions = await getUserRoles(req.user!.id);
+        const isAdmin = userPermissions.some(r => r.name === "admin");
+        const isOwner = !skill.owner || skill.owner === req.user!.id;
+        
+        // 系统 Skill：仅管理员可以分享
         if (skill.isSystem) {
-          const userPermissions = await getUserRoles(req.user!.id);
-          const isAdmin = userPermissions.some(r => r.name === "admin");
           if (!isAdmin) {
             res.status(403).json({ success: false, error: "System skills can only be shared by administrators" });
             return;
           }
-        }
-        
-        // 非 owner 不能分享
-        if (skill.owner && skill.owner !== req.user!.id) {
-          res.status(403).json({ success: false, error: "Only skill owner can share this skill" });
-          return;
+          // 管理员可以分享系统 Skill，跳过 ownership 检查
+        } else {
+          // 非系统 Skill：必须是 owner
+          if (!isOwner) {
+            res.status(403).json({ success: false, error: "Only skill owner can share this skill" });
+            return;
+          }
         }
       }
 

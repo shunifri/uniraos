@@ -2,7 +2,10 @@ import { Router } from "express";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
-import { getUserPermissions } from "../db/user-repository.js";
+import { getUserPermissions, getUserRoles, getUserById } from "../db/user-repository.js";
+import { getDepartmentById } from "../db/department-repository.js";
+import { ShareRepository } from "../db/share-repository.js";
+import { getDb, isMySQL } from "../db/database.js";
 import type { RouteDependencies } from "./index.js";
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
@@ -16,10 +19,23 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
     const allSkills = isAdmin ? registry.list() : registry.listByPermissions(permissions);
     
+    // Get shared skill names for this user
+    const roles = await getUserRoles(userId);
+    const roleIds = roles.map(r => r.id);
+    let deptPath = "/";
+    const user = await getUserById(userId);
+    if (user?.departmentId) {
+      const dept = await getDepartmentById(user.departmentId);
+      if (dept) deptPath = dept.path;
+    }
+    const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+    const sharedSkillNames = await shareRepo.getSharedResourceIds("skill", userId, roleIds, deptPath);
+    
     // Determine source for each skill
-    const getSkillSource = (s: any): "own" | "role" | "system" => {
+    const getSkillSource = (s: any): "own" | "shared" | "role" | "system" => {
       if (s.isSystem || !s.owner) return "system";
       if (s.owner === userId) return "own";
+      if (sharedSkillNames.includes(s.name)) return "shared";
       return "role";
     };
     
