@@ -2082,9 +2082,23 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                   // 支持标题、段落、代码块、列表等不同内容类型的识别
                   const contentBlocks = parseContentBlocks(contentForExtraction);
 
+                  // 跟踪当前标题层级，用于建立内容块之间的层级关系
+                  let currentHeadings: Array<{ level: number; label: string }> = [];
+                  let previousLevel = 0;
+
                   for (let i = 0; i < contentBlocks.slice(0, 20).length; i++) {  // 增加到 20 个内容块
                     const block = contentBlocks[i];
                     const blockContent = block.content.slice(0, 400);  // 增加长度限制到 400 字符
+
+                    // 处理标题层级
+                    if (block.type === 'heading') {
+                      const level = block.level ?? 1; // 确保有默认值
+                      currentHeadings = currentHeadings.filter(h => h.level < level);
+                      currentHeadings.push({ level, label: blockContent });
+                      previousLevel = level;
+                    }
+
+                    // 构建知识图谱节点
                     await graphManager.onFactStored({
                       id: `kb_content_${result.docId}_${i}`,
                       key: `kb:${docName}:${block.type}:${i}`,
@@ -2092,6 +2106,22 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                       tags: ['kb_content', block.type, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                       relation: `kb:${docName}`,
                     });
+
+                    // 建立层级关系（标题与内容块之间的连接）
+                    if (currentHeadings.length > 0 && block.type !== 'heading') {
+                      // 使用最后一个标题作为父节点
+                      const parentHeading = currentHeadings[currentHeadings.length - 1];
+                      const parentKey = `kb:${docName}:heading:${currentHeadings.length - 1}`;
+
+                      // 建立内容块与标题之间的关系
+                      await graphManager.onFactStored({
+                        id: `kb_rel_${result.docId}_${i}`,
+                        key: `${parentKey}->content:${i}`,
+                        value: `${parentHeading.label} 包含 ${block.type} 内容`,
+                        tags: ['kb_relation', 'contains'],
+                        relation: parentKey,
+                      });
+                    }
                   }
                 }
 
