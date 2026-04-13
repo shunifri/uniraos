@@ -155,6 +155,62 @@ interface Segment {
   searchableText?: string;
 }
 
+// ===== 查询分类器类型 =====
+type QueryType = 'factual' | 'relational' | 'discovery' | 'hybrid';
+
+interface ClassifiedQuery {
+  type: QueryType;
+  confidence: number;
+  keywords: string[];
+  entities: string[];
+  relations: string[];
+}
+
+/** 查询分类器 */
+function classifyQuery(query: string): ClassifiedQuery {
+  // 规则引擎 + 关键词匹配
+  const queryLower = query.toLowerCase();
+  const indicators = {
+    factual: ['什么是', '定义', '介绍', '说明', 'how to', 'what is'],
+    relational: ['关系', '关联', '连接', '从...到', '通过', '路径', '区别', '相同'],
+    discovery: ['意外', '没想到', '新发现', '探索', '发现', '有什么', '还有什么'],
+  };
+
+  // 匹配和评分
+  const scores = {
+    factual: indicators.factual.filter(i => queryLower.includes(i)).length,
+    relational: indicators.relational.filter(i => queryLower.includes(i)).length,
+    discovery: indicators.discovery.filter(i => queryLower.includes(i)).length,
+  };
+
+  // 确定主类型
+  let type: QueryType = 'hybrid';
+  let maxScore = 0;
+
+  for (const [key, score] of Object.entries(scores) as Array<[keyof typeof scores, number]>) {
+    if (score > maxScore) {
+      maxScore = score;
+      type = key as QueryType;
+    }
+  }
+
+  // 如果所有类型得分相等，归类为 hybrid
+  if (Object.values(scores).filter(s => s === maxScore).length > 1) {
+    type = 'hybrid';
+  }
+
+  // 简单的关键词提取
+  const keywords = queryLower.match(/[\u4e00-\u9fff]+|[a-zA-Z]+/g)?.filter(w => w.length >= 2) || [];
+
+  return {
+    type,
+    confidence: maxScore > 0 ? (maxScore / Math.max(...Object.values(indicators).map(i => i.length))) : 0.5,
+    keywords,
+    entities: [],
+    relations: [],
+  };
+}
+
 // ===== 知识库核心 =====
 
 export class KnowledgeBase {
@@ -317,11 +373,11 @@ export class KnowledgeBase {
       const isPlaceholderDoc = opts?._placeholderDocId !== undefined;
 
       // 检查文档是否已存在
-      const [existsResult] = await connection.query(
+      const existsResult = await connection.query(
         "SELECT COUNT(*) as count FROM kb_documents WHERE doc_id = ?",
         [docId]
       );
-      const docExists = existsResult[0].count > 0;
+      const docExists = (existsResult as any)[0].count > 0;
 
       if (docExists) {
         // 文档已存在（占位符或旧文档），先删除旧的 chunks 和 keywords
@@ -1014,6 +1070,147 @@ export class KnowledgeBase {
   /** 获取 embedding provider */
   getEmbeddingProvider(): EmbeddingProvider {
     return this.embeddingProvider;
+  }
+
+  /** 图谱检索：根据查询内容查询相关子图，并返回关联的知识库文档 */
+  async graphSearch(
+    query: string,
+    opts?: {
+      limit?: number;
+      maxDepth?: number;
+      maxNodes?: number;
+    }
+  ): Promise<Array<{
+    docId: string;
+    docName: string;
+    chunkIndex: number;
+    content: string;
+    score: number;
+    matchType: 'graph_subgraph' | 'graph_path' | 'graph_community';
+    graphContext?: {
+      path?: any[];
+      subgraph?: { nodes: any[]; edges: any[] };
+      community?: number;
+    };
+  }>> {
+    // 目前先返回空结果，等待与 sessionManager 集成
+    // 在实际使用中，需要从 session 中获取 graphManager
+    return [];
+  }
+
+  /** 路径查询：查找两个实体之间的路径 */
+  async pathSearch(
+    source: string,
+    target: string,
+    opts?: { maxDepth?: number }
+  ): Promise<{
+    found: boolean;
+    path?: Array<{ node: any; edge?: any }>;
+    explanation?: string;
+  }> {
+    return { found: false };
+  }
+
+  /** 混合检索（包含图谱增强） */
+  async hybridSearchWithGraph(
+    query: string,
+    opts?: { limit?: number; threshold?: number }
+  ): Promise<Array<{
+    docId: string;
+    docName: string;
+    chunkIndex: number;
+    content: string;
+    score: number;
+    matchType: 'keyword' | 'semantic' | 'graph_subgraph' | 'graph_path' | 'hybrid';
+    graphContext?: any;
+  }>> {
+    const limit = opts?.limit ?? 10;
+    const classified = classifyQuery(query);
+
+    // 阶段 1: 基础检索（始终执行）
+    const keywordResults = await this.keywordSearch(query, limit * 2);
+    const semanticResults = await this.semanticSearch(query, limit * 2);
+
+    // 阶段 2: 图谱检索（根据查询类型）
+    let graphResults: any[] = [];
+    // 目前先不执行图谱检索，等待与 sessionManager 集成
+    // if (classified.type === 'relational' || classified.type === 'discovery' || classified.type === 'hybrid') {
+    //   graphResults = await this.graphSearch(query, { limit: limit * 2 });
+    // }
+
+    // 阶段 3: RRF 融合 + 图谱增强评分
+    const allResults = this.mergeAndRescoreResults(
+      keywordResults,
+      semanticResults,
+      graphResults,
+      classified.type
+    );
+
+    return allResults.slice(0, limit);
+  }
+
+  /** 结果融合与重评分（RRF + 图谱增强） */
+  private mergeAndRescoreResults(
+    keywordResults: any[],
+    semanticResults: any[],
+    graphResults: any[],
+    queryType: QueryType
+  ): any[] {
+    const scoreMap = new Map<string, { score: number; sources: Set<string>; item: any }>();
+
+    // 1. RRF 融合
+    const k = 60;
+
+    keywordResults.forEach((r, i) => {
+      const key = `${r.docId}_${r.chunkIndex}`;
+      const rrfScore = 0.4 / (k + i + 1);
+      const existing = scoreMap.get(key);
+      if (existing) {
+        existing.score += rrfScore;
+        existing.sources.add('keyword');
+      } else {
+        scoreMap.set(key, { score: rrfScore, sources: new Set(['keyword']), item: r });
+      }
+    });
+
+    semanticResults.forEach((r, i) => {
+      const key = `${r.docId}_${r.chunkIndex}`;
+      const rrfScore = 0.6 / (k + i + 1);
+      const existing = scoreMap.get(key);
+      if (existing) {
+        existing.score += rrfScore;
+        existing.sources.add('semantic');
+      } else {
+        scoreMap.set(key, { score: rrfScore, sources: new Set(['semantic']), item: r });
+      }
+    });
+
+    // 2. 图谱增强（仅当有图谱结果时）
+    if (graphResults.length > 0) {
+      const graphBoost = queryType === 'relational' ? 1.5 : queryType === 'discovery' ? 1.3 : 1.1;
+
+      graphResults.forEach((r, i) => {
+        const key = `${r.docId}_${r.chunkIndex}`;
+        const graphScore = (graphBoost * 0.5) / (k + i + 1);
+        const existing = scoreMap.get(key);
+        if (existing) {
+          existing.score += graphScore;
+          existing.sources.add('graph');
+          existing.item.graphContext = r.graphContext;
+        } else {
+          scoreMap.set(key, { score: graphScore, sources: new Set(['graph']), item: r });
+        }
+      });
+    }
+
+    // 3. 排序并返回
+    return [...scoreMap.values()]
+      .sort((a, b) => b.score - a.score)
+      .map(({ item, score, sources }) => ({
+        ...item,
+        score,
+        matchType: [...sources].join('+') as any,
+      }));
   }
 
   // ===== Document Mind 相关方法 =====
@@ -1721,7 +1918,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           // 本地解析（Fallback）
           // 音视频文档必须启用 Document Mind，不允许本地解析
           const localMediaExts = ['mp3', 'wav', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4a', 'aac', 'ogg'];
-          const fileExt = (params.name || params.path || '').split('.').pop()?.toLowerCase() || '';
+          const fileExt = (String(params.name || params.path || '')).split('.').pop()?.toLowerCase() || '';
           if (localMediaExts.includes(fileExt)) {
             console.error(`[kb_ingest] 音视频文档必须启用 Document Mind: ${fileExt}`);
             return {
@@ -1984,11 +2181,22 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
     }),
   );
 
+// 查询类型分类器
+type QueryType = 'factual' | 'relational' | 'discovery' | 'hybrid';
+
+interface ClassifiedQuery {
+  type: QueryType;
+  confidence: number;
+  keywords: string[];
+  entities: string[];
+  relations: string[];
+}
+
   registry.register(
     defineSystemSkill({
       name: "kb_search",
       description:
-        "在知识库中检索。参数: query(string), limit?(number, 默认5), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true)",
+        "知识图谱原生检索。自动分类查询类型（事实/关系/发现）并选择最优检索策略。参数: query(string), limit?(number, 默认5), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true)",
       timeout: 30000,
       paramSchema: {
         properties: {
@@ -2012,28 +2220,114 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         const kb = getKnowledgeBase(owner);
 
         try {
-          // 搜索自己的知识库
-          const ownResults = await kb.search(query, {
-            limit,
-            threshold: (params.threshold as number) ?? 0.4,
-            tags: params.tags as string[] | undefined,
-            docIds: params.docIds as string[] | undefined,
-          });
+          // P3: 查询分类
+          const classified = classifyQuery(query);
+          console.log(`[kb_search] 查询分类: ${classified.type}, 置信度: ${classified.confidence.toFixed(2)}, 关键词: ${classified.keywords.join(', ')}`);
 
-          let sharedResults: any[] = [];
-          if (includeShared) {
-            sharedResults = await searchShared(query, owner, Math.ceil(limit / 2));
+          let ownResults: any[] = [];
+          let graphUsed = false;
+
+          // 获取图谱管理器（如果可用）
+          let graphManager: any = null;
+          if (sessionManager) {
+            const session = sessionManager.getOrCreate(owner);
+            const sessionWithGraph = session as unknown as SessionWithGraphManager;
+            graphManager = sessionWithGraph.graphManager;
           }
 
-          // 合并结果，自己的优先，添加来源标记
-          const combined = [
-            ...ownResults.map((r) => ({ ...r, owner, source: "own" as const })),
-            ...sharedResults.map((r) => ({ ...r, source: "shared" as const })),
-          ]
-            .sort((a, b) => b.score - a.score)
-            .slice(0, limit);
+          // 根据查询类型选择检索策略
+          if ((classified.type === 'relational' || classified.type === 'discovery') && graphManager) {
+            // P3: 关系查询或发现查询 → 使用图谱检索
+            console.log(`[kb_search] 使用图谱检索 (${classified.type})`);
+            try {
+              const subgraphResult = await graphManager.querySubgraph(query, {
+                maxDepth: 3,
+                maxNodes: 50,
+              });
 
-          // 将搜索结果同步到知识图谱（非致命）
+              // 从子图中提取 kb_document 节点
+              const docNodes = subgraphResult.nodes.filter((n: any) => n.type === 'kb_document');
+
+              if (docNodes.length > 0) {
+                // 从知识库获取完整信息
+                const docIds = docNodes.map((n: any) => {
+                  // 从节点 id 中提取 docId (格式: kb_doc_${docId})
+                  const match = n.id.match(/kb_doc_(.*)/);
+                  return match ? match[1] : null;
+                }).filter(Boolean);
+
+                console.log(`[kb_search] 从知识图谱找到相关文档: ${docIds.length} 个`);
+
+                // 使用图谱相关的文档 ID 进行知识库检索
+                ownResults = await kb.search(query, {
+                  limit: limit * 2,
+                  docIds: docIds as string[],
+                  tags: params.tags as string[]
+                });
+
+                // 为结果添加图谱上下文
+                ownResults = ownResults.map(result => ({
+                  ...result,
+                  matchType: `graph_${classified.type}`,
+                  graphContext: {
+                    subgraphSize: subgraphResult.nodes.length,
+                    edgesCount: subgraphResult.edges.length,
+                    sourceNode: docNodes.find((d: any) => `kb_doc_${result.docId}` === d.id),
+                  }
+                }));
+
+                graphUsed = true;
+              } else {
+                console.log(`[kb_search] 知识图谱未找到直接相关文档，使用混合检索`);
+                ownResults = await kb.search(query, {
+                  limit: limit,
+                  tags: params.tags as string[],
+                  docIds: params.docIds as string[]
+                });
+              }
+            } catch (graphErr: unknown) {
+              console.warn(`[kb_search] 知识图谱检索失败，降级到混合检索:`, graphErr);
+              ownResults = await kb.search(query, {
+                limit: limit,
+                tags: params.tags as string[],
+                docIds: params.docIds as string[]
+              });
+            }
+          } else {
+            // 事实查询或混合查询 → 使用混合检索
+            console.log(`[kb_search] 使用混合检索 (${classified.type})`);
+            ownResults = await kb.search(query, {
+              limit: limit,
+              tags: params.tags as string[],
+              docIds: params.docIds as string[]
+            });
+          }
+
+          // 处理共享文档（如果需要）
+          let sharedResults: any[] = [];
+          if (includeShared) {
+            try {
+              const sharedKB = getKnowledgeBase("shared");
+              const rawSharedResults = await sharedKB.search(query, {
+                limit: limit * 2,
+                tags: params.tags as string[],
+                docIds: params.docIds as string[]
+              });
+
+              // 去重：排除自己文档
+              const ownDocIds = new Set(ownResults.map(r => r.docId));
+              sharedResults = rawSharedResults
+                .filter(r => !ownDocIds.has(r.docId))
+                .slice(0, limit);
+            } catch (sharedErr: unknown) {
+              console.warn("[kb_search] 共享文档检索失败:", sharedErr);
+              sharedResults = [];
+            }
+          }
+
+          const combined = [...ownResults, ...sharedResults];
+
+          // 图谱同步（非致命）
           if (sessionManager && combined.length > 0) {
             try {
               const session = sessionManager.getOrCreate(owner);
@@ -2053,13 +2347,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
           return {
             success: true,
-            data: {
-              results: combined,
-              count: combined.length,
-              ownCount: ownResults.length,
-              sharedCount: sharedResults.length,
-              query,
-            },
+            data: combined.slice(0, limit),
           };
         } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -2314,8 +2602,8 @@ let globalVisionConfig: VisionModelConfig | null = null;
 export function setGlobalKBEmbeddingProvider(provider: EmbeddingProvider): void {
   globalEmbeddingProvider = provider;
   // 更新所有已有实例
-  for (const kb of kbInstances.values()) {
-    kb.setEmbeddingProvider(provider);
+  for (const cached of kbInstances.values()) {
+    cached.kb.setEmbeddingProvider(provider);
   }
 }
 
