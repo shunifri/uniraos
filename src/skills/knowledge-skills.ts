@@ -2078,69 +2078,146 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                 if (layouts.length === 0 && segments.length === 0 && contentForExtraction.length > 50) {
                   console.log(`[kb_ingest] 本地解析文档，添加内容节点到知识图谱，内容长度: ${contentForExtraction.length}`);
 
-                  // 简单处理：将文档内容分成段落或块，并添加到知识图谱
-                  const paragraphs = contentForExtraction.split(/\n\s*\n/).filter(p => p.trim().length > 50);
-                  for (let i = 0; i < paragraphs.slice(0, 10).length; i++) {  // 最多添加 10 个内容块
-                    const para = paragraphs[i].trim().slice(0, 300);  // 限制长度
+                  // 优化：智能内容分割与语义标记
+                  // 支持标题、段落、代码块、列表等不同内容类型的识别
+                  const contentBlocks = parseContentBlocks(contentForExtraction);
+
+                  for (let i = 0; i < contentBlocks.slice(0, 20).length; i++) {  // 增加到 20 个内容块
+                    const block = contentBlocks[i];
+                    const blockContent = block.content.slice(0, 400);  // 增加长度限制到 400 字符
                     await graphManager.onFactStored({
                       id: `kb_content_${result.docId}_${i}`,
-                      key: `kb:${docName}:content:${i}`,
-                      value: para,
-                      tags: ['kb_content', 'text', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                      key: `kb:${docName}:${block.type}:${i}`,
+                      value: blockContent,
+                      tags: ['kb_content', block.type, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                       relation: `kb:${docName}`,
                     });
                   }
                 }
 
-                // 5. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（使用数据库中的 parsed_content）
+                // 5. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（优化版）
                 if (llmProvider && contentForExtraction && contentForExtraction.length > 100) {
-                  console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${Math.min(contentForExtraction.length, 2000)}`);
+                  console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${contentForExtraction.length}`);
                   const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
                   const { KnowledgeGraphManager } = await import("../memory/knowledge-graph/manager.js");
 
-                  // 抽取关系（只抽取前 2000 字符避免过长）
-                  const relations = await extractRelationships(contentForExtraction.slice(0, 2000), llmProvider as LLMProvider);
-                  console.log(`[kb_ingest] LLM extracted ${relations.length} relations`);
+                  // 优化：分批处理长文档，避免单次处理过长
+                  const chunkSize = 3000; // 每批次处理 3000 字符
+                  const overlap = 500; // 重叠 500 字符保证上下文连贯性
+                  const totalChunks = Math.ceil(contentForExtraction.length / (chunkSize - overlap));
+                  console.log(`[kb_ingest] 文档分段处理: ${totalChunks} 段`);
 
-                  // 获取graph store并添加关系
                   const store = graphManager.getStore();
+                  let totalRelations = 0;
                   let createdCount = 0;
 
-                  for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
-                    let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
-                    if (!sourceNode) {
-                      sourceNode = await store.addNode({
-                        id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                        label: rel.sourceLabel,
-                        type: "entity",
-                        tags: Array.isArray(params.tags) ? params.tags : [],
-                        properties: { sourceDoc: docName },
-                        createdAt: Date.now(),
-                      });
-                      createdCount++;
-                    }
+                  // 节点跟踪 - 使用归一化标签避免重复创建
+                  const nodeCache = new Map<string, any>();
 
-                    let targetNode = await store.findNodeByLabel(rel.targetLabel);
-                    if (!targetNode) {
-                      targetNode = await store.addNode({
-                        id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                        label: rel.targetLabel,
-                        type: "entity",
-                        tags: Array.isArray(params.tags) ? params.tags : [],
-                        properties: { sourceDoc: docName },
-                        createdAt: Date.now(),
-                      });
-                      createdCount++;
-                    }
+                  // 先尝试查找或创建文档节点作为锚点
+                  const docAnchorId = `kb_doc_${result.docId}`;
+                  let docAnchorNode = await store.findNodeByLabel(docName);
+                  if (!docAnchorNode) {
+                    docAnchorNode = await store.addNode({
+                      id: docAnchorId,
+                      label: docName,
+                      type: "kb_document",
+                      tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                      properties: { sourceDoc: docName, docId: result.docId },
+                      createdAt: Date.now(),
+                    });
+                    nodeCache.set(docName, docAnchorNode);
+                  } else {
+                    nodeCache.set(docName, docAnchorNode);
+                  }
 
-                    // 避免重复边
-                    const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-                    if (existingEdges.every(e => e.relation !== rel.relation)) {
-                      await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
+                  // 分批处理文档内容
+                  for (let i = 0; i < totalChunks; i++) {
+                    const startPos = i * (chunkSize - overlap);
+                    const endPos = Math.min(startPos + chunkSize, contentForExtraction.length);
+                    const chunkText = contentForExtraction.slice(startPos, endPos);
+
+                    console.log(`[kb_ingest] 处理第 ${i + 1}/${totalChunks} 段 (${startPos}-${endPos})`);
+
+                    // 抽取关系
+                    const relations = await extractRelationships(chunkText, llmProvider as LLMProvider);
+                    console.log(`[kb_ingest] 第 ${i + 1} 段抽取到 ${relations.length} 个关系`);
+                    totalRelations += relations.length;
+
+                    for (const rel of relations.slice(0, 20)) {  // 每段最多 20 个关系
+                      // 归一化实体标签
+                      const normalizedSource = normalizeEntityLabel(rel.sourceLabel);
+                      const normalizedTarget = normalizeEntityLabel(rel.targetLabel);
+
+                      // 获取或创建源节点
+                      let sourceNode = nodeCache.get(normalizedSource);
+                      if (!sourceNode) {
+                        sourceNode = await store.findNodeByLabel(normalizedSource);
+                        if (!sourceNode) {
+                          sourceNode = await store.addNode({
+                            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                            label: normalizedSource,
+                            type: inferEntityType(normalizedSource, rel.relation),
+                            tags: Array.isArray(params.tags) ? params.tags : [],
+                            properties: { sourceDoc: docName, chunkIndex: i },
+                            createdAt: Date.now(),
+                          });
+                          createdCount++;
+                        }
+                        nodeCache.set(normalizedSource, sourceNode);
+                      }
+
+                      // 获取或创建目标节点
+                      let targetNode = nodeCache.get(normalizedTarget);
+                      if (!targetNode) {
+                        targetNode = await store.findNodeByLabel(normalizedTarget);
+                        if (!targetNode) {
+                          targetNode = await store.addNode({
+                            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                            label: normalizedTarget,
+                            type: inferEntityType(normalizedTarget, rel.relation),
+                            tags: Array.isArray(params.tags) ? params.tags : [],
+                            properties: { sourceDoc: docName, chunkIndex: i },
+                            createdAt: Date.now(),
+                          });
+                          createdCount++;
+                        }
+                        nodeCache.set(normalizedTarget, targetNode);
+                      }
+
+                      // 避免重复边 - 检查关系类型和置信度
+                      const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
+                      const hasEdge = existingEdges.some(e =>
+                        e.relation === rel.relation ||
+                        e.relation === normalizeRelationType(rel.relation)
+                      );
+
+                      if (!hasEdge) {
+                        await store.addEdge(
+                          sourceNode.id,
+                          targetNode.id,
+                          "LLM_EXTRACTED",
+                          normalizeRelationType(rel.relation)
+                        );
+                      }
+
+                      // 同时连接到文档锚点
+                      if (sourceNode.id !== docAnchorNode.id) {
+                        const docToSourceEdges = await store.getEdgesBetween(docAnchorNode.id, sourceNode.id);
+                        if (docToSourceEdges.length === 0) {
+                          await store.addEdge(docAnchorNode.id, sourceNode.id, "CONTAINS", "mentions_in_doc");
+                        }
+                      }
+                      if (targetNode.id !== docAnchorNode.id) {
+                        const docToTargetEdges = await store.getEdgesBetween(docAnchorNode.id, targetNode.id);
+                        if (docToTargetEdges.length === 0) {
+                          await store.addEdge(docAnchorNode.id, targetNode.id, "CONTAINS", "mentions_in_doc");
+                        }
+                      }
                     }
                   }
 
-                  console.log(`[kb_ingest] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes`);
+                  console.log(`[kb_ingest] LLM 关系抽取完成: 总共抽取 ${totalRelations} 个关系，创建 ${createdCount} 个节点`);
                 }
               }
             } catch (err: unknown) {
@@ -2180,6 +2257,206 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       }
     }),
   );
+
+// 智能内容块解析函数
+function parseContentBlocks(content: string): Array<{ type: string; content: string; level?: number }> {
+  const blocks: Array<{ type: string; content: string; level?: number }> = [];
+  const lines = content.split('\n');
+  let currentBlock = '';
+  let currentType = 'paragraph';
+  let currentLevel = 0;
+
+  // 正则表达式匹配不同内容类型
+  const titlePattern = /^(#+)\s+(.+)$/;  // Markdown 标题
+  const codePattern = /^```([a-zA-Z]*)/; // Markdown 代码块开始
+  const listPattern = /^(\s*)([-*+]|\d+\.)\s/; // 列表项
+  const quotePattern = /^>\s*/; // 引用
+
+  let inCodeBlock = false;
+  let codeLanguage = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+
+    if (inCodeBlock) {
+      if (line.startsWith('```')) {
+        // 代码块结束
+        blocks.push({
+          type: `code_${codeLanguage}`,
+          content: currentBlock.trim(),
+        });
+        inCodeBlock = false;
+        currentBlock = '';
+        currentType = 'paragraph';
+      } else {
+        currentBlock += (currentBlock ? '\n' : '') + line;
+      }
+      continue;
+    }
+
+    // 检查是否开始代码块
+    const codeMatch = line.match(codePattern);
+    if (codeMatch) {
+      inCodeBlock = true;
+      codeLanguage = codeMatch[1];
+      if (currentBlock) {
+        blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+        currentBlock = '';
+      }
+      continue;
+    }
+
+    // 检查是否是标题
+    const titleMatch = line.match(titlePattern);
+    if (titleMatch) {
+      if (currentBlock) {
+        blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+      }
+      currentType = 'heading';
+      currentLevel = titleMatch[1].length;
+      currentBlock = titleMatch[2].trim();
+      blocks.push({ type: currentType, content: currentBlock, level: currentLevel });
+      currentBlock = '';
+      currentType = 'paragraph';
+      currentLevel = 0;
+      continue;
+    }
+
+    // 检查是否是列表项
+    const listMatch = line.match(listPattern);
+    if (listMatch) {
+      if (currentBlock) {
+        blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+      }
+      currentType = 'list';
+      currentLevel = listMatch[1].length; // 使用缩进确定列表层级
+      currentBlock = line.trimStart();
+      continue;
+    }
+
+    // 检查是否是引用
+    const quoteMatch = line.match(quotePattern);
+    if (quoteMatch) {
+      if (currentBlock) {
+        blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+      }
+      currentType = 'quote';
+      currentLevel = 0;
+      currentBlock = line.slice(quoteMatch[0].length).trim();
+      continue;
+    }
+
+    // 处理段落（空行分隔）
+    if (line === '') {
+      if (currentBlock) {
+        blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+        currentBlock = '';
+        currentType = 'paragraph';
+        currentLevel = 0;
+      }
+      continue;
+    }
+
+    // 普通文本行
+    if (currentBlock) {
+      currentBlock += '\n' + line;
+    } else {
+      currentBlock = line;
+    }
+  }
+
+  // 处理最后一个块
+  if (currentBlock) {
+    blocks.push({ type: currentType, content: currentBlock.trim(), level: currentLevel });
+  }
+
+  return blocks;
+}
+
+/** 归一化实体标签 - 提高匹配准确性 */
+function normalizeEntityLabel(label: string): string {
+  if (!label) return label;
+  return label
+    .trim()
+    .replace(/\s+/g, ' ')  // 多个空格合并为一个
+    .replace(/[^\u4e00-\u9fffa-zA-Z0-9\s]/g, '')  // 移除特殊字符
+    .toLowerCase();
+}
+
+/** 根据实体名称和关系推断实体类型 */
+function inferEntityType(label: string, relation: string): string {
+  const lowerLabel = label.toLowerCase();
+  const lowerRelation = relation.toLowerCase();
+
+  // 文档相关
+  if (lowerLabel.includes('文档') || lowerLabel.includes('文件') || lowerLabel.endsWith('.pdf') || lowerLabel.endsWith('.docx')) {
+    return 'kb_document';
+  }
+
+  // 概念/术语
+  if (lowerRelation.includes('定义') || lowerRelation.includes('是') || lowerLabel.includes('什么')) {
+    return 'concept';
+  }
+
+  // 人物
+  if (lowerLabel.includes('先生') || lowerLabel.includes('女士') || lowerLabel.includes('博士')) {
+    return 'person';
+  }
+
+  // 组织
+  if (lowerLabel.includes('公司') || lowerLabel.includes('部门') || lowerLabel.includes('团队')) {
+    return 'organization';
+  }
+
+  // 技术/工具
+  if (lowerLabel.includes('系统') || lowerLabel.includes('平台') || lowerLabel.includes('工具')) {
+    return 'technology';
+  }
+
+  // 默认类型
+  return 'entity';
+}
+
+/** 归一化关系类型 - 统一关系表达方式 */
+function normalizeRelationType(relation: string): string {
+  const lowerRel = relation.toLowerCase();
+
+  const relationMap: Record<string, string> = {
+    '相关': 'related_to',
+    '关联': 'related_to',
+    '连接': 'related_to',
+    '关于': 'about',
+    '属于': 'part_of',
+    '包含': 'contains',
+    '包括': 'contains',
+    '使用': 'uses',
+    '依赖': 'depends_on',
+    '基于': 'based_on',
+    '参考': 'references',
+    '引用': 'references',
+    '创建': 'created_by',
+    '是': 'is_a',
+    '等于': 'is_a',
+    '区别于': 'different_from',
+    '不同于': 'different_from',
+    '相似于': 'similar_to',
+  };
+
+  // 精确匹配
+  if (relationMap[lowerRel]) {
+    return relationMap[lowerRel];
+  }
+
+  // 部分匹配
+  for (const [key, value] of Object.entries(relationMap)) {
+    if (lowerRel.includes(key)) {
+      return value;
+    }
+  }
+
+  // 默认返回原始关系
+  return relation;
+}
 
 // 查询类型分类器
 type QueryType = 'factual' | 'relational' | 'discovery' | 'hybrid';
