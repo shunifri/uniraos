@@ -81,34 +81,28 @@ const zh = {
   approve: '批准',
   reject: '拒绝',
   pending: '待处理',
+
   // 按钮
-  canary: '金丝雀',
-  deprecate: '弃用',
-  config: '配置',
   view_code: '查看代码',
-  approve: '批准',
-  reject: '拒绝',
   add_redline: '添加红线',
   add_peer: '添加对等节点',
   save_configuration: '保存配置',
-  reset: '重置',
   apply_filter: '应用筛选',
   details: '详情',
   accept: '接受',
   ignore: '忽略',
+
   // Memory 页面
-  start: '开始',
-  stop: '停止',
   archive_now: '立即归档',
   restore: '恢复',
   query: '查询',
   detect_conflicts: '检测矛盾',
   refresh_profile: '刷新画像',
-  search: '检索',
   load_log: '加载日志',
   extract_facts: '提取事实',
   files_upload: '上传文件',
   add_share_rule: '添加共享规则',
+
   // Admin 页面
   create_dept: '新建部门',
   create_role: '新建角色',
@@ -117,26 +111,22 @@ const zh = {
   deselect: '取消',
   time: '时间',
   created: '创建时间',
-  accept: '接受',
-  ignore: '忽略',
+
   // 配置相关
   confirm_save_config: '确认保存配置',
   confirm_save_config_content: '确定要保存这些联邦配置更改吗？',
-  save_configuration: '保存配置',
   must_be_between_1_and_300: '必须在 1 到 300 之间',
   must_be_between_1_and_3600: '必须在 1 到 3600 之间',
   must_be_between_0_and_1: '必须在 0 到 1 之间',
+
   // 表格列标题
   instance_id: '实例 ID',
   endpoint: '端点',
   version: '版本',
   skills: '技能',
   last_heartbeat: '最后心跳',
-  status: '状态',
-  actions: '操作',
   remove_peer: '移除对等节点',
   remove: '移除',
-  cancel: '取消',
   peer_details: '对等节点详情',
   local_success_rate: '本地成功率',
   success_rate: '成功率',
@@ -145,13 +135,11 @@ const zh = {
   migration_time: '迁移时间',
   success_rate_change: '成功率变化',
   skill_name: '技能名称',
+
   // 状态值
   online: '在线',
   offline: '离线',
   unreachable: '不可达',
-  success: '成功',
-  failed: '失败',
-  pending: '待处理',
   progress: '进度',
 
   // Chat
@@ -165,9 +153,7 @@ const zh = {
   upload: '上传文件',
 
   // Skills
-  skills: '技能',
   execute_skill: '执行技能',
-  skill_name: '技能名称',
   select_skill: '请选择技能',
   parameters: '参数',
   execute: '执行',
@@ -191,26 +177,6 @@ const zh = {
   system_prompt: '系统提示词',
   system_prompt_hint: '自定义 Agent 系统提示词',
   federation: '联邦',
-  instance_id: '实例 ID',
-  // 按钮
-  start: '启动',
-  stop: '停止',
-  refresh: '刷新',
-  running: '运行中',
-  stopped: '已停止',
-  add: '添加',
-  delete: '删除',
-  edit: '编辑',
-  save: '保存',
-  cancel: '取消',
-  confirm: '确认',
-  submit: '提交',
-  reset: '重置',
-  filter: '筛选',
-  apply: '应用',
-  clear: '清除',
-  view: '查看',
-  actions: '操作',
   federation_key: '联邦密钥',
   federation_key_hint: '用于节点间通信认证',
   heartbeat: '心跳间隔',
@@ -228,21 +194,16 @@ const zh = {
   deprecated_at: '弃用时间',
   no_redline_constraints: '暂无红线约束',
   filter_by_status: '按状态筛选',
-  all: '全部',
-  active: '活跃',
-  canary: '金丝雀',
-  deprecated: '已弃用',
-  retired: '已退役',
   no_skills_found: '暂无技能',
   usage: '使用次数',
   skill_lifecycle: '技能生命周期',
+
   // Document Mind 配置
   docmind_title: '阿里云文档解析服务',
   docmind_desc: '支持 PDF、Word、PPT、Excel、图片、音视频的智能解析。每月 3000 页免费额度。',
   api_config: 'API 配置',
   enabled: '已启用',
   disabled: '未启用',
-  enable: '启用',
   advanced_options: '高级选项',
   multimedia_mode: '音视频模式',
   base_recognition: '基本识别 (Base)',
@@ -266,13 +227,10 @@ const zh = {
   // Memory
   memory_system: '记忆系统',
   archive_schedule: '归档调度',
-  minutes: '分钟',
   hours: '小时',
-  archive_now: '立即归档',
   last_run: '上次运行',
   accessed: '访问',
   archives: '归档记录',
-  restore: '恢复',
   restore_confirm: '确定要恢复此归档？',
   archived: '已归档',
   restored: '已恢复',
@@ -303,7 +261,6 @@ const zh = {
   department_name: '部门名称',
   parent_department: '上级部门',
   no_parent_department: '无（顶级部门）',
-  description: '描述',
   create_role: '新建角色',
   role_name: '角色名称',
   search_permissions: '搜索权限...',
@@ -312,7 +269,6 @@ const zh = {
   generation_history: '生成历史',
   skill: '技能',
   state: '状态',
-  last_used: '最后使用',
   federation_status: '联邦状态',
   recommendations: '推荐',
   migration_history: '迁移历史',
@@ -323,34 +279,25 @@ const zh = {
   severity: '严重程度',
   constraint_name: '约束名称',
   describe_constraint: '描述约束条件...',
-  filter_by_status: '按状态筛选',
-  search_pending_skills: '搜索待处理的技能...',
-  type: '类型',
   detected_at: '检测时间',
-  all: '全部',
   high: '高',
   medium: '中',
   low: '低',
   instance_profile: '实例信息',
-  instance_id: '实例 ID',
-  version: '版本',
   skill_count: '技能数量',
   joined: '已加入',
   idle: '空闲',
-  running: '运行中',
   leave_federation: '离开联邦',
   join_federation: '加入联邦',
   left_federation: '已离开联邦',
   joined_federation: '已加入联邦',
   peer_instances: '对等实例',
-  recommendations: '推荐',
   migrated_skills: '迁移技能',
   federated_networks: '联邦网络',
   quick_statistics: '快速统计',
   federation_configuration: '联邦配置',
   configuration_notes: '配置说明',
   search_skills: '搜索技能...',
-  add_peer: '添加对等节点',
   peer_name: '节点名称',
   peer_endpoint: '节点地址',
   peer_name_example: '例如：instance-001',
@@ -361,10 +308,8 @@ const zh = {
   god_nodes: '中心节点',
   query_knowledge_graph: '查询知识图谱 (BFS)...',
   sync_graph: '同步图谱',
-  query: '查询',
   sync_from_ltm: '从 LTM 同步',
   rebuild_communities: '重建社区',
-  refresh: '刷新',
   clear_query: '清除查询',
   query_results: '查询结果',
   full_graph: '完整图谱',
@@ -375,11 +320,9 @@ const zh = {
   solid_extracted: '实线 = 提取',
   dashed_inferred: '虚线 = 推断',
   dotted_temporal: '点线 = 时序',
-  skill_lifecycle: '技能生命周期',
   redline_constraints: '红线约束',
   add_redline_constraint: '添加红线约束',
   redline_constraint_added: '红线约束已添加',
-  evolution_engine: '进化引擎',
   evolution_cycles: '进化周期',
   total_suggestions: '总建议数',
   statistics: '统计',
@@ -395,22 +338,24 @@ const zh = {
   recommendation_ignored: '推荐已忽略',
   peer_added: '对等节点已添加',
   peer_removed: '对等节点已移除',
+
   // 涌现监控
   emergence_patterns: '涌现模式',
+
   // 生命周期
   canary_deployment_enabled: '金丝雀部署已启用',
   skill_deprecated: '技能已标记为弃用',
-  usage_count: '使用次数',
-  created_at: '创建时间',
-  deprecated_at: '弃用时间',
+
   // 待处理操作
   skill_approved: '技能已批准',
   skill_rejected: '技能已拒绝',
   pending_skills_count: '待处理技能',
   generation: '世代',
   creator: '创建者',
+
   // 红线
   redline_deleted: '红线已删除',
+
   // 联邦配置
   failed_to_load_configuration: '加载配置失败',
   failed_to_save_configuration: '保存配置失败',
@@ -424,38 +369,42 @@ const zh = {
   sync_interval: '同步间隔',
   confidence_threshold: '置信度阈值',
   auto_migration: '自动迁移',
+
   // 指标
   failed_to_load_metrics: '加载指标失败',
+
   // 迁移
   failed_to_load_migration_history: '加载迁移历史失败',
+
   // 对等节点
   failed_to_load_peers: '加载对等节点失败',
   failed_to_add_peer: '添加对等节点失败',
   failed_to_remove_peer: '移除对等节点失败',
-  endpoint: '地址',
-  last_heartbeat: '最后心跳',
+
   // 推荐
   failed_to_load_recommendations: '加载推荐失败',
   failed_to_accept_recommendation: '接受推荐失败',
   failed_to_ignore_recommendation: '忽略推荐失败',
-  source_instance: '源实例',
   confidence: '置信度',
-  details: '详情',
+
   // 进化页面
   evolution_overview: '进化概览',
   skill_genealogy: '技能谱系',
   emergence_monitor: '涌现监控',
   pending_actions: '待处理操作',
   redlines: '红线约束',
+
   // 联邦页面
   federation_overview: '联邦概览',
   metrics_comparison: '指标对比',
   configuration: '配置',
+
   // 配置说明
   heartbeat_interval_desc: '较低的值会增加网络流量，但能更快检测到对等节点故障。',
   sync_interval_desc: '控制此实例与其他对等节点同步技能指标和推荐的频率。',
   confidence_threshold_desc: '仅考虑高于此阈值的推荐。较高的值更为保守。',
   auto_migration_desc: '启用后，高置信度的推荐将被自动接受。禁用则进行人工审核。',
+
   // 更多联邦
   heartbeat_tooltip: '控制实例向其他对等节点发送心跳的频率',
   sync_tooltip: '控制实例与对等节点同步数据的频率',
@@ -464,20 +413,21 @@ const zh = {
   heartbeat_required: '心跳间隔为必填项',
   sync_required: '同步间隔为必填项',
   confidence_required: '置信度阈值为必填项',
+
   // 涌现
   no_emergence_patterns: '未检测到涌现模式',
+
   // 生命周期
   enable_canary_confirm: '为以下技能启用金丝雀部署',
   mark_deprecated_confirm: '标记为弃用？将被过渡到退役状态。',
+
   // 待处理
   approve_skill_confirm: '确定要批准技能',
   reject_skill_confirm: '确定要拒绝技能',
+
   // 推荐
   accept_recommendation_confirm: '接受以下技能的推荐',
   ignore_recommendation_confirm: '忽略以下技能的推荐',
-  name: '名称',
-  // 联邦对等节点
-  instance_id: '实例 ID',
 
   // Knowledge Base
   kb_doc_count: '文档数',

@@ -49,9 +49,13 @@ export class SkillMarketplace {
     this.registry = registry;
     // 初始化 SQLite 持久化
     const resolved = dbPath ?? join(process.cwd(), ".raos", "marketplace.db");
+    this.initDb(resolved);
+  }
+
+  private async initDb(resolved: string): Promise<void> {
     try {
-      const { mkdirSync } = require("fs");
-      const { dirname } = require("path");
+      const { mkdirSync } = await import("fs");
+      const { dirname } = await import("path");
       mkdirSync(dirname(resolved), { recursive: true });
       this.db = new Database(resolved);
       this.db.pragma("journal_mode = WAL");

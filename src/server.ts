@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import { fileURLToPath } from "url";
 import { dirname, join, resolve } from "path";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync } from "fs";
 import { SkillRegistry } from "./registry/index.js";
 import { ExecutionEngine, AsyncTaskManager } from "./engine/index.js";
 import { WALManager } from "./wal/index.js";
@@ -436,7 +436,7 @@ for (const skill of createMultimodalSkills(() => currentMultimodalProvider, task
 console.log(`   Multimodal + async task skills registered`);
 
 // 注册数据操作 Skills (file/http/shell)
-createDataSkills(registry);
+await createDataSkills(registry);
 
 // 注册数据库 Skills (SQLite + 可选 MySQL/PostgreSQL/Redis/MSSQL/Oracle)
 await createDatabaseSkills(registry);
@@ -1718,30 +1718,53 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
 
   // ===== 后端消息持久化 =====
   const convId = conversationId || null;
-  const insertMsg = convId
-    ? getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    : null;
 
+  // Fire-and-forget: 不阻塞 SSE 流式输出
   function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
-    if (!insertMsg || !convId) return;
-    try {
-      insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, opts?.extra ? JSON.stringify(opts.extra) : null);
-    } catch {}
+    if (!convId) return;
+    if (isMySQL()) {
+      getMySQLAdapter().then(adapter =>
+        adapter.execute(
+          "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, opts?.extra ? JSON.stringify(opts.extra) : null]
+        )
+      ).catch(() => {});
+    } else {
+      try {
+        const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, opts?.extra ? JSON.stringify(opts.extra) : null);
+      } catch {}
+    }
   }
 
+  // Fire-and-forget: 不阻塞 SSE 流式输出
   function updateConvTitle(title: string) {
     if (!convId) return;
-    try {
-      const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
-      if (msgCount <= 2) { // 第一条用户消息+一条策略或助手消息
-        getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
-      } else {
-        getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
-      }
-    } catch {}
+    if (isMySQL()) {
+      getMySQLAdapter().then(async adapter => {
+        try {
+          const rows = await adapter.query<{ c: number }>("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
+          const msgCount = rows[0]?.c ?? 0;
+          if (msgCount <= 2) { // 第一条用户消息+一条策略或助手消息
+            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() WHERE id = ?", [title, convId]);
+          } else {
+            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() WHERE id = ?", [convId]);
+          }
+        } catch {}
+      }).catch(() => {});
+    } else {
+      try {
+        const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+        if (msgCount <= 2) { // 第一条用户消息+一条策略或助手消息
+          getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+        } else {
+          getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+        }
+      } catch {}
+    }
   }
 
-  // 保存用户消息
+  // 保存用户消息 (fire-and-forget)
   saveMsg("user", message);
   updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
 
@@ -3265,13 +3288,12 @@ function savePageImages(relativePath: string, pages: Array<{ page: number; image
   if (pages.length === 0) return;
   const dir = getImageDir(relativePath);
   mkdirSync(dir, { recursive: true });
-  const { writeFileSync: wfs } = require("fs") as typeof import("fs");
   for (const p of pages) {
     const buf = Buffer.from(p.imageBase64, "base64");
-    wfs(join(dir, `page-${p.page}.png`), buf);
+    writeFileSync(join(dir, `page-${p.page}.png`), buf);
   }
   // 写入页面列表索引
-  wfs(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
+  writeFileSync(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
 }
 
 /** 读取已保存的页面图片列表 */

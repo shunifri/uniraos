@@ -60,23 +60,39 @@ export async function removeKBFromUserGraph(
     // Find and remove document nodes from user's graph
     const store = session.graphManager.getStore();
     const nodes = await store.getAllNodes();
-    
+
     // Remove nodes that reference this document
+    const nodesToRemove: string[] = [];
     for (const node of nodes) {
-      if (node.id.includes(`kb_${docId}`) || 
-          node.id.includes(`kb_shared_${docId}`) ||
-          node.label === `kb:${docName}:chunk0` ||
-          node.label.startsWith(`kb:${docName}:`)) {
-        await store.removeNode(node.id);
+      // 匹配各种知识库相关节点的 id 模式
+      const isKBNode =
+        node.id.startsWith(`kb_doc_${docId}`) ||
+        node.id.startsWith(`kb_layout_`) && node.id.includes(docId) ||
+        node.id.startsWith(`kb_seg_${docId}`) ||
+        node.id.startsWith(`kb_content_${docId}`) ||
+        node.id.includes(`kb_shared_${docId}`) ||
+        // 同时匹配标签模式
+        node.label === `kb:${docName}:chunk0` ||
+        node.label.startsWith(`kb:${docName}:`);
+
+      if (isKBNode) {
+        nodesToRemove.push(node.id);
       }
     }
 
-    log('info', 'kb_removed_from_user_graph', { docId, docName, userId });
+    // 执行删除操作
+    for (const nodeId of nodesToRemove) {
+      await store.removeNode(nodeId);
+    }
+
+    if (nodesToRemove.length > 0) {
+      log('info', 'kb_removed_from_user_graph', { docId, docName, userId, removedNodes: nodesToRemove.length });
+    }
   } catch (error) {
-    log('warn', 'kb_remove_from_graph_failed', { 
-      docId, 
-      userId, 
-      error: error instanceof Error ? error.message : String(error) 
+    log('warn', 'kb_remove_from_graph_failed', {
+      docId,
+      userId,
+      error: error instanceof Error ? error.message : String(error)
     });
   }
 }

@@ -74,6 +74,7 @@ const en: Translations = {
   no_results_found: 'No results found',
   no_pending_skills: 'No pending skills',
   creator: 'Creator',
+
   // Memory page
   start: 'Start',
   stop: 'Stop',
@@ -87,11 +88,13 @@ const en: Translations = {
   extract_facts: 'Extract Facts',
   files_upload: 'Upload File',
   add_share_rule: 'Add Share Rule',
+
   // Admin page
   create_dept: 'Create Dept',
   save_permissions: 'Save Permissions',
   select_all: 'Select All',
   deselect: 'Deselect',
+
   // Config related
   confirm_save_config: 'Confirm Save Configuration',
   confirm_save_config_content: 'Are you sure you want to save these federation configuration changes?',
@@ -99,6 +102,7 @@ const en: Translations = {
   must_be_between_1_and_300: 'Must be between 1 and 300',
   must_be_between_1_and_3600: 'Must be between 1 and 3600',
   must_be_between_0_and_1: 'Must be between 0 and 1',
+
   // Table columns
   instance_id: 'Instance ID',
   last_heartbeat: 'Last Heartbeat',
@@ -111,10 +115,12 @@ const en: Translations = {
   source_instance: 'Source Instance',
   migration_time: 'Migration Time',
   success_rate_change: 'Success Rate Change',
+
   // Status values
   online: 'Online',
   offline: 'Offline',
   unreachable: 'Unreachable',
+
   // Buttons
   add_redline: 'Add Redline',
   add_peer: 'Add Peer',
@@ -164,6 +170,7 @@ const en: Translations = {
   system_prompt: 'System Prompt',
   system_prompt_hint: 'Custom Agent system prompt',
   federation: 'Federation',
+
   // Buttons
   apply: 'Apply',
   view: 'View',
@@ -185,20 +192,16 @@ const en: Translations = {
   no_redline_constraints: 'No redline constraints',
   filter_by_status: 'Filter by status',
   all: 'All',
-  active: 'Active',
-  canary: 'Canary',
-  deprecated: 'Deprecated',
-  retired: 'Retired',
   no_skills_found: 'No skills found',
   usage: 'Usage',
   skill_lifecycle: 'Skill Lifecycle',
+
   // Document Mind Config
   docmind_title: 'Alibaba Cloud Document Mind',
   docmind_desc: 'Supports intelligent parsing of PDF, Word, PPT, Excel, images, audio and video. 3000 free pages per month.',
   api_config: 'API Config',
   enabled: 'Enabled',
   disabled: 'Disabled',
-  enable: 'Enable',
   advanced_options: 'Advanced Options',
   multimedia_mode: 'Multimedia Mode',
   base_recognition: 'Base Recognition',
@@ -222,7 +225,6 @@ const en: Translations = {
   // Memory
   memory_system: 'Memory System',
   archive_schedule: 'Archive Schedule',
-  minutes: 'Minutes',
   hours: 'Hours',
   last_run: 'Last Run',
   accessed: 'Accessed',
@@ -265,7 +267,6 @@ const en: Translations = {
   generation_history: 'Generation History',
   skill: 'Skill',
   state: 'State',
-  last_used: 'Last Used',
   federation_status: 'Federation Status',
   migration_history: 'Migration History',
   strategies: 'Strategies',
@@ -275,15 +276,11 @@ const en: Translations = {
   severity: 'Severity',
   constraint_name: 'Constraint name',
   describe_constraint: 'Describe the constraint...',
-  filter_by_status: 'Filter by status',
-  search_pending_skills: 'Search pending skills...',
   detected_at: 'Detected At',
-  all: 'All',
   high: 'High',
   medium: 'Medium',
   low: 'Low',
   instance_profile: 'Instance Profile',
-  instance_id: 'Instance ID',
   version: 'Version',
   skill_count: 'Skill Count',
   joined: 'Joined',
@@ -319,7 +316,6 @@ const en: Translations = {
   solid_extracted: 'Solid = EXTRACTED',
   dashed_inferred: 'Dashed = INFERRED',
   dotted_temporal: 'Dotted = TEMPORAL',
-  skill_lifecycle: 'Skill Lifecycle',
   redline_constraints: 'Redline Constraints',
   add_redline_constraint: 'Add Redline Constraint',
   redline_constraint_added: 'Redline constraint added',
@@ -338,21 +334,23 @@ const en: Translations = {
   recommendation_ignored: 'Recommendation ignored',
   peer_added: 'Peer added successfully',
   peer_removed: 'Peer removed successfully',
+
   // Emergence Monitor
   emergence_patterns: 'Emergence Patterns',
+
   // Lifecycle
   canary_deployment_enabled: 'Canary deployment enabled for',
   skill_deprecated: 'Skill marked as deprecated',
-  usage_count: 'Usage Count',
-  created_at: 'Created At',
-  deprecated_at: 'Deprecated At',
+
   // Pending Actions
   skill_approved: 'Skill approved',
   skill_rejected: 'Skill rejected',
   pending_skills_count: 'Pending Skills',
   generation: 'Generation',
+
   // Redlines
   redline_deleted: 'Redline deleted',
+
   // Federation Config
   failed_to_load_configuration: 'Failed to load configuration',
   failed_to_save_configuration: 'Failed to save configuration',
@@ -364,36 +362,43 @@ const en: Translations = {
   heartbeat_interval: 'Heartbeat Interval',
   confidence_threshold: 'Confidence Threshold',
   auto_migration: 'Auto Migration',
+
   // Federation Overview
   // Metrics
   failed_to_load_metrics: 'Failed to load metrics',
+
   // Migration
   failed_to_load_migration_history: 'Failed to load migration history',
+
   // Peers
   failed_to_load_peers: 'Failed to load peers',
   failed_to_add_peer: 'Failed to add peer',
   failed_to_remove_peer: 'Failed to remove peer',
+
   // Recommendations
   failed_to_load_recommendations: 'Failed to load recommendations',
   failed_to_accept_recommendation: 'Failed to accept recommendation',
   failed_to_ignore_recommendation: 'Failed to ignore recommendation',
   confidence: 'Confidence',
-  details: 'Details',
+
   // Evolution Page
   evolution_overview: 'Evolution Overview',
   skill_genealogy: 'Skill Genealogy',
   emergence_monitor: 'Emergence Monitor',
   pending_actions: 'Pending Actions',
   redlines: 'Redlines',
+
   // Federation Page
   federation_overview: 'Federation Overview',
   metrics_comparison: 'Metrics Comparison',
   configuration: 'Configuration',
+
   // Configuration descriptions
   heartbeat_interval_desc: 'Lower values increase network traffic but ensure faster detection of peer failures.',
   sync_interval_desc: 'Controls how frequently this instance synchronizes skill metrics and recommendations with other peers.',
   confidence_threshold_desc: 'Only recommendations with confidence above this threshold will be considered. Higher values are more conservative.',
   auto_migration_desc: 'When enabled, high-confidence recommendations will be automatically accepted. Disable for manual review.',
+
   // More federation
   heartbeat_tooltip: 'Controls how often the instance sends heartbeats to other peers',
   sync_tooltip: 'Controls how often the instance synchronizes data with peers',
@@ -402,20 +407,21 @@ const en: Translations = {
   heartbeat_required: 'Heartbeat interval is required',
   sync_required: 'Sync interval is required',
   confidence_required: 'Confidence threshold is required',
+
   // Emergence
   no_emergence_patterns: 'No emergence patterns detected',
+
   // Lifecycle
   enable_canary_confirm: 'Enable canary deployment for',
   mark_deprecated_confirm: 'Mark as deprecated? It will be transitioned to retired.',
+
   // Pending
   approve_skill_confirm: 'Are you sure you want to approve',
   reject_skill_confirm: 'Are you sure you want to reject',
+
   // Recommendations
   accept_recommendation_confirm: 'Accept recommendation for skill',
   ignore_recommendation_confirm: 'Ignore recommendation for skill',
-  name: 'Name',
-  // Federation Peers
-  instance_id: 'Instance ID',
 
   // Knowledge Base
   kb_doc_count: 'Documents',

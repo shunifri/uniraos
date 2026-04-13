@@ -663,15 +663,19 @@ export class DocMindParser {
  */
 export function detectMediaType(fileName: string): 'document' | 'video' | 'audio' | 'text' {
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
-  
+
   const videoExts = ['mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mkv', 'm4v'];
   const audioExts = ['mp3', 'wav', 'wma', 'aac', 'ogg', 'flac', 'm4a'];
-  const documentExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'html', 'htm'];
-  
+  // 二进制文档格式
+  const documentExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+  // 纯文本格式（包括 JSON，JSON 应该直接文本处理）
+  const textExts = ['txt', 'md', 'html', 'htm', 'csv', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'sh', 'bat', 'py', 'js', 'ts', 'sql'];
+
   if (videoExts.includes(ext)) return 'video';
   if (audioExts.includes(ext)) return 'audio';
   if (documentExts.includes(ext)) return 'document';
-  
+  if (textExts.includes(ext)) return 'text';
+
   // 默认当作文本文档处理
   return 'text';
 }

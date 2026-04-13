@@ -362,3 +362,6 @@ export class ConfigManager {
     );
   }
 }
+
+/** ConfigManager 单例实例 */
+export const configManager = new ConfigManager();

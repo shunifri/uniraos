@@ -154,8 +154,8 @@ export class GraphStore {
       id: row.id,
       label: row.label,
       type: row.type,
-      tags: JSON.parse(row.tags || "[]"),
-      properties: JSON.parse(row.properties || "{}"),
+      tags: this.parseTags(row.tags),
+      properties: this.parseProperties(row.properties),
       createdAt: row.created_at,
     };
 

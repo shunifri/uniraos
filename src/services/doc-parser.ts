@@ -525,9 +525,23 @@ function cleanupDir(dir: string): void {
 function convertToPDF(filePath: string, tempDir: string): string {
   mkdirSync(tempDir, { recursive: true });
   // soffice --headless --convert-to pdf --outdir <dir> <file>
-  execSync(`soffice --headless --convert-to pdf --outdir "${tempDir}" "${filePath}"`, {
+  // macOS 需要额外参数防止窗口弹出
+  const isMac = process.platform === 'darwin';
+  const cmd = isMac
+    ? `soffice --headless --norestore --nofirststartwizard --nologo --convert-to pdf --outdir "${tempDir}" "${filePath}"`
+    : `soffice --headless --convert-to pdf --outdir "${tempDir}" "${filePath}"`;
+
+  // 设置环境变量确保 headless 模式
+  const env = { ...process.env };
+  if (isMac) {
+    // macOS 上防止窗口弹出
+    env['JAVA_HOME'] = '';
+  }
+
+  execSync(cmd, {
     timeout: 60000,
     stdio: "pipe",
+    env,
   });
 
   // 查找生成的 PDF
@@ -644,8 +658,12 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
       priorPage = content;
     }
 
-    // 等待图片生成完成，附加到 pages
-    const imageMap = await imagePromise;
+    // 不等待图片生成完成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
+    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
+    const imageMap = await Promise.race([
+      imagePromise,
+      new Promise<Map<number, string>>(resolve => setTimeout(() => resolve(new Map()), 1000))
+    ]);
     for (const p of pages) {
       const img = imageMap.get(p.page);
       if (img) p.imageBase64 = img;
@@ -761,9 +779,13 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       } catch { /* 保留 mammoth 原始输出 */ }
     }
 
-    // 等待图片生成
+    // 不等待图片生成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
     let pages: PageResult[] | undefined;
-    const imgResult = await imagePromise;
+    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
+    const imgResult = await Promise.race([
+      imagePromise,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 1000))
+    ]);
     if (imgResult) {
       pages = Array.from({ length: imgResult.pageCount }, (_, i) => ({
         page: i + 1,
@@ -833,10 +855,10 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
         }
         extractedPages.push({ page: i + 1, content: texts.join("\n") || "(空白页)" });
       }
-      // PPT 包含图片时，文本提取可能丢失图片信息，优先使用视觉 OCR
+      // PPT 包含图片时，保留文本提取结果，不强制使用视觉 OCR（避免超时）
       if (hasImages && visionConfig) {
-        console.log(`[doc-parser] PPT: contains images, falling back to vision OCR`);
-        extractedPages = null; // 强制走视觉 OCR 路径
+        console.log(`[doc-parser] PPT: contains images, using text extraction (avoiding vision OCR timeout)`);
+        // 不强制走视觉 OCR 路径，保留文本提取结果
       }
     }
   } catch {
@@ -874,8 +896,12 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
   if (extractedPages && extractedPages.length > 0) {
     console.log(`[doc-parser] PPT: extracted ${extractedPages.length} slides, generating images in background`);
 
-    // 等待图片并附加
-    const images = await imagePromise;
+    // 不等待图片生成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
+    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
+    const images = await Promise.race([
+      imagePromise,
+      new Promise<Map<number, string>>(resolve => setTimeout(() => resolve(new Map()), 1000))
+    ]);
     for (const p of extractedPages) {
       const img = images.get(p.page);
       if (img) p.imageBase64 = img;
@@ -944,37 +970,51 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
     const content = sheets.join("\n\n");
 
     // 后台生成页面图片（LibreOffice → PDF → gm），用于引用展示
+    const imagePromise = (async (): Promise<PageResult[] | undefined> => {
+      try {
+        const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
+        const pdfPath = convertToPDF(filePath, tempDir);
+        // @ts-ignore
+        const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
+        const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
+        const pdfData = await pdfParse(readFileSync(pdfPath));
+
+        const imageTempDir = resolve(tmpdir(), `raos-excel-img-${Date.now()}`);
+        mkdirSync(imageTempDir, { recursive: true });
+        const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+
+        const pages = Array.from({ length: pdfData.numpages }, (_, i) => {
+          const pageNum = i + 1;
+          if (!successPages.has(pageNum)) {
+            return { page: pageNum, content: "" };
+          }
+          const imageFile = join(imageTempDir, `page.${pageNum}.png`);
+          return {
+            page: pageNum,
+            content: "",
+            imageBase64: readFileSync(imageFile).toString("base64"),
+          };
+        });
+
+        cleanupDir(tempDir);
+        cleanupDir(imageTempDir);
+        console.log(`[doc-parser] Excel: generated ${pdfData.numpages} page images`);
+        return pages;
+      } catch (err: any) {
+        console.warn(`[doc-parser] Excel image generation failed: ${err.message}`);
+        return undefined;
+      }
+    })();
+
+    // 不等待图片生成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
     let pages: PageResult[] | undefined;
-     try {
-       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
-       const pdfPath = convertToPDF(filePath, tempDir);
-       // @ts-ignore
-       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-       const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-       const pdfData = await pdfParse(readFileSync(pdfPath));
-       
-       const imageTempDir = resolve(tmpdir(), `raos-excel-img-${Date.now()}`);
-       mkdirSync(imageTempDir, { recursive: true });
-       const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
-       
-       pages = Array.from({ length: pdfData.numpages }, (_, i) => {
-         const pageNum = i + 1;
-         if (!successPages.has(pageNum)) {
-           return { page: pageNum, content: "" };
-         }
-         const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-         return {
-           page: pageNum,
-           content: "",
-           imageBase64: readFileSync(imageFile).toString("base64"),
-         };
-       });
-       
-       cleanupDir(tempDir);
-       cleanupDir(imageTempDir);
-      console.log(`[doc-parser] Excel: generated ${pdfData.numpages} page images`);
-    } catch (err: any) {
-      console.warn(`[doc-parser] Excel image generation failed: ${err.message}`);
+    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
+    const imgResult = await Promise.race([
+      imagePromise,
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 1000))
+    ]);
+    if (imgResult) {
+      pages = imgResult;
     }
 
     return {
@@ -1128,12 +1168,16 @@ export async function parseDocument(
     }
   }
 
-  // 解析成功且有视觉模型时，自动提取标签
+  // 解析成功且有视觉模型时，自动提取标签（超时保护）
   if (result.success && visionConfig && result.content.length > 0) {
     try {
-      result.tags = await extractTags(result.content, visionConfig, existingTags);
+      // 设置 10 秒超时，防止标签提取卡住
+      const tagsPromise = extractTags(result.content, visionConfig, existingTags);
+      const timeoutPromise = new Promise<string[]>(resolve => setTimeout(() => resolve([]), 10000));
+      result.tags = await Promise.race([tagsPromise, timeoutPromise]);
     } catch {
       // 标签提取失败不影响主流程
+      result.tags = [];
     }
   }
 

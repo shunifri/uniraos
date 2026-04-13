@@ -5,6 +5,7 @@ import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
 import type { RouteDependencies } from "./index.js";
 import type { ParsingUpdate } from "../services/parsing-queue.js";
+import { getParsingQueue } from "../services/parsing-queue.js";
 
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
@@ -35,44 +36,61 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const userId = req.user!.id;
 
       if (path && !content) {
+        console.log(`[API] path 模式处理: name=${name}, path=${path}`);
+        console.log(`[API] 原始文件名: ${req.body.name}`);
+        console.log(`[API] 原始路径: ${req.body.path}`);
+
         const kb = getKnowledgeBase(userId);
         const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [] });
+        console.log(`[API] 创建占位符 docId: ${docId}`);
         res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
 
-        console.log(`[API] 创建占位符 docId: ${docId}`);
-        requestContext.run({ userId }, () => {
-          const kb = getKnowledgeBase(userId);
-          console.log(`[API] 调用 kb_ingest 传入 _placeholderDocId: ${docId}`);
-          engine.execute("kb_ingest", {
-            name,
-            path,
-            tags: tags || [],
-            owner: userId,
-            skipEmbedding: true,
-            _placeholderDocId: docId,
-          }).then(async (result) => {
-            if (result.success) {
-              const resultDocId = (result.data as any).docId;
-              if (resultDocId) {
-                engine.execute("kb_vectorize", { docId: resultDocId, owner: userId }).catch(() => {});
-              }
-            } else {
-              // 解析失败，标记占位文档为失败
-              console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
-              await kb.updateParsingStatus(docId, {
-                parsingStatus: 'failed',
-                parsingProgress: 0,
+        console.log(`[API] 准备执行异步 kb_ingest...`);
+        try {
+          requestContext.run({ userId }, async () => {
+            console.log(`[API] requestContext.run 回调已执行`);
+            try {
+              const kb2 = getKnowledgeBase(userId);
+              console.log(`[API] 调用 kb_ingest 传入 _placeholderDocId: ${docId}`);
+              const result = await engine.execute("kb_ingest", {
+                name,
+                path,
+                tags: tags || [],
+                owner: userId,
+                skipEmbedding: true,
+                _placeholderDocId: docId,
               });
+              console.log(`[API] kb_ingest 执行结果:`, JSON.stringify(result));
+              if (result.success) {
+                const resultDocId = (result.data as any).docId;
+                if (resultDocId) {
+                  engine.execute("kb_vectorize", { docId: resultDocId, owner: userId }).catch(() => {});
+                }
+              } else {
+                // 解析失败，标记占位文档为失败
+                console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
+                await kb2.updateParsingStatus(docId, {
+                  parsingStatus: 'failed',
+                  parsingProgress: 0,
+                });
+              }
+            } catch (err) {
+              // 异常失败，标记占位文档为失败
+              console.error(`[kb_ingest] Async ingest threw exception for placeholder ${docId}:`, err);
+              try {
+                const kb2 = getKnowledgeBase(userId);
+                await kb2.updateParsingStatus(docId, {
+                  parsingStatus: 'failed',
+                  parsingProgress: 0,
+                });
+              } catch (updateErr) {
+                console.error(`[kb_ingest] Failed to update parsing status:`, updateErr);
+              }
             }
-          }).catch(async (err) => {
-            // 异常失败，标记占位文档为失败
-            console.error(`[kb_ingest] Async ingest threw exception for placeholder ${docId}:`, err);
-            await kb.updateParsingStatus(docId, {
-              parsingStatus: 'failed',
-              parsingProgress: 0,
-            });
           });
-        });
+        } catch (ctxErr) {
+          console.error(`[API] requestContext.run 异常:`, ctxErr);
+        }
         return;
       }
 
@@ -231,7 +249,6 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     res.setHeader('Connection', 'keep-alive');
 
     // 获取解析队列
-    const { getParsingQueue } = require("../services/parsing-queue.js");
     const queue = getParsingQueue();
 
     if (!queue) {

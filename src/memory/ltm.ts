@@ -223,7 +223,17 @@ export class MySQLLTMBackend implements LTMBackend {
       const scored = rows
         .filter((row: any) => row.vector !== null)
         .map((row: any) => {
-          const entryVector = Array.from(new Float32Array(row.vector));
+          // 确保 Buffer 的字节偏移量是 4 的倍数（Float32 是 4 字节）
+          let entryVector: number[];
+          if (row.vector.byteOffset % 4 === 0) {
+            // 字节偏移量是 4 的倍数，直接使用
+            entryVector = Array.from(new Float32Array(row.vector));
+          } else {
+            // 字节偏移量不是 4 的倍数，创建新的 Buffer
+            const copied = Buffer.alloc(row.vector.length);
+            row.vector.copy(copied, 0, 0, row.vector.length);
+            entryVector = Array.from(new Float32Array(copied));
+          }
           const score = cosineSimilarity(queryVector, entryVector);
           return { row, score };
         })

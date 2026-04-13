@@ -8,6 +8,7 @@ import type { ChatOptions, Message, ToolDefinition } from "../llm/types.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import type { SkillAccessService } from "../engine/skill-access-service.js";
+import { SkillAccessService as SkillAccessServiceImpl } from "../engine/skill-access-service.js";
 import type {
   Agent,
   AgentDeps,
@@ -35,7 +36,7 @@ export class ReactAgent implements Agent {
     this.profile = profile;
     this.deps = deps;
     this.maxIterations = opts?.maxIterations ?? 15;
-    this.skillAccessService = opts?.skillAccessService ?? new (require("../engine/skill-access-service.js").SkillAccessService)(deps.registry);
+    this.skillAccessService = opts?.skillAccessService ?? new SkillAccessServiceImpl(deps.registry);
   }
 
   async run(input: AgentInput): Promise<AgentOutput> {

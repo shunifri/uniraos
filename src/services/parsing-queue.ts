@@ -20,6 +20,9 @@ import { mkdirSync, existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { cwd } from "process";
 
+/** 工作空间根目录 */
+const WORKSPACE_BASE = resolve(cwd(), ".raos", "workspace");
+
 /**
  * 清理 PDF/Document Mind 解析后的文本空格
  * 解析后的文本往往会在字符之间添加空格，需要清理：
@@ -732,8 +735,13 @@ export class ParsingQueue extends EventEmitter {
       }
     }
 
+    // 计算相对于 workspace 的路径，而不是使用绝对路径
+    const relativePath = task.filePath.startsWith(WORKSPACE_BASE)
+      ? task.filePath.slice(WORKSPACE_BASE.length + 1)
+      : task.filePath;
+
     await kb.ingest(task.docName, content, {
-      source: task.filePath,
+      source: relativePath,
       tags: finalTags,
       _placeholderDocId: task.docId,
       _skipQueue: true,

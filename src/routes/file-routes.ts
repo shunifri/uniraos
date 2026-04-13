@@ -1,7 +1,7 @@
 import { Router } from "express";
 import express from "express";
 import { join, dirname } from "path";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync } from "fs";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
@@ -38,12 +38,11 @@ function savePageImages(relativePath: string, pages: Array<{ page: number; image
   if (pages.length === 0) return;
   const dir = getImageDir(relativePath);
   mkdirSync(dir, { recursive: true });
-  const { writeFileSync: wfs } = require("fs") as typeof import("fs");
   for (const p of pages) {
     const buf = Buffer.from(p.imageBase64, "base64");
-    wfs(join(dir, `page-${p.page}.png`), buf);
+    writeFileSync(join(dir, `page-${p.page}.png`), buf);
   }
-  wfs(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
+  writeFileSync(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
 }
 
 function getPageImageList(relativePath: string): number[] {
@@ -584,6 +583,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       }
 
       const files = parseMultipart(req.body as Buffer, boundaryMatch[1]);
+      console.log(`[FILE UPLOAD] 解析到的文件名:`, files.map(f => f.filename));
       if (files.length === 0) {
         res.status(400).json({ success: false, error: "未发现文件" });
         return;

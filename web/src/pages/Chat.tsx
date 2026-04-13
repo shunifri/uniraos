@@ -27,6 +27,8 @@ import {
   BarChartOutlined,
   DatabaseOutlined,
   GlobalOutlined,
+  FileTextOutlined,
+  FileOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { apiFetch, pageImageUrl } from "@/api";

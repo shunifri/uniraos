@@ -383,7 +383,7 @@ theme: business-blue
 
 // ===== 文件上传 Skills =====
 
-function createUploadSkills(registry: SkillRegistry): void {
+async function createUploadSkills(registry: SkillRegistry): Promise<void> {
   const UPLOAD_DIR = resolve(SAFE_BASE, "uploads");
   mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -391,7 +391,7 @@ function createUploadSkills(registry: SkillRegistry): void {
   let uploadDb: any = null;
   if (!isMySQL()) {
     try {
-      const Database = require("better-sqlite3");
+      const { default: Database } = await import("better-sqlite3");
       const dbPath = resolve(process.cwd(), ".raos", "uploads.db");
       uploadDb = new Database(dbPath);
       uploadDb.pragma("journal_mode = WAL");
@@ -1182,10 +1182,10 @@ function createPptxThemeSkills(registry: SkillRegistry): void {
 
 // ===== 注册所有数据操作 Skills =====
 
-export function createDataSkills(registry: SkillRegistry): void {
+export async function createDataSkills(registry: SkillRegistry): Promise<void> {
   createFileSkills(registry);
   createFileProvideSkills(registry);
-  createUploadSkills(registry);
+  await createUploadSkills(registry);
   createHttpSkills(registry);
   createShellSkills(registry);
   createPptxThemeSkills(registry);

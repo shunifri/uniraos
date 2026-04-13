@@ -33,6 +33,7 @@ import { join, resolve, dirname, normalize, sep } from "path";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
 import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } from "../kb-graph-sync.js";
+import { configManager } from "../config/config-manager.js";
 
 /** 解析器版本号 — 每次解析逻辑有重大变更时递增，强制已有文档重新入库 */
 const PARSER_VERSION = 2;
@@ -177,18 +178,18 @@ export class KnowledgeBase {
   async createPlaceholder(docName: string, opts?: { source?: string; tags?: string[] }): Promise<string> {
     const source = opts?.source ?? "";
     const tags = opts?.tags ?? [];
-    
+
     const rows = await this.adapter.query<DocIdRecord>(
       "SELECT doc_id FROM kb_documents WHERE name = ? AND owner_id = ?",
       [docName, this.owner]
     );
-    
+
     if (rows.length > 0) return rows[0].doc_id;
 
     const docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await this.adapter.execute(
-      "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?)",
-      [docId, this.owner, docName, source, Date.now(), JSON.stringify(tags), '', '解析中...']
+      "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content, parsing_status, parsing_progress) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?, ?, ?)",
+      [docId, this.owner, docName, source, Date.now(), JSON.stringify(tags), '', '', 'processing', 0.00]
     );
     return docId;
   }
@@ -200,7 +201,7 @@ export class KnowledgeBase {
   async ingest(
     docName: string,
     content: string,
-    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string },
+    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string; _placeholderDocId?: string },
   ): Promise<{ docId: string; chunkCount: number; totalTokens: number; updated: boolean; version: number }> {
     const chunkSize = opts?.chunkSize ?? 500;
     const chunkOverlap = opts?.chunkOverlap ?? 50;
@@ -213,51 +214,75 @@ export class KnowledgeBase {
       ? `v${PARSER_VERSION}_${opts.fileHash}`
       : `v${PARSER_VERSION}_${simpleHash(content)}`;
 
-    // 检查同名文档是否存在
-    const existingRows = await this.adapter.query<DocVersionRecord & DocIdRecord>(
-      "SELECT doc_id, version, content_hash FROM kb_documents WHERE name = ? AND owner_id = ?",
-      [docName, this.owner]
-    );
-    const existing = existingRows[0];
+    // 检查是否有占位符 docId
+    const placeholderDocId = opts?._placeholderDocId;
 
     let docId: string;
-    let version = 1;
-    let updated = false;
+    let version: number;
+    let updated: boolean;
 
-    if (existing) {
-      // 内容相同则跳过
-      if (existing.content_hash === contentHash) {
-        return {
-          docId: existing.doc_id,
-          chunkCount: 0,
-          totalTokens: 0,
-          updated: false,
-          version: existing.version,
-        };
-      }
+    if (placeholderDocId) {
+      // 有占位符 docId，直接使用
+      docId = placeholderDocId;
+      version = 1;
+      updated = false;
 
-      // 内容不同则更新
-      docId = existing.doc_id;
-      version = existing.version + 1;
-      updated = true;
-
-      // 保存旧版本记录
-      const oldDocRows = await this.adapter.query<DocStatsRecord>(
-        "SELECT chunk_count, total_tokens, content_hash FROM kb_documents WHERE doc_id = ?",
+      // 检查占位符记录是否已存在
+      const placeholderRow = await this.adapter.query<DocRecord>(
+        "SELECT doc_id FROM kb_documents WHERE doc_id = ?",
         [docId]
       );
-      const oldDoc = oldDocRows[0];
-      
-      if (oldDoc) {
-        await this.adapter.execute(
-          "INSERT INTO kb_versions (doc_id, version, content_hash, chunk_count, total_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash), chunk_count = VALUES(chunk_count), total_tokens = VALUES(total_tokens), created_at = VALUES(created_at)",
-          [docId, existing.version, oldDoc.content_hash, oldDoc.chunk_count, oldDoc.total_tokens, Date.now()]
-        );
+      if (placeholderRow.length > 0) {
+        // 占位符记录已存在，标记为更新
+        updated = true;
+        version = 2; // 占位符记录是 version 1
       }
+
+      // 不检查同名文档，直接使用占位符 docId
     } else {
-      // 使用占位符 docId（如果传入），否则生成新的
-      const placeholderDocId = (opts as any)?._placeholderDocId as string | undefined;
-      docId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // 无占位符 docId，检查同名文档
+      const existingRows = await this.adapter.query<DocVersionRecord & DocIdRecord>(
+        "SELECT doc_id, version, content_hash FROM kb_documents WHERE name = ? AND owner_id = ?",
+        [docName, this.owner]
+      );
+      const existing = existingRows[0];
+
+      if (existing) {
+        // 内容相同则跳过
+        if (existing.content_hash === contentHash) {
+          return {
+            docId: existing.doc_id,
+            chunkCount: 0,
+            totalTokens: 0,
+            updated: false,
+            version: existing.version,
+          };
+        }
+
+        // 内容不同则更新
+        docId = existing.doc_id;
+        version = existing.version + 1;
+        updated = true;
+
+        // 保存旧版本记录
+        const oldDocRows = await this.adapter.query<DocStatsRecord>(
+          "SELECT chunk_count, total_tokens, content_hash FROM kb_documents WHERE doc_id = ?",
+          [docId]
+        );
+        const oldDoc = oldDocRows[0];
+
+        if (oldDoc) {
+          await this.adapter.execute(
+            "INSERT INTO kb_versions (doc_id, version, content_hash, chunk_count, total_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash), chunk_count = VALUES(chunk_count), total_tokens = VALUES(total_tokens), created_at = VALUES(created_at)",
+            [docId, existing.version, oldDoc.content_hash, oldDoc.chunk_count, oldDoc.total_tokens, Date.now()]
+          );
+        }
+      } else {
+        // 新文档，生成 docId
+        docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        version = 1;
+        updated = false;
+      }
     }
 
     // 智能分块（有 pages + blocks 时使用页码感知分块）
@@ -286,22 +311,34 @@ export class KnowledgeBase {
 
     // 事务写入（包含删除旧数据、插入新数据，保证原子性）
     let totalTokens = 0;
-    
+
     await this.adapter.transaction(async (connection) => {
-      // 如果是更新，先删除旧的 chunks 和 keywords
-      if (updated) {
+      // 检查是否是占位符文档
+      const isPlaceholderDoc = opts?._placeholderDocId !== undefined;
+
+      // 检查文档是否已存在
+      const [existsResult] = await connection.query(
+        "SELECT COUNT(*) as count FROM kb_documents WHERE doc_id = ?",
+        [docId]
+      );
+      const docExists = existsResult[0].count > 0;
+
+      if (docExists) {
+        // 文档已存在（占位符或旧文档），先删除旧的 chunks 和 keywords
         await connection.execute(
           "DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)",
           [docId]
         );
         await connection.execute("DELETE FROM kb_chunks WHERE doc_id = ?", [docId]);
         await connection.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
-        
+
+        // 更新文档记录
         await connection.execute(
           "UPDATE kb_documents SET chunk_count = ?, total_tokens = 0, updated_at = ?, version = ?, tags = ?, shared = ?, content_hash = ?, source = ?, parsed_content = ? WHERE doc_id = ?",
           [chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId]
         );
       } else {
+        // 新文档，插入记录
         await connection.execute(
           "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
           [docId, this.owner, docName, source, chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
@@ -325,17 +362,17 @@ export class KnowledgeBase {
           : null;
         const pageNumber = meta?.pageNumber ?? null;
         const bboxData = meta?.bboxes && meta.bboxes.length > 0 ? JSON.stringify(meta.bboxes) : "[]";
-        
+
         // 插入 chunk
         await connection.execute(
           "INSERT INTO kb_chunks (doc_id, chunk_index, content, tokens, vector, page_number, bbox_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
           [docId, i, chunks[i], tokens, vectorBlob, pageNumber, bboxData]
         );
-        
+
         // 使用 LAST_INSERT_ID() 获取自增ID
         const [idRows] = await connection.query<mysql.RowDataPacket[]>("SELECT LAST_INSERT_ID() as id");
         const chunkId = idRows[0]?.id;
-        
+
         if (!chunkId) {
           console.warn(`[KnowledgeBase] Failed to get chunkId for chunk ${i}`);
           continue;
@@ -345,9 +382,11 @@ export class KnowledgeBase {
         const keywords = this.extractKeywords(chunks[i]);
         for (const [keyword, tf] of keywords) {
           try {
+            // 限制关键词长度不超过 100 字符，防止字段长度溢出
+            const limitedKeyword = keyword.slice(0, 100);
             await connection.execute(
               "INSERT INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)",
-              [keyword, chunkId, tf]
+              [limitedKeyword, chunkId, tf]
             );
           } catch (e) {
             console.warn(`[KnowledgeBase] Keyword insert failed: ${e}`);
@@ -678,7 +717,18 @@ export class KnowledgeBase {
 
       for (const row of rows) {
         if (row.vector && row.vector.length > 0) {
-          const floats = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.length / 4);
+          // 确保 Buffer 的字节偏移量是 4 的倍数（Float32 是 4 字节）
+          let floats: Float32Array;
+          if (row.vector.byteOffset % 4 === 0) {
+            // 字节偏移量是 4 的倍数，直接使用
+            floats = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.length / 4);
+          } else {
+            // 字节偏移量不是 4 的倍数，创建新的 Buffer
+            const copied = Buffer.alloc(row.vector.length);
+            row.vector.copy(copied, 0, 0, row.vector.length);
+            floats = new Float32Array(copied.buffer, copied.byteOffset, copied.length / 4);
+          }
+
           this.vectorCache.set(row.id, Array.from(floats));
           this.vectorCacheAccessTime.set(row.id, Date.now());
           
@@ -901,7 +951,7 @@ export class KnowledgeBase {
       [this.owner]
     );
     const totalTokensRows = await this.adapter.query<SumRecord>(
-      "SELECT COALESCE(SUM(total_tokens), 0) as t FROM kb_documents WHERE owner_id = ?",
+      "SELECT COALESCE(SUM(c.tokens), 0) as t FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
       [this.owner]
     );
     const keywordCountRows = await this.adapter.query<CountRecord>(
@@ -918,7 +968,7 @@ export class KnowledgeBase {
       documentCount: docCountRows[0]?.c ?? 0,
       sharedCount: sharedCountRows[0]?.c ?? 0,
       chunkCount: chunkCountRows[0]?.c ?? 0,
-      totalTokens: totalTokensRows[0]?.t ?? 0,
+      totalTokens: Number(totalTokensRows[0]?.t ?? 0),
       vectorCacheSize: this.vectorCache.size,
       keywordCount: keywordCountRows[0]?.c ?? 0,
       embeddingProvider: this.embeddingProvider.name,
@@ -978,12 +1028,13 @@ export class KnowledgeBase {
        mediaType?: string;
        durationMs?: number;
        chunkCount?: number;
+       totalTokens?: number;
        parsedContent?: string;
      }
    ): Promise<void> {
      const fields: string[] = [];
      const values: unknown[] = [];
-     
+
      if (status.parsingStatus !== undefined) {
        fields.push('parsing_status = ?');
        values.push(status.parsingStatus);
@@ -1004,23 +1055,27 @@ export class KnowledgeBase {
        fields.push('chunk_count = ?');
        values.push(status.chunkCount);
      }
-    if (status.durationMs !== undefined) {
-      fields.push('duration_ms = ?');
-      values.push(status.durationMs);
-    }
-    if (status.parsedContent !== undefined) {
-      fields.push('parsed_content = ?');
-      values.push(status.parsedContent);
-    }
-    
-    if (fields.length > 0) {
-      values.push(docId);
-      values.push(this.owner);
-      await this.adapter.execute(
-        `UPDATE kb_documents SET ${fields.join(', ')} WHERE doc_id = ? AND owner_id = ?`,
-        values
-      );
-    }
+     if (status.totalTokens !== undefined) {
+       fields.push('total_tokens = ?');
+       values.push(status.totalTokens);
+     }
+     if (status.durationMs !== undefined) {
+       fields.push('duration_ms = ?');
+       values.push(status.durationMs);
+     }
+     if (status.parsedContent !== undefined) {
+       fields.push('parsed_content = ?');
+       values.push(status.parsedContent);
+     }
+
+     if (fields.length > 0) {
+       values.push(docId);
+       values.push(this.owner);
+       await this.adapter.execute(
+         `UPDATE kb_documents SET ${fields.join(', ')} WHERE doc_id = ? AND owner_id = ?`,
+         values
+       );
+     }
   }
 
   /** 更新文档标签 */
@@ -1064,21 +1119,69 @@ export class KnowledgeBase {
 
   /** 保存版面数据（增量） */
   async saveLayouts(docId: string, layouts: unknown[], append: boolean = false): Promise<void> {
+    // 验证 layouts 参数是否有效
+    if (!Array.isArray(layouts)) {
+      console.warn(`[KnowledgeBase] Invalid layouts parameter (not array) for doc ${docId}:`, typeof layouts);
+      return;
+    }
+
+    // 清理 layouts 中可能导致 JSON.stringify 失败的字段或 "[object Object]" 的内容
+    const safeLayouts = layouts.map(layout => {
+      // 确保没有循环引用或不可序列化的对象
+      try {
+        return JSON.parse(JSON.stringify(layout));
+      } catch (error) {
+        console.warn(`[KnowledgeBase] Failed to sanitize layout for doc ${docId}:`, error);
+        return {};
+      }
+    });
+
     if (append) {
       const rows = await this.adapter.query<LayoutRecord>(
         "SELECT layouts_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
         [docId, this.owner]
       );
-      const existingLayouts = rows.length > 0 ? JSON.parse(rows[0].layouts_json || '[]') : [];
-      const allLayouts = [...existingLayouts, ...layouts];
+      let existingLayouts: unknown[] = [];
+      if (rows.length > 0 && rows[0].layouts_json) {
+        try {
+          existingLayouts = JSON.parse(rows[0].layouts_json);
+          if (!Array.isArray(existingLayouts)) {
+            existingLayouts = [];
+          }
+        } catch (err) {
+          console.warn(`[KnowledgeBase] Failed to parse existing layouts_json for doc ${docId}, starting fresh:`, err);
+          existingLayouts = [];
+        }
+      }
+
+      const allLayouts = [...existingLayouts, ...safeLayouts];
+
+      // 验证最终要保存的内容
+      let safeJSON: string;
+      try {
+        safeJSON = JSON.stringify(allLayouts);
+      } catch (err) {
+        console.warn(`[KnowledgeBase] Failed to stringify layouts for doc ${docId}, using empty array:`, err);
+        safeJSON = "[]";
+      }
+
       await this.adapter.execute(
         "UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ? AND owner_id = ?",
-        [JSON.stringify(allLayouts), docId, this.owner]
+        [safeJSON, docId, this.owner]
       );
     } else {
+      // 验证最终要保存的内容
+      let safeJSON: string;
+      try {
+        safeJSON = JSON.stringify(safeLayouts);
+      } catch (err) {
+        console.warn(`[KnowledgeBase] Failed to stringify layouts for doc ${docId}, using empty array:`, err);
+        safeJSON = "[]";
+      }
+
       await this.adapter.execute(
         "UPDATE kb_documents SET layouts_json = ? WHERE doc_id = ? AND owner_id = ?",
-        [JSON.stringify(layouts), docId, this.owner]
+        [safeJSON, docId, this.owner]
       );
     }
   }
@@ -1177,9 +1280,11 @@ export class KnowledgeBase {
    * 插入关键词（用于增量索引）
    */
   async insertKeyword(keyword: string, chunkId: number, tf: number): Promise<void> {
+    // 限制关键词长度不超过 100 字符，防止字段长度溢出
+    const limitedKeyword = keyword.slice(0, 100);
     await this.adapter.execute(
       "INSERT INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)",
-      [keyword, chunkId, tf]
+      [limitedKeyword, chunkId, tf]
     );
   }
 
@@ -1494,7 +1599,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
       name: "kb_ingest",
       description:
         "将文件或文本导入知识库（同名文档自动更新）。参数: content?(string), path?(string, workspace路径), name?(string, 文档名), tags?(string[]), shared?(boolean, 是否共享), owner?(string, 所属用户, 默认 default), chunkSize?(number, 默认500), chunkOverlap?(number, 默认50)",
-      timeout: 120000,
+      timeout: 600000,
       paramSchema: {
         properties: {
           content: { type: "string", description: "Text content to ingest directly" },
@@ -1520,6 +1625,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           return { success: false, error: new Error("需要提供 content 或 path 参数") };
         }
 
+        let docId: string | undefined; // 声明 docId 变量
+
         if (path && !content) {
           const fullPath = resolve(WORKSPACE_BASE, path);
           // 跨平台安全路径检查：normalize并确保分隔符一致
@@ -1544,8 +1651,20 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             const binaryExts = [".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".pdf"];
             const skipQueue = (params as any)._skipQueue;
 
+            // 音视频文档必须启用 Document Mind 解析，不允许直接本地解析
+            const mediaExts = [".mp3", ".wav", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4a", ".aac", ".ogg"];
+            if (mediaExts.includes(ext) && !skipQueue) {
+              console.warn(`[kb_ingest] 音视频文档必须启用 Document Mind: ${path}`);
+              return {
+                success: false,
+                error: new Error('音视频文档解析需要启用 Document Mind'),
+                queued: false,
+              };
+            }
+
             // 如果 _skipQueue = true（降级解析），强制跳过队列直接本地解析
-            if (!skipQueue && queue && binaryExts.includes(ext)) {
+            // 同时检查 Document Mind 是否已启用配置
+            if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
              // 使用 Document Mind 异步解析队列
              console.log(`[kb_ingest] 文件 ${path} 符合二进制文件类型，使用 Document Mind 解析队列`);
              const docNameForQueue = docName || path.split("/").pop() || `doc_${Date.now()}`;
@@ -1566,7 +1685,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                  owner,
                  { tags }
                );
-               const docId = task.docId;
+               docId = task.docId;
 
                if (!placeholderDocId) {
                  // 非占位模式（同步上传）才返回queued
@@ -1601,13 +1720,13 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
           // 本地解析（Fallback）
           // 音视频文档必须启用 Document Mind，不允许本地解析
-          const mediaExts = ['mp3', 'wav', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4a', 'aac', 'ogg'];
+          const localMediaExts = ['mp3', 'wav', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4a', 'aac', 'ogg'];
           const fileExt = (params.name || params.path || '').split('.').pop()?.toLowerCase() || '';
-          if (mediaExts.includes(fileExt)) {
+          if (localMediaExts.includes(fileExt)) {
             console.error(`[kb_ingest] 音视频文档必须启用 Document Mind: ${fileExt}`);
             return {
               success: false,
-              error: '音视频文档必须启用 Document Mind 进行解析',
+              error: new Error('音视频文档必须启用 Document Mind 进行解析'),
               queued: false,
             };
           }
@@ -1664,6 +1783,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           if (!docName) docName = path.split("/").pop() ?? path;
         }
 
+        // 确保内容不为空
         if (!content || content.trim().length === 0) {
           return { success: false, error: new Error("文件内容为空") };
         }
@@ -1674,7 +1794,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           // 传递 pages（含 blocks + bbox）给 ingest 用于页码感知分块
           const parsePages = (params as IngestParamsExtension)._parsePages;
           const fileHash = (params as IngestParamsExtension)._fileHash;
-          console.log(`[kb_ingest] 调用知识库 ingest，标签: ${JSON.stringify(params.tags)}, 页码感知分块页数: ${parsePages?.length}`);
+          const _placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
+          console.log(`[kb_ingest] 调用知识库 ingest，标签: ${JSON.stringify(params.tags)}, 页码感知分块页数: ${parsePages?.length}, 占位符 docId: ${_placeholderDocId}`);
           const result = await kb.ingest(docName, content, {
             source: path ?? "direct_input",
             tags: (params.tags as string[]) ?? [],
@@ -1683,124 +1804,167 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             shared: params.shared as boolean | undefined,
             pages: parsePages,
             fileHash,
+            _placeholderDocId,
           });
           console.log(`[kb_ingest] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}, totalTokens: ${result.totalTokens}, 是否更新: ${result.updated}`);
 
           const action = result.updated ? "更新" : "导入";
-          // 保存页面图片
-          const pageImages = (params as IngestParamsExtension)._pageImages;
-          if (pageImages && pageImages.length > 0 && result.docId) {
-            try { saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
+
+          // 只有在 path 存在时才处理页面图片（直接 content 参数时没有这个）
+          if (path) {
+            // 保存页面图片
+            const pageImages = (params as IngestParamsExtension)._pageImages;
+            if (pageImages && pageImages.length > 0 && result.docId) {
+              try { saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
+            }
           }
 
-           // 将文档同步到知识图谱（非致命）
-           if (sessionManager && result.docId) {
-             console.log(`[kb_ingest] 开始同步文档到知识图谱，docId: ${result.docId}`);
-             try {
-               const session = sessionManager.getOrCreate(owner);
-               const sessionWithGraph = session as unknown as SessionWithGraphManager;
-               const graphManager = sessionWithGraph.graphManager;
-               const llmProvider = sessionWithGraph.llmProvider;
-               console.log(`[kb_ingest] 知识图谱管理器: ${!!graphManager}, LLM Provider: ${!!llmProvider}`);
-               if (graphManager) {
-                 // 1. 同步文档节点
-                 console.log(`[kb_ingest] 同步文档节点到知识图谱: ${docName}`);
-                 await graphManager.onFactStored({
-                   id: `kb_doc_${result.docId}`,
-                   key: `kb:${docName}`,
-                   value: `Knowledge base document: ${docName}`,
-                   tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                 });
+          // 将文档同步到知识图谱（非致命）
+          if (sessionManager && result.docId) {
+            console.log(`[kb_ingest] 开始同步文档到知识图谱，docId: ${result.docId}`);
+            try {
+              const session = sessionManager.getOrCreate(owner);
+              const sessionWithGraph = session as unknown as SessionWithGraphManager;
+              const graphManager = sessionWithGraph.graphManager;
+              const llmProvider = sessionWithGraph.llmProvider;
+              console.log(`[kb_ingest] 知识图谱管理器: ${!!graphManager}, LLM Provider: ${!!llmProvider}`);
+              if (graphManager) {
+                // 1. 同步文档节点
+                console.log(`[kb_ingest] 同步文档节点到知识图谱: ${docName}`);
+                await graphManager.onFactStored({
+                  id: `kb_doc_${result.docId}`,
+                  key: `kb:${docName}`,
+                  value: `Knowledge base document: ${docName}`,
+                  tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                });
 
-                 // 2. 同步版面数据（Document Mind）
-                 const layouts = await kb.getLayouts(result.docId) as Layout[];
-                 console.log(`[kb_ingest] 获取文档版面数据: ${layouts.length} 个`);
-                 if (layouts.length > 0) {
-                   console.log(`[kb_ingest] 同步版面数据到知识图谱（最多20个版面）`);
-                   for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
-                     await graphManager.onFactStored({
-                       id: `kb_layout_${layout.id || layout.uniqueId}`,
-                       key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
-                       value: (layout.content || layout.text || '').slice(0, 200),
-                       tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                       relation: `kb:${docName}`,
-                     });
-                   }
-                 }
+                // 只有在 path 存在时才处理版面数据和音视频切片
+                if (path) {
+                  // 2. 同步版面数据（Document Mind）
+                  const layouts = await kb.getLayouts(result.docId) as Layout[];
+                  console.log(`[kb_ingest] 获取文档版面数据: ${layouts.length} 个`);
+                  if (layouts.length > 0) {
+                    console.log(`[kb_ingest] 同步版面数据到知识图谱（最多20个版面）`);
+                    for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
+                      await graphManager.onFactStored({
+                        id: `kb_layout_${layout.id || layout.uniqueId}`,
+                        key: `kb:${docName}:p${layout.page || layout.pageNum}:${layout.type}`,
+                        value: (layout.content || layout.text || '').slice(0, 200),
+                        tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                        relation: `kb:${docName}`,
+                      });
+                    }
+                  }
 
-                 // 3. 同步音视频切片数据
-                 const segments = await kb.getSegments(result.docId) as Segment[];
-                 console.log(`[kb_ingest] 获取音视频切片数据: ${segments.length} 个`);
-                 if (segments.length > 0) {
-                   console.log(`[kb_ingest] 同步音视频切片到知识图谱（最多10个切片）`);
-                   for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
-                     await graphManager.onFactStored({
-                       id: `kb_seg_${result.docId}_${segment.index}`,
-                       key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
-                       value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
-                       tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                       relation: `kb:${docName}`,
-                     });
-                   }
-                 }
+                  // 3. 同步音视频切片数据
+                  const segments = await kb.getSegments(result.docId) as Segment[];
+                  console.log(`[kb_ingest] 获取音视频切片数据: ${segments.length} 个`);
+                  if (segments.length > 0) {
+                    console.log(`[kb_ingest] 同步音视频切片到知识图谱（最多10个切片）`);
+                    for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
+                      await graphManager.onFactStored({
+                        id: `kb_seg_${result.docId}_${segment.index}`,
+                        key: `kb:${docName}:t${segment.startTime}-${segment.endTime}`,
+                        value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
+                        tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                        relation: `kb:${docName}`,
+                      });
+                    }
+                  }
+                }
 
-                 // 4. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（使用数据库中的 parsed_content）
-                 const contentForExtraction = await kb.getDocumentContent(result.docId) || content || '';
-                 if (llmProvider && contentForExtraction && contentForExtraction.length > 100) {
-                   console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${Math.min(contentForExtraction.length, 2000)}`);
-                   const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
-                   const { KnowledgeGraphManager } = await import("../memory/knowledge-graph/manager.js");
+                // 4. 本地解析文档内容处理（针对 txt/json/md 等）
+                // 如果没有版面数据和切片数据，添加文档内容节点
+                const contentForExtraction = await kb.getDocumentContent(result.docId) || content || '';
+                const layouts = path ? await kb.getLayouts(result.docId) as Layout[] : [];
+                const segments = path ? await kb.getSegments(result.docId) as Segment[] : [];
+                if (layouts.length === 0 && segments.length === 0 && contentForExtraction.length > 50) {
+                  console.log(`[kb_ingest] 本地解析文档，添加内容节点到知识图谱，内容长度: ${contentForExtraction.length}`);
 
-                   // 抽取关系（只抽取前 2000 字符避免过长）
-                   const relations = await extractRelationships(contentForExtraction.slice(0, 2000), llmProvider as LLMProvider);
-                   console.log(`[kb_ingest] LLM extracted ${relations.length} relations`);
-                   
-                   // 获取graph store并添加关系
-                   const store = graphManager.getStore();
-                   let createdCount = 0;
-                   
-                   for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
-                     let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
-                     if (!sourceNode) {
-                       sourceNode = await store.addNode({
-                         id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                         label: rel.sourceLabel,
-                         type: "entity",
-                         tags: Array.isArray(params.tags) ? params.tags : [],
-                         properties: { sourceDoc: docName },
-                         createdAt: Date.now(),
-                       });
-                       createdCount++;
-                     }
-                     
-                     let targetNode = await store.findNodeByLabel(rel.targetLabel);
-                     if (!targetNode) {
-                       targetNode = await store.addNode({
-                         id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                         label: rel.targetLabel,
-                         type: "entity",
-                         tags: Array.isArray(params.tags) ? params.tags : [],
-                         properties: { sourceDoc: docName },
-                         createdAt: Date.now(),
-                       });
-                       createdCount++;
-                     }
-                     
-                     // 避免重复边
-                     const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-                     if (existingEdges.every(e => e.relation !== rel.relation)) {
-                       await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
-                     }
-                   }
-                   
-                   console.log(`[kb_ingest] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes`);
-                 }
-               }
-             } catch (err: unknown) {
-               console.warn("[kb_ingest] 知识图谱同步/关系抽取失败，忽略:", err);
-               /* 图谱同步失败不影响入库结果 */
-             }
-           }
+                  // 简单处理：将文档内容分成段落或块，并添加到知识图谱
+                  const paragraphs = contentForExtraction.split(/\n\s*\n/).filter(p => p.trim().length > 50);
+                  for (let i = 0; i < paragraphs.slice(0, 10).length; i++) {  // 最多添加 10 个内容块
+                    const para = paragraphs[i].trim().slice(0, 300);  // 限制长度
+                    await graphManager.onFactStored({
+                      id: `kb_content_${result.docId}_${i}`,
+                      key: `kb:${docName}:content:${i}`,
+                      value: para,
+                      tags: ['kb_content', 'text', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                      relation: `kb:${docName}`,
+                    });
+                  }
+                }
+
+                // 5. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（使用数据库中的 parsed_content）
+                if (llmProvider && contentForExtraction && contentForExtraction.length > 100) {
+                  console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${Math.min(contentForExtraction.length, 2000)}`);
+                  const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
+                  const { KnowledgeGraphManager } = await import("../memory/knowledge-graph/manager.js");
+
+                  // 抽取关系（只抽取前 2000 字符避免过长）
+                  const relations = await extractRelationships(contentForExtraction.slice(0, 2000), llmProvider as LLMProvider);
+                  console.log(`[kb_ingest] LLM extracted ${relations.length} relations`);
+
+                  // 获取graph store并添加关系
+                  const store = graphManager.getStore();
+                  let createdCount = 0;
+
+                  for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
+                    let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
+                    if (!sourceNode) {
+                      sourceNode = await store.addNode({
+                        id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                        label: rel.sourceLabel,
+                        type: "entity",
+                        tags: Array.isArray(params.tags) ? params.tags : [],
+                        properties: { sourceDoc: docName },
+                        createdAt: Date.now(),
+                      });
+                      createdCount++;
+                    }
+
+                    let targetNode = await store.findNodeByLabel(rel.targetLabel);
+                    if (!targetNode) {
+                      targetNode = await store.addNode({
+                        id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                        label: rel.targetLabel,
+                        type: "entity",
+                        tags: Array.isArray(params.tags) ? params.tags : [],
+                        properties: { sourceDoc: docName },
+                        createdAt: Date.now(),
+                      });
+                      createdCount++;
+                    }
+
+                    // 避免重复边
+                    const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
+                    if (existingEdges.every(e => e.relation !== rel.relation)) {
+                      await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
+                    }
+                  }
+
+                  console.log(`[kb_ingest] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes`);
+                }
+              }
+            } catch (err: unknown) {
+              console.warn("[kb_ingest] 知识图谱同步/关系抽取失败，忽略:", err);
+              /* 图谱同步失败不影响入库结果 */
+            }
+          }
+
+          // 文档解析完全完成（包括知识图谱同步），更新解析状态为成功
+          // 确保在所有处理完全完成后才更新状态
+          const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
+          if (placeholderDocId) {
+            console.log(`[kb_ingest] 所有处理完成，更新占位文档状态为成功: ${placeholderDocId}`);
+            await kb.updateParsingStatus(placeholderDocId, {
+              parsingStatus: 'success',
+              parsingProgress: 100,
+              chunkCount: result.chunkCount,
+              totalTokens: result.totalTokens,
+              parsedContent: content?.slice(0, 50000),
+            });
+          }
 
           return {
             success: true,
@@ -1816,7 +1980,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
         } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
-      },
+      }
     }),
   );
 
