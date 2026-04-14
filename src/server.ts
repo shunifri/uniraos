@@ -25,6 +25,8 @@ import { createKnowledgeSkills } from "./skills/knowledge-skills.js";
 import { createApiGenSkills } from "./skills/api-gen-skills.js";
 import { createMetaSkills } from "./skills/meta-skills.js";
 import { createPlanningSkill } from "./skills/planning-skill.js";
+import { createGraphSkills } from "./skills/graph-skills.js";
+import { createUserConfirmSkill } from "./skills/user-confirm-skill.js";
 import { SkillMarketplace } from "./skills/skill-marketplace.js";
 import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
 import { PluginLoader } from "./plugin/plugin-loader.js";
@@ -464,6 +466,16 @@ createFederationSkills(registry, migrationManager, federationManager, evolutionE
 
 // 注册元 Skills (compose/template/info)
 createMetaSkills(registry, engine, () => currentProvider);
+
+// 注册知识图谱 Skills
+for (const skill of createGraphSkills(sessionManager)) {
+  registry.register(skill);
+}
+console.log(`   Graph skills registered (graph_query/graph_path/graph_communities/graph_deduplicate)`);
+
+// 注册用户确认 Skill
+registry.register(createUserConfirmSkill());
+console.log(`   User confirmation skill registered (user_confirm)`);
 
 // 注册 Prompt 管理 Skills
 registry.register(
