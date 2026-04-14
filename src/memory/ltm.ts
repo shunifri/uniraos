@@ -323,7 +323,22 @@ export class MySQLLTMBackend implements LTMBackend {
     // 统计标签
     const tagCounts: Record<string, number> = {};
     for (const row of tagsResult as any[]) {
-      const tags = JSON.parse(row.tags || '[]');
+      let tags: string[] = [];
+      try {
+        if (row.tags) {
+          if (row.tags.startsWith('[')) {
+            // 标准 JSON 数组格式
+            tags = JSON.parse(row.tags);
+          } else {
+            // 逗号分隔格式
+            tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to parse tags: ${row.tags}`, e);
+        tags = [];
+      }
+
       for (const tag of tags) {
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
       }
@@ -513,11 +528,37 @@ export class MySQLLTMBackend implements LTMBackend {
   // ===== 私有方法 =====
 
   private rowToEntry(row: any): LTMEntry {
+    let value: unknown = row.value;
+    try {
+      if (typeof row.value === 'string' && (row.value.startsWith('{') || row.value.startsWith('['))) {
+        value = JSON.parse(row.value);
+      }
+    } catch (e) {
+      // 保持字符串原样
+      console.warn(`Failed to parse value as JSON: ${row.value}`, e);
+    }
+
+    let tags: string[] = [];
+    try {
+      if (row.tags) {
+        if (row.tags.startsWith('[')) {
+          // 标准 JSON 数组格式
+          tags = JSON.parse(row.tags);
+        } else {
+          // 逗号分隔格式
+          tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to parse tags: ${row.tags}`, e);
+      tags = [];
+    }
+
     return {
       id: row.id,
       key: row.entry_key,
-      value: JSON.parse(row.value),
-      tags: JSON.parse(row.tags || '[]'),
+      value,
+      tags,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       accessCount: row.access_count,
@@ -530,8 +571,22 @@ export class MySQLLTMBackend implements LTMBackend {
   private entryToText(row: any): string {
     const parts = [row.entry_key];
     if (row.summary) parts.push(row.summary);
-    const tags = JSON.parse(row.tags || '[]');
+
+    let tags: string[] = [];
+    try {
+      if (row.tags) {
+        if (row.tags.startsWith('[')) {
+          tags = JSON.parse(row.tags);
+        } else {
+          tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+        }
+      }
+    } catch (e) {
+      tags = [];
+    }
+
     if (tags.length > 0) parts.push(tags.join(" "));
+
     const valueStr = typeof row.value === "string" ? row.value : JSON.stringify(row.value);
     parts.push(valueStr.substring(0, 1000));
     return parts.join(" ");
