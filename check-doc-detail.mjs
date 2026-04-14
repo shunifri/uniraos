@@ -18,21 +18,15 @@ const connection = await mysql.createConnection({
   database: process.env.MYSQL_DATABASE || 'raos'
 });
 
-console.log('=== Resetting stuck documents ===');
-const [result] = await connection.execute(`
-  UPDATE kb_documents
-  SET parsing_status = 'failed', parsing_progress = 0
-  WHERE parsing_status = 'processing'
+console.log('=== Document Details ===');
+const [docRows] = await connection.query(`
+  SELECT * FROM kb_documents WHERE doc_id = 'doc_1776131650265_7dedlv'
 `);
+console.table(docRows);
 
-console.log(`Reset ${result.affectedRows} stuck documents`);
-
-console.log('\n=== Current document status ===');
-const [rows] = await connection.query(`
-  SELECT doc_id, name, parsing_status, parsing_progress, chunk_count, ingested_at
-  FROM kb_documents
-  ORDER BY ingested_at DESC LIMIT 10
-`);
-console.table(rows);
+console.log('\n=== Check if file exists ===');
+const [fs] = await import('fs');
+const uploadPath = join(__dirname, 'uploads/user_admin/集团化数据中台建设方案_1776000176188.docx');
+console.log(`File exists: ${fs.existsSync(uploadPath)}`);
 
 await connection.end();

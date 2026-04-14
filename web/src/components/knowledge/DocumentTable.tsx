@@ -128,6 +128,7 @@ export default function DocumentTable({
   return (
     <Card
       size="small"
+      className="glass-card"
       title={t("kb_documents")}
       extra={
         <Space>

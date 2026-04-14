@@ -59,6 +59,8 @@ export interface ModelCardConfig {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /** API 模式（用于兼容不同的 API） */
+  apiMode?: string;
   /** embedding 专用：API 模式（openai 标准 / volcengine-multimodal 火山多模态） */
   embeddingMode?: "openai" | "volcengine-multimodal";
 }
@@ -209,6 +211,10 @@ export class ConfigManager {
   setEngine(config: Partial<EngineConfig>): void {
     this.config.engine = { ...this.config.engine, ...config };
     this.save();
+  }
+
+  getAgent(): RAOSConfig["agent"] {
+    return { ...this.config.agent };
   }
 
   setAgent(config: Partial<RAOSConfig["agent"]>): void {

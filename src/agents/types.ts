@@ -11,7 +11,7 @@ import type { StreamEvent as BaseStreamEvent } from "../llm/agent-loop.js";
 
 // ===== 智能体级别 =====
 
-export type AgentLevel = "simple" | "react" | "team";
+export type AgentLevel = "simple" | "react" | "team" | "plan";
 
 // ===== 协作协议 =====
 
@@ -121,6 +121,14 @@ export interface StrategyDecision {
   topicChange?: boolean;
   /** AI 判断是否需要深度思考 */
   needsDeepThink?: boolean;
+  /** 任务类型分类 */
+  taskType?: 'qa' | 'analysis' | 'planning' | 'execution' | 'collaboration' | 'creative';
+  /** 复杂度评分（0-1） */
+  complexity?: number;
+  /** 建议的 Plan 步骤（plan 级别） */
+  planSteps?: Array<{ description: string; skill?: string }>;
+  /** 信心度（0-1） */
+  confidence?: number;
 }
 
 export interface TeamConfig {
@@ -133,6 +141,34 @@ export interface TeamConfig {
   /** 最大轮次 */
   maxRounds?: number;
 }
+
+// ===== 策略配置 =====
+
+/** 策略资源配置 */
+export interface StrategyConfig {
+  /** ReAct 最大迭代次数 */
+  maxIterations?: number;
+  /** Team 策略最大成员数 */
+  maxTeamSize?: number;
+  /** Plan 策略最大步骤数 */
+  planStepLimit?: number;
+  /** 策略执行超时时间 (ms) */
+  timeout?: number;
+  /** 是否允许策略间切换 */
+  allowStrategySwitch?: boolean;
+  /** 智能体级别选择偏好 */
+  preferredLevel?: AgentLevel;
+}
+
+/** 默认策略配置 */
+export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
+  maxIterations: 15,
+  maxTeamSize: 8,
+  planStepLimit: 10,
+  timeout: 300000, // 5分钟
+  allowStrategySwitch: true,
+  preferredLevel: undefined,
+};
 
 // ===== 智能体接口 =====
 

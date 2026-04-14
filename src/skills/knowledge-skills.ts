@@ -31,6 +31,7 @@ import { getMySQLAdapter, type MySQLAdapter } from "../db/mysql-adapter.js";
 import * as mysql from 'mysql2/promise';
 import { join, resolve, dirname, normalize, sep } from "path";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import fs from "fs";
 import { createHash } from "crypto";
 import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } from "../kb-graph-sync.js";
 import { configManager } from "../config/config-manager.js";
@@ -57,6 +58,11 @@ interface DocRecord {
   parsed_content: string;
   layouts_json?: string;
   segments_json?: string;
+  parsing_status: string;
+  parsing_progress: number;
+  doc_mind_task_id: string | null;
+  media_type: string;
+  duration_ms: number | null;
 }
 
 /** 简化文档记录（用于查询） */
@@ -373,11 +379,11 @@ export class KnowledgeBase {
       const isPlaceholderDoc = opts?._placeholderDocId !== undefined;
 
       // 检查文档是否已存在
-      const existsResult = await connection.query(
+      const [existsRows] = await connection.query(
         "SELECT COUNT(*) as count FROM kb_documents WHERE doc_id = ?",
         [docId]
       );
-      const docExists = (existsResult as any)[0].count > 0;
+      const docExists = (existsRows as mysql.RowDataPacket[])[0].count > 0;
 
       if (docExists) {
         // 文档已存在（占位符或旧文档），先删除旧的 chunks 和 keywords
@@ -836,13 +842,13 @@ export class KnowledgeBase {
   }
 
   /** 列出文档（增强版筛选） */
-  async listDocuments(opts?: { 
-    query?: string; 
-    tags?: string[]; 
-    sharedOnly?: boolean; 
+  async listDocuments(opts?: {
+    query?: string;
+    tags?: string[];
+    sharedOnly?: boolean;
     limit?: number;
     format?: string;  // 文件格式筛选，如 "pdf", "docx", "md"
-  }): Promise<Array<{ docId: string; id: string; name: string; source: string; chunkCount: number; totalTokens: number; ingestedAt: number; updatedAt: number | null; version: number; tags: string[]; shared: boolean; vectorized: number; vectorTotal: number; format: string }>> {
+  }): Promise<Array<{ docId: string; id: string; name: string; source: string; chunkCount: number; totalTokens: number; ingestedAt: number; updatedAt: number | null; version: number; tags: string[]; shared: boolean; vectorized: number; vectorTotal: number; format: string; parsingStatus: string; parsingProgress: number; docMindTaskId: string | null; mediaType: string; durationMs: number | null }>> {
     const limit = opts?.limit ?? 100;
     let sql = "SELECT d.* FROM kb_documents d WHERE d.owner_id = ?";
     const params: unknown[] = [this.owner];
@@ -900,6 +906,11 @@ export class KnowledgeBase {
         vectorized: vs.vectorized,
         vectorTotal: vs.total,
         format: this.getFileFormat(r.name),
+        parsingStatus: r.parsing_status,
+        parsingProgress: r.parsing_progress,
+        docMindTaskId: r.doc_mind_task_id,
+        mediaType: r.media_type,
+        durationMs: r.duration_ms,
       };
     }));
   }
@@ -1728,16 +1739,24 @@ function getKBImageDir(owner: string, docId: string): string {
   return join(KB_BASE, owner, "page-images", docId);
 }
 
-/** 保存知识库文档的页面图片到磁盘 */
-function saveKBPageImages(owner: string, docId: string, pages: Array<{ page: number; imageBase64: string }>): void {
+/** 保存知识库文档的页面图片到磁盘（优化版） */
+async function saveKBPageImages(owner: string, docId: string, pages: Array<{ page: number; imageBase64: string }>): Promise<void> {
   if (pages.length === 0) return;
   const dir = getKBImageDir(owner, docId);
   mkdirSync(dir, { recursive: true });
-  for (const p of pages) {
+
+  // 优化：并行处理多个图片
+  const promises = pages.map(async (p) => {
     const buf = Buffer.from(p.imageBase64, "base64");
-    writeFileSync(join(dir, `page-${p.page}.png`), buf);
-  }
-  writeFileSync(join(dir, "pages.json"), JSON.stringify(pages.map((p) => p.page)));
+    // 使用异步写入
+    await fs.promises.writeFile(join(dir, `page-${p.page}.png`), buf);
+    return p.page;
+  });
+
+  const savedPages = await Promise.all(promises);
+  await fs.promises.writeFile(join(dir, "pages.json"), JSON.stringify(savedPages));
+
+  console.log(`[KB Page Images] 已保存 ${savedPages.length} 张页面图片到 ${dir}`);
 }
 
 /** 读取知识库文档的页面图片列表 */
@@ -1861,17 +1880,22 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
             // 如果 _skipQueue = true（降级解析），强制跳过队列直接本地解析
             // 同时检查 Document Mind 是否已启用配置
-            if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
-             // 使用 Document Mind 异步解析队列
+            const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
+
+            // 如果是占位文档模式，直接走本地解析（避免 Document Mind 未配置导致的卡住）
+            if (placeholderDocId) {
+              console.log(`[kb_ingest] 占位文档模式，直接走本地解析: ${placeholderDocId}`);
+              // 更新解析进度为 5%，表示解析已经开始
+              await kb.updateParsingStatus(placeholderDocId, {
+                parsingStatus: 'processing',
+                parsingProgress: 5,
+              });
+            } else if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
+             // 使用 Document Mind 异步解析队列（仅非占位模式）
              console.log(`[kb_ingest] 文件 ${path} 符合二进制文件类型，使用 Document Mind 解析队列`);
              const docNameForQueue = docName || path.split("/").pop() || `doc_${Date.now()}`;
              const tags = (params.tags as string[]) ?? [];
-
-             // 使用占位符 docId（如果传入），避免重复创建文档
-             // 如果已经有占位符（异步上传路径），不返回queued，继续本地解析 fallback
-             const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
-             console.log(`[kb_ingest] placeholderDocId: ${placeholderDocId}, params: ${JSON.stringify({ name: params.name, path: params.path, owner: params.owner })}`);
-             const taskDocId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+             const taskDocId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
              console.log(`[kb_ingest] taskDocId: ${taskDocId}`);
 
              try {
@@ -1884,23 +1908,6 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                );
                docId = task.docId;
 
-               if (!placeholderDocId) {
-                 // 非占位模式（同步上传）才返回queued
-                 return {
-                   success: true,
-                   data: {
-                     docId,
-                     queued: true,
-                     message: "文档已加入 Document Mind 解析队列",
-                   },
-                 };
-               }
-               // 如果已有占位符（后台异步上传）
-               // 队列已经开始处理，任务会在后台完成，不需要继续本地解析
-               // 队列会处理，如果 Document Mind 失败自动降级本地解析
-               console.log(`[kb_ingest] Document Mind 解析队列已启动，处理占位文档: ${docId}`);
-
-               // 直接返回，让前端轮询
                return {
                  success: true,
                  data: {
@@ -2012,7 +2019,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             // 保存页面图片
             const pageImages = (params as IngestParamsExtension)._pageImages;
             if (pageImages && pageImages.length > 0 && result.docId) {
-              try { saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
+              try { await saveKBPageImages(owner, result.docId, pageImages); } catch { /* ignore */ }
             }
           }
 
@@ -2282,6 +2289,18 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             },
           };
         } catch (err: unknown) {
+          const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
+          if (placeholderDocId) {
+            console.error(`[kb_ingest] 本地解析失败，更新占位文档状态为失败: ${placeholderDocId}`, err);
+            try {
+              await kb.updateParsingStatus(placeholderDocId, {
+                parsingStatus: 'failed',
+                parsingProgress: 0,
+              });
+            } catch (updateErr) {
+              console.error(`[kb_ingest] 更新解析状态失败: ${updateErr}`);
+            }
+          }
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
         }
       }

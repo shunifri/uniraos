@@ -86,7 +86,7 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
        visible: true,
        autonomy: Autonomy.MANUAL,
        description: "知识图谱节点去重，合并相同标签的节点并转移关系。",
-       paramSchema: {},
+       paramSchema: { properties: {} },
        handler: async () => {
          const gm = getGraphManager();
          if (!gm) return { success: false, error: new Error("知识图谱未初始化") };

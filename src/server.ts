@@ -4688,8 +4688,8 @@ mountRoutes(app, {
   getCurrentMultimodalProvider: () => currentMultimodalProvider,
   createProvider,
   setCurrentProvider: (p) => { currentProvider = p; },
-  getAgentLoop: (userId: string) => agentLoops.get(userId) ?? null,
-  getOrchestrator: () => orchestrator,
+  getAgentLoop: (userId: string) => sessionManager.getOrCreate(userId).agentLoop ?? null,
+  getOrchestrator: () => getOrchestrator(),
   getAgentConfig: () => configManager.getAgent(),
   getVisionConfig: () => {
     const mm = configManager.getMultimodal();
@@ -4702,29 +4702,26 @@ mountRoutes(app, {
       currentMultimodalProvider = null;
       return;
     }
-    currentMultimodalProvider = new OpenAIMultimodalProvider(mm.apiKey, mm.baseUrl || undefined, mm.imageModel, mm.visionModel, mm.ttsModel, mm.whisperModel);
+    currentMultimodalProvider = new OpenAIMultimodalProvider({
+      apiKey: mm.apiKey,
+      baseUrl: mm.baseUrl || undefined,
+      imageModel: mm.imageModel,
+      visionModel: mm.visionModel,
+      ttsModel: mm.ttsModel,
+      whisperModel: mm.whisperModel,
+    });
   },
   rebuildAllAgentLoops: () => {
-    for (const [userId, loop] of agentLoops) {
-      const config = configManager.getLLM();
-      if (!config) continue;
-      const provider = createProvider(config);
-      loop.updateProvider(provider);
-      const agentCfg = configManager.getAgent();
-      loop.updateConfig({
-        maxIterations: agentCfg.maxIterations ?? 10,
-        systemPrompt: agentCfg.systemPrompt,
-        includeTrace: agentCfg.includeTrace ?? false,
-      });
+    if (currentProvider) {
+      sessionManager.rebuildAllAgentLoops(registry, engine, currentProvider, configManager.getAgent());
     }
   },
   rebuildOrchestrator: () => {
-    if (!currentProvider) return;
-    orchestrator = new Orchestrator(registry, engine, currentProvider, configManager.getAgent().maxIterations);
+    (globalThis as any).__orchestrator = null;
   },
   syncSkillsToResources: () => {
     // 同步技能到资源
-    const skills = registry.getAll();
+    const skills = registry.list();
     const resourceSkills = skills.filter((s: any) => s.type === "resource").map((s: any) => s.name);
     if (resourceSkills.length > 0) {
       console.log(`   Skills synced to resources: ${resourceSkills.length} total`);

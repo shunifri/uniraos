@@ -261,7 +261,9 @@ export class EnhancedLTMBackend implements LTMBackend {
   // ===== 可选能力 =====
 
   setEmbeddingProvider(provider: EmbeddingProvider): void {
-    this.backend.setEmbeddingProvider(provider);
+    if (this.backend.setEmbeddingProvider) {
+      this.backend.setEmbeddingProvider(provider);
+    }
   }
 
   async buildVectorIndex(): Promise<{ indexed: number; failed: number }> {

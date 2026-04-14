@@ -738,8 +738,13 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
     mammothContent = null;
   }
 
-  // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）
+  // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）- 只有在有视觉模型配置时才生成图片
   const imagePromise = (async (): Promise<{ images: Map<number, string>; pageCount: number } | null> => {
+    // 没有视觉模型配置时，跳过图片生成，直接返回 null，避免调用 LibreOffice
+    if (!visionConfig) {
+      return null;
+    }
+
     try {
       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
       const pdfPath = convertToPDF(filePath, tempDir);
@@ -747,17 +752,17 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
       const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
       const pdfData = await pdfParse(readFileSync(pdfPath));
-      
+
       const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
       mkdirSync(imageTempDir, { recursive: true });
       const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
-      
+
       const images = new Map<number, string>();
       for (const pageNum of successPages) {
         const imageFile = join(imageTempDir, `page.${pageNum}.png`);
         images.set(pageNum, readFileSync(imageFile).toString("base64"));
       }
-      
+
       cleanupDir(tempDir);
       cleanupDir(imageTempDir);
       return { images, pageCount: pdfData.numpages };

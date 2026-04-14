@@ -8,12 +8,27 @@ import type { BFSOptions } from "./bfs-extractor.js";
 import type { LLMProvider } from "../../llm/types.js";
 
 export class KnowledgeGraphManager {
-  private store: GraphStore;
+  private store: any; // 使用 any 类型以兼容不同的存储实现
   private llmProvider?: LLMProvider;
+  private backend: string;
 
-  constructor(owner: string, llmProvider?: LLMProvider) {
-    this.store = new GraphStore(owner);
+  constructor(
+    owner: string,
+    llmProvider?: LLMProvider,
+    backend: string = process.env.GRAPH_STORE_BACKEND || "mysql"
+  ) {
+    this.backend = backend;
+    this.store = this.createStore(owner, backend);
     this.llmProvider = llmProvider;
+  }
+
+  private createStore(owner: string, backend: string): any {
+    if (backend === "neo4j") {
+      const { Neo4jGraphStore } = require("./neo4j-store.js");
+      return new Neo4jGraphStore(owner);
+    } else {
+      return new GraphStore(owner);
+    }
   }
 
   /** Called after ltm_store — auto-creates graph node and edges */
@@ -47,8 +62,8 @@ export class KnowledgeGraphManager {
 
     // 3. Tag-based TEMPORAL edges
     const existingNodes = (await this.store.getAllNodes())
-      .filter(n => n.id !== node!.id)
-      .map(n => ({ id: n.id, label: n.label, tags: n.tags }));
+      .filter((n: any) => n.id !== node!.id)
+      .map((n: any) => ({ id: n.id, label: n.label, tags: n.tags }));
     const tagRelations = extractTagRelationships(entry.tags, existingNodes);
     for (const rel of tagRelations.slice(0, 5)) { // max 5 tag edges per entry
       const existing = await this.store.getEdgesBetween(node.id, rel.targetId);
@@ -186,5 +201,5 @@ export class KnowledgeGraphManager {
     return { added };
   }
 
-  getStore(): GraphStore { return this.store; }
+  getStore(): any { return this.store; }
 }

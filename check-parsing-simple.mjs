@@ -18,21 +18,21 @@ const connection = await mysql.createConnection({
   database: process.env.MYSQL_DATABASE || 'raos'
 });
 
-console.log('=== Resetting stuck documents ===');
-const [result] = await connection.execute(`
-  UPDATE kb_documents
-  SET parsing_status = 'failed', parsing_progress = 0
-  WHERE parsing_status = 'processing'
+console.log('=== Last 20 documents ===');
+const [allRows] = await connection.query(`
+  SELECT doc_id, name, parsing_status, parsing_progress, chunk_count, ingested_at, updated_at
+  FROM kb_documents
+  ORDER BY ingested_at DESC LIMIT 20
 `);
+console.table(allRows);
 
-console.log(`Reset ${result.affectedRows} stuck documents`);
-
-console.log('\n=== Current document status ===');
-const [rows] = await connection.query(`
+console.log('\n=== Processing documents ===');
+const [processingRows] = await connection.query(`
   SELECT doc_id, name, parsing_status, parsing_progress, chunk_count, ingested_at
   FROM kb_documents
-  ORDER BY ingested_at DESC LIMIT 10
+  WHERE parsing_status = 'processing'
+  ORDER BY ingested_at DESC
 `);
-console.table(rows);
+console.table(processingRows);
 
 await connection.end();

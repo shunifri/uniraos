@@ -6,7 +6,6 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 加载 .env.local
 import { loadEnvFile } from 'process';
 loadEnvFile(join(__dirname, '.env.local'));
 
@@ -18,21 +17,20 @@ const connection = await mysql.createConnection({
   database: process.env.MYSQL_DATABASE || 'raos'
 });
 
-console.log('=== Resetting stuck documents ===');
-const [result] = await connection.execute(`
-  UPDATE kb_documents
-  SET parsing_status = 'failed', parsing_progress = 0
-  WHERE parsing_status = 'processing'
-`);
+const docId = process.argv[2];
+if (!docId) {
+  console.log('Usage: node delete-doc.mjs <docId>');
+  process.exit(1);
+}
 
-console.log(`Reset ${result.affectedRows} stuck documents`);
+console.log(`Deleting document: ${docId}`);
 
-console.log('\n=== Current document status ===');
-const [rows] = await connection.query(`
-  SELECT doc_id, name, parsing_status, parsing_progress, chunk_count, ingested_at
-  FROM kb_documents
-  ORDER BY ingested_at DESC LIMIT 10
-`);
-console.table(rows);
+await connection.execute("DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)", [docId]);
+await connection.execute("DELETE FROM kb_chunks WHERE doc_id = ?", [docId]);
+await connection.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
+await connection.execute("DELETE FROM kb_versions WHERE doc_id = ?", [docId]);
+await connection.execute("DELETE FROM kb_documents WHERE doc_id = ?", [docId]);
+
+console.log('Done');
 
 await connection.end();

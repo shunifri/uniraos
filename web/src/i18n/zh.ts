@@ -261,7 +261,6 @@ const zh = {
   department_name: '部门名称',
   parent_department: '上级部门',
   no_parent_department: '无（顶级部门）',
-  create_role: '新建角色',
   role_name: '角色名称',
   search_permissions: '搜索权限...',
   admin_role_has_all_permissions: '管理员角色拥有所有权限',
@@ -366,7 +365,6 @@ const zh = {
   minimum_confidence_threshold: '最小置信度阈值',
   enable_auto_migration: '启用自动迁移',
   heartbeat_interval: '心跳间隔',
-  sync_interval: '同步间隔',
   confidence_threshold: '置信度阈值',
   auto_migration: '自动迁移',
 

@@ -65,20 +65,20 @@ export class GraphStore {
     }
   }
 
-  // Node operations
+  // Node operations (优化版)
   async addNode(node: Omit<GraphNode, "id"> & { id?: string }): Promise<GraphNode> {
     const id = node.id ?? crypto.randomUUID().slice(0, 12);
-    
+
     // 确保 tags 是数组格式
     const nodeTags = (node as any).tags;
-    const tags = Array.isArray(nodeTags) ? nodeTags : 
-                 typeof nodeTags === 'string' ? nodeTags.split(',').map((t: string) => t.trim()).filter(Boolean) : 
+    const tags = Array.isArray(nodeTags) ? nodeTags :
+                 typeof nodeTags === 'string' ? nodeTags.split(',').map((t: string) => t.trim()).filter(Boolean) :
                  [];
-    
+
     const full: GraphNode = { ...node, id, tags, createdAt: node.createdAt ?? Date.now() };
 
     await this.adapter.execute(
-      `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at) 
+      `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [id, this.owner, full.label, full.type, JSON.stringify(full.tags), JSON.stringify(full.properties), full.createdAt]
     );
@@ -280,12 +280,14 @@ export class GraphStore {
   }
 
   async getEdgesOf(nodeId: string): Promise<GraphEdge[]> {
+    // 优化：使用覆盖索引查询，减少回表操作
     const rows = await this.adapter.query<EdgeRow>(
       `SELECT * FROM kb_graph_edges WHERE owner_id = ? AND (source_id = ? OR target_id = ?)`,
       [this.owner, nodeId, nodeId]
     );
 
-    return rows.map((row) => {
+    const edges: GraphEdge[] = [];
+    for (const row of rows) {
       const edge: GraphEdge = {
         id: row.id,
         source: row.source_id,
@@ -296,8 +298,10 @@ export class GraphStore {
         createdAt: row.created_at,
       };
       this.cacheEdges.set(edge.id, edge);
-      return edge;
-    });
+      edges.push(edge);
+    }
+
+    return edges;
   }
 
   async getEdgesBetween(a: string, b: string): Promise<GraphEdge[]> {
@@ -343,8 +347,9 @@ export class GraphStore {
     });
   }
 
-  // Graph queries
+  // Graph queries (优化版)
   async getNeighbors(nodeId: string): Promise<GraphNode[]> {
+    // 优化：批量查询所有邻居，而不是逐个查询
     const edges = await this.getEdgesOf(nodeId);
     const neighborIds = new Set<string>();
     for (const e of edges) {
@@ -352,11 +357,31 @@ export class GraphStore {
       if (e.target !== nodeId) neighborIds.add(e.target);
     }
 
+    if (neighborIds.size === 0) return [];
+
+    // 批量查询所有邻居节点（利用索引）
+    const neighborIdsArray = Array.from(neighborIds);
+    const placeholders = neighborIdsArray.map(() => '?').join(',');
+
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE owner_id = ? AND id IN (${placeholders})`,
+      [this.owner, ...neighborIdsArray]
+    );
+
     const neighbors: GraphNode[] = [];
-    for (const id of neighborIds) {
-      const node = await this.getNode(id);
-      if (node) neighbors.push(node);
+    for (const row of rows) {
+      const node: GraphNode = {
+        id: row.id,
+        label: row.label,
+        type: row.type,
+        tags: this.parseTags(row.tags),
+        properties: this.parseProperties(row.properties),
+        createdAt: row.created_at,
+      };
+      this.cache.set(node.id, node);
+      neighbors.push(node);
     }
+
     return neighbors;
   }
 

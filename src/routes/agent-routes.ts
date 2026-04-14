@@ -272,8 +272,8 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
           // kb_search 结果 → 提取为知识库引用卡片
           const toolName = eventData.skillName ?? pendingToolName;
-          if (toolName === "kb_search" && r?.success && r.data?.results && Array.isArray(r.data.results) && r.data.results.length > 0) {
-            const refs = r.data.results.map((item: any, i: number) => ({
+          if (toolName === "kb_search" && r?.success && r.data && Array.isArray(r.data) && r.data.length > 0) {
+            const refs = r.data.map((item: any, i: number) => ({
               index: i + 1,
               docId: item.docId,
               docName: item.docName,

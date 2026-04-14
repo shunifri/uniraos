@@ -165,10 +165,12 @@ const Layout: React.FC = () => {
         style={{
           display: 'flex',
           alignItems: 'center',
-          padding: '0 24px',
+          padding: '12px 24px',
           gap: 16,
           background: antToken.colorBgContainer,
           borderBottom: `1px solid ${antToken.colorBorderSecondary}`,
+          height: 'auto',
+          lineHeight: '1.5',
         }}
       >
         <div
