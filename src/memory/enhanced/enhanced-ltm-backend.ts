@@ -205,10 +205,16 @@ export class EnhancedLTMBackend implements LTMBackend {
 
   async stats(): Promise<LTMStats> {
     const baseStats = await this.backend.stats();
-    const allEntries = (await this.backend.list({ limit: DEFAULT_LIST_LIMIT })) as EnhancedLTMEntry[];
+    const allEntries = (await this.backend.list({ limit: DEFAULT_LIST_LIMIT })) as unknown as {
+      rootId?: string;
+      forgotten?: boolean;
+      expiresAt?: number;
+    }[];
 
-    const versionCount = new Set(allEntries.map((e) => e.rootId)).size;
-    const forgottenCount = allEntries.filter((e) => e.forgotten).length;
+    const versionCount = new Set(
+      allEntries.map((e) => e.rootId).filter(Boolean)
+    ).size;
+    const forgottenCount = allEntries.filter((e) => !!e.forgotten).length;
 
     return {
       ...baseStats,

@@ -413,10 +413,18 @@ export function createMemorySkills(
         // 对于 Enhanced 后端，添加额外的统计信息
         const extraStats: any = {};
         if (isEnhancedBackend(ltm)) {
-          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
-          const versionChains = new Set(allEntries.map((e) => e.rootId).filter(Boolean)).size;
-          const forgottenCount = allEntries.filter((e) => e.forgotten).length;
-          const expiredPending = allEntries.filter((e) => e.expiresAt && e.expiresAt <= Date.now() && !e.forgotten).length;
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as unknown as {
+            rootId?: string;
+            forgotten?: boolean;
+            expiresAt?: number;
+          }[];
+          const versionChains = new Set(
+            allEntries.map((e) => e.rootId).filter(Boolean)
+          ).size;
+          const forgottenCount = allEntries.filter((e) => !!e.forgotten).length;
+          const expiredPending = allEntries.filter(
+            (e) => e.expiresAt && e.expiresAt <= Date.now() && !e.forgotten
+          ).length;
 
           extraStats.version_chains = versionChains;
           extraStats.forgotten_count = forgottenCount;
