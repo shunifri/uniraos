@@ -302,6 +302,17 @@ export async function getDepartmentResources(departmentId: string): Promise<Arra
 }
 
 /** 获取部门的有效资源（含祖先继承） */
+export async function listDepartments(): Promise<Department[]> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query("SELECT * FROM departments ORDER BY path");
+    return rows.map(mapDepartment);
+  }
+
+  const rows = getDb().prepare("SELECT * FROM departments ORDER BY path").all() as any[];
+  return rows.map(mapDepartment);
+}
+
 export async function getDepartmentEffectiveResources(departmentId: string): Promise<Array<{ id: string; name: string; type: string; description: string }>> {
   const dept = await getDepartmentById(departmentId);
   if (!dept) return [];

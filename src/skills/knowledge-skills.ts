@@ -33,8 +33,11 @@ import { join, resolve, dirname, normalize, sep } from "path";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import fs from "fs";
 import { createHash } from "crypto";
-import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers } from "../kb-graph-sync.js";
+import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers, removeKBFromUserGraph } from "../kb-graph-sync.js";
 import { configManager } from "../config/config-manager.js";
+import { ShareRepository } from "../db/share-repository.js";
+import { getUserRoles, getUserById, getUserDepartment } from "../db/user-repository.js";
+import { getDepartmentById } from "../db/department-repository.js";
 
 /** 解析器版本号 — 每次解析逻辑有重大变更时递增，强制已有文档重新入库 */
 const PARSER_VERSION = 2;
@@ -1777,19 +1780,45 @@ export function getKBPageImagePath(owner: string, docId: string, page: number): 
 /** 跨租户检索共享文档 */
 async function searchShared(
   query: string,
-  excludeOwner: string,
+  currentUser: string,
   limit: number,
+  allowedDocIds?: string[],
 ): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; owner: string; source: "shared" }>> {
-  const tenants = (await getAllTenants()).filter((t) => t !== excludeOwner);
   const allResults: any[] = [];
 
-  for (const tenant of tenants) {
-    const kb = getKnowledgeBase(tenant);
-    const sharedDocIds = await kb.getSharedDocIds();
-    if (sharedDocIds.length === 0) continue;
+  if (allowedDocIds) {
+    // 使用 share-repository 过滤，先按 owner 分组
+    const shareRepo = ShareRepository.getInstance();
+    const kbRules = allowedDocIds.map(docId => shareRepo.getByResource("kb_document", docId));
+    const rulesResults = await Promise.all(kbRules);
+    const ownerToDocIds = new Map<string, string[]>();
 
-    const results = await kb.search(query, { limit, docIds: sharedDocIds });
-    allResults.push(...results.map((r) => ({ ...r, owner: tenant })));
+    for (const rules of rulesResults) {
+      for (const rule of rules) {
+        const docIds = ownerToDocIds.get(rule.ownerId) || [];
+        if (!docIds.includes(rule.resourceId)) {
+          docIds.push(rule.resourceId);
+          ownerToDocIds.set(rule.ownerId, docIds);
+        }
+      }
+    }
+
+    for (const [owner, docIds] of ownerToDocIds.entries()) {
+      const kb = getKnowledgeBase(owner);
+      const results = await kb.search(query, { limit, docIds });
+      allResults.push(...results.map((r) => ({ ...r, owner })));
+    }
+  } else {
+    // 回退到原来的方式（没有 allowedDocIds 时）
+    const tenants = (await getAllTenants()).filter((t) => t !== currentUser);
+    for (const tenant of tenants) {
+      const kb = getKnowledgeBase(tenant);
+      const sharedDocIds = await kb.getSharedDocIds();
+      if (sharedDocIds.length === 0) continue;
+
+      const results = await kb.search(query, { limit, docIds: sharedDocIds });
+      allResults.push(...results.map((r) => ({ ...r, owner: tenant })));
+    }
   }
 
   allResults.sort((a, b) => b.score - a.score);
@@ -2633,16 +2662,45 @@ interface ClassifiedQuery {
           let sharedResults: any[] = [];
           if (includeShared) {
             try {
-              const sharedKB = getKnowledgeBase("shared");
-              const rawSharedResults = await sharedKB.search(query, {
-                limit: limit * 2,
-                tags: params.tags as string[],
-                docIds: params.docIds as string[]
-              });
+              const shareRepo = ShareRepository.getInstance();
+              const userRoles = await getUserRoles(owner);
+              const roleIds = userRoles.map(r => r.id);
+              const userDept = await getUserDepartment(owner);
+              const deptPath = userDept?.path || "/";
+              const sharedRules = await shareRepo.getSharedToUser(owner, roleIds, deptPath);
+
+              // 过滤知识库文档类型的共享规则
+              const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
+              const sharedDocIds = [...new Set(kbRules.map(rule => rule.resourceId))];
+
+              // 使用 share-repository 过滤，先按 owner 分组
+              const ownerToDocIds = new Map<string, string[]>();
+
+              for (const rule of kbRules) {
+                const docIds = ownerToDocIds.get(rule.ownerId) || [];
+                if (!docIds.includes(rule.resourceId)) {
+                  docIds.push(rule.resourceId);
+                  ownerToDocIds.set(rule.ownerId, docIds);
+                }
+              }
+
+              const tempResults: any[] = [];
+
+              for (const [docOwner, docIds] of ownerToDocIds.entries()) {
+                if (docOwner !== owner) {
+                  const sharedKB = getKnowledgeBase(docOwner);
+                  const rawSharedResults = await sharedKB.search(query, {
+                    limit: limit * 2,
+                    tags: params.tags as string[],
+                    docIds: docIds,
+                  });
+                  tempResults.push(...rawSharedResults.map((r) => ({ ...r, owner: docOwner })));
+                }
+              }
 
               // 去重：排除自己文档
               const ownDocIds = new Set(ownResults.map(r => r.docId));
-              sharedResults = rawSharedResults
+              sharedResults = tempResults
                 .filter(r => !ownDocIds.has(r.docId))
                 .slice(0, limit);
             } catch (sharedErr: unknown) {
@@ -2794,36 +2852,92 @@ interface ClassifiedQuery {
   registry.register(
     defineSystemSkill({
       name: "kb_share",
-      description: "设置文档的共享状态。参数: docId(string), shared(boolean), owner?(string, 默认 default)",
+      description: "设置文档的共享规则。参数: docId(string), scope('all'|'role'|'department'|'user'|'none'), targetId?(string, scope 为 role/department/user 时必填), permission?('read'|'execute'|'write', 默认 read), owner?(string, 默认当前用户)",
       handler: async (params) => {
         const docId = params.docId as string;
-        const shared = params.shared as boolean;
-        if (!docId || shared === undefined) {
-          return { success: false, error: new Error("docId 和 shared 参数必填") };
+        const scope = params.scope as "all" | "role" | "department" | "user" | "none";
+        if (!docId || !scope) {
+          return { success: false, error: new Error("docId 和 scope 参数必填") };
         }
 
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const updated = await kb.setShared(docId, shared);
-        
-         // Sync to knowledge graphs when sharing
-         if (updated && shared && sessionManager) {
-           try {
-             const doc = await kb.getDocument(docId);
-             if (doc) {
-               const targetUsers = await getSharedKBTargetUsers(owner);
-               await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
-             }
-           } catch (err: any) {
-             // Ignore error if knowledge graph tables don't exist
-             console.warn(`[kb_share] Failed to sync to knowledge graph (ignored): ${err.message}`);
-           }
-         }
-        
+        const permission = (params.permission as "read" | "execute" | "write") || "read";
+        const targetId = params.targetId as string | undefined;
+
+        // 检查文档是否存在
+        const doc = await kb.getDocument(docId);
+        if (!doc) {
+          return { success: false, error: new Error(`文档不存在: ${docId}`) };
+        }
+
+        // 使用 share-repository 管理共享规则
+        const shareRepo = ShareRepository.getInstance();
+
+        // 如果是取消共享，删除所有相关共享规则
+        if (scope === "none") {
+          const existingRules = await shareRepo.getByResource("kb_document", docId);
+          for (const rule of existingRules) {
+            await shareRepo.delete(rule.id);
+          }
+
+          // 从知识图谱中移除共享文档
+          if (sessionManager) {
+            try {
+              const allUsers = await getAllTenants();
+              for (const userId of allUsers) {
+                if (userId !== owner) {
+                  await removeKBFromUserGraph(docId, doc.name, userId, sessionManager);
+                }
+              }
+            } catch (err: any) {
+              console.warn(`[kb_share] Failed to remove from knowledge graph (ignored): ${err.message}`);
+            }
+          }
+
+          return { success: true, data: { docId, shared: false, owner } };
+        }
+
+        // 验证 scope 和 targetId 的一致性
+        if (scope !== "all" && !targetId) {
+          return { success: false, error: new Error(`scope 为 ${scope} 时，targetId 参数必填`) };
+        }
+
+        // 检查是否已存在相同的共享规则
+        const existingRules = await shareRepo.getByResource("kb_document", docId);
+        const hasSameRule = existingRules.some(rule =>
+          rule.scope === scope && rule.targetId === targetId && rule.permission === permission
+        );
+
+        if (hasSameRule) {
+          return { success: true, data: { docId, scope, targetId, permission, owner, message: "共享规则已存在" } };
+        }
+
+        // 创建新的共享规则
+        const newRule = await shareRepo.create({
+          resourceType: "kb_document",
+          resourceId: docId,
+          ownerId: owner,
+          scope: scope,
+          targetId: targetId,
+          permission: permission,
+        });
+
+        // Sync to knowledge graphs when sharing
+        if (sessionManager) {
+          try {
+            // 获取目标用户列表
+            const targetUsers = await getSharedKBTargetUsers(owner, scope, targetId);
+            await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
+          } catch (err: any) {
+            console.warn(`[kb_share] Failed to sync to knowledge graph (ignored): ${err.message}`);
+          }
+        }
+
         return {
-          success: updated,
-          data: { docId, shared, owner },
-          error: updated ? undefined : new Error(`文档不存在: ${docId}`),
+          success: true,
+          data: { docId, scope, targetId, permission, owner, ruleId: newRule.id },
+          error: undefined,
         };
       },
     }),
@@ -2832,23 +2946,45 @@ interface ClassifiedQuery {
   registry.register(
     defineSystemSkill({
       name: "kb_shared",
-      description: "列出所有用户共享的文档或搜索共享知识。参数: query?(string, 搜索查询), limit?(number, 默认20)",
+      description: "列出用户有权访问的共享文档或搜索共享知识。参数: query?(string, 搜索查询), limit?(number, 默认20), owner?(string, 默认当前用户)",
       handler: async (params) => {
         const limit = (params.limit as number) ?? 20;
         const query = params.query as string | undefined;
+        const owner = (params.owner as string) || getCurrentUserId();
+
+        // 使用 share-repository 查询用户有权访问的共享文档
+        const shareRepo = ShareRepository.getInstance();
+        const userRoles = await getUserRoles(owner);
+        const roleIds = userRoles.map(r => r.id);
+        const userDept = await getUserDepartment(owner);
+        const deptPath = userDept?.path || "/";
+        const sharedRules = await shareRepo.getSharedToUser(owner, roleIds, deptPath);
+
+        // 过滤知识库文档类型的共享规则
+        const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
+        const sharedDocIds = [...new Set(kbRules.map(rule => rule.resourceId))];
 
         if (query) {
-          // 搜索所有共享文档
-          const results = await searchShared(query, "__none__", limit);
+          // 搜索有权访问的共享文档
+          const results = await searchShared(query, owner, limit, sharedDocIds);
           return { success: true, data: { results, count: results.length, query } };
         }
 
-        // 列出所有共享文档
+        // 列出所有有权访问的共享文档
         const allShared: any[] = [];
-        for (const tenant of await getAllTenants()) {
-          const kb = getKnowledgeBase(tenant);
-          const docs = await kb.listDocuments({ sharedOnly: true });
-          allShared.push(...docs.map((d: any) => ({ ...d, owner: tenant })));
+        const processedOwners = new Set<string>();
+
+        for (const rule of kbRules) {
+          if (!processedOwners.has(rule.ownerId)) {
+            processedOwners.add(rule.ownerId);
+            const kb = getKnowledgeBase(rule.ownerId);
+            const docs = await kb.listDocuments();
+            for (const doc of docs) {
+              if (sharedDocIds.includes(doc.docId)) {
+                allShared.push({ ...doc, owner: rule.ownerId });
+              }
+            }
+          }
         }
 
         return { success: true, data: { documents: allShared, total: allShared.length } };

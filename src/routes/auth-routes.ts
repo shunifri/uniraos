@@ -1,11 +1,14 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { requireAuth, requireAdmin } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import { createSession, destroySession } from "../db/auth.js";
 import * as userRepo from "../db/user-repository.js";
 import * as deptRepo from "../db/department-repository.js";
 import * as resRepo from "../db/resource-repository.js";
 import type { RouteDependencies } from "./index.js";
+
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
 
 export function createAuthRoutes(deps: RouteDependencies): Router {
   const { sessionManager, syncSkillsToResources } = deps;
@@ -116,7 +119,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/auth/logout", requireAuth, async (req, res) => {
+  router.post("/auth/logout", pm.requireAuth, async (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
       await destroySession(authHeader.slice(7));
@@ -124,7 +127,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true });
   });
 
-  router.get("/auth/me", requireAuth, async (req, res) => {
+  router.get("/auth/me", pm.requireAuth, async (req, res) => {
     const details = await userRepo.getUserWithDetails(req.user!.id);
     if (!details) {
       res.status(404).json({ success: false, error: "User not found" });
@@ -135,7 +138,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== User management API (admin) =====
 
-  router.get("/users", requireAuth, requireAdmin, async (req, res) => {
+  router.get("/users", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const userId = req.query.id as string | undefined;
     if (userId) {
       const details = await userRepo.getUserWithDetails(userId);
@@ -155,7 +158,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, users: enriched });
   });
 
-  router.post("/users", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/users", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const { username, password, displayName, departmentId, phone, email, roleIds } = req.body;
     if (!username || !password) {
       res.status(400).json({ success: false, error: "username and password are required" });
@@ -170,7 +173,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.put("/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.put("/users/:id", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const { displayName, avatar, status, departmentId, phone, email, roleIds } = req.body;
     const id = req.params.id as string;
     const user = await userRepo.updateUser(id, { displayName, avatar, status, departmentId, phone, email, roleIds });
@@ -182,7 +185,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, user: details });
   });
 
-  router.delete("/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/users/:id", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     if (id === req.user!.id) {
       res.status(400).json({ success: false, error: "Cannot delete yourself" });
@@ -192,7 +195,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, deleted });
   });
 
-  router.post("/users/:id/roles", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/users/:id/roles", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
     if (!roleId || !action) {
@@ -208,7 +211,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, roles });
   });
 
-  router.post("/users/:id/password", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/users/:id/password", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { password } = req.body as { password: string };
     if (!password) {
@@ -221,12 +224,12 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Department management API (admin) =====
 
-  router.get("/departments", requireAuth, requireAdmin, (_req, res) => {
+  router.get("/departments", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     const departments = deptRepo.getDepartmentTree();
     res.json({ success: true, departments });
   });
 
-  router.post("/departments", requireAuth, requireAdmin, (req, res) => {
+  router.post("/departments", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const { name, parentId, description } = req.body;
     if (!name) {
       res.status(400).json({ success: false, error: "name is required" });
@@ -240,7 +243,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.put("/departments/:id", requireAuth, requireAdmin, (req, res) => {
+  router.put("/departments/:id", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const { name, description } = req.body;
     const dept = deptRepo.updateDepartment(id, { name, description });
@@ -251,7 +254,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, department: dept });
   });
 
-  router.delete("/departments/:id", requireAuth, requireAdmin, (req, res) => {
+  router.delete("/departments/:id", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     try {
       deptRepo.deleteDepartment(id);
@@ -261,7 +264,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  router.post("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
@@ -273,7 +276,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, resources });
   });
 
-  router.delete("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  router.delete("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
@@ -285,7 +288,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, resources });
   });
 
-  router.get("/departments/:id/resources", requireAuth, requireAdmin, (req, res) => {
+  router.get("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const effective = req.query.effective === "true";
     const resources = effective
@@ -296,13 +299,13 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Resource management API (admin) =====
 
-  router.get("/resources", requireAuth, requireAdmin, (req, res) => {
+  router.get("/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const type = req.query.type as string | undefined;
     const resources = resRepo.listResources(type);
     res.json({ success: true, resources });
   });
 
-  router.post("/resources/sync", requireAuth, requireAdmin, (_req, res) => {
+  router.post("/resources/sync", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     syncSkillsToResources();
     const resources = resRepo.listResources("skill");
     res.json({ success: true, resources });
@@ -310,18 +313,18 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Role permission management API (admin) =====
 
-  router.get("/roles", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/roles", pm.requireAuth, pm.requireAdmin(), async (_req, res) => {
     const roles = await userRepo.listRoles();
     res.json({ success: true, roles });
   });
 
-  router.get("/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+  router.get("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const permissions = resRepo.getPermissionsByRole(id);
     res.json({ success: true, permissions });
   });
 
-  router.post("/roles/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+  router.post("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const id = req.params.id as string;
     const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
     if (!permissionIds || !action) {
@@ -337,12 +340,12 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, permissions });
   });
 
-  router.get("/permissions", requireAuth, requireAdmin, (_req, res) => {
+  router.get("/permissions", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     const permissions = resRepo.listPermissions();
     res.json({ success: true, permissions });
   });
 
-  router.post("/roles", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/roles", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const { name, description } = req.body as { name: string; description?: string };
     if (!name) {
       res.status(400).json({ success: false, error: "name is required" });
@@ -356,7 +359,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.delete("/roles/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.delete("/roles/:id", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     try {
       const ok = await userRepo.deleteRole(id);
@@ -372,7 +375,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== User Session APIs =====
 
-  router.get("/user/sessions", requireAuth, (_req, res) => {
+  router.get("/user/sessions", pm.requireAuth, (_req, res) => {
     res.json({ sessions: sessionManager.listSessions() });
   });
 

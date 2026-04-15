@@ -326,12 +326,17 @@ export class MySQLLTMBackend implements LTMBackend {
       let tags: string[] = [];
       try {
         if (row.tags) {
-          if (row.tags.startsWith('[')) {
-            // 标准 JSON 数组格式
-            tags = JSON.parse(row.tags);
-          } else {
-            // 逗号分隔格式
-            tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+          if (Array.isArray(row.tags)) {
+            // 已经是数组格式
+            tags = row.tags;
+          } else if (typeof row.tags === 'string') {
+            if (row.tags.startsWith('[')) {
+              // 标准 JSON 数组格式
+              tags = JSON.parse(row.tags);
+            } else {
+              // 逗号分隔格式
+              tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+            }
           }
         }
       } catch (e) {
@@ -541,12 +546,17 @@ export class MySQLLTMBackend implements LTMBackend {
     let tags: string[] = [];
     try {
       if (row.tags) {
-        if (row.tags.startsWith('[')) {
-          // 标准 JSON 数组格式
-          tags = JSON.parse(row.tags);
-        } else {
-          // 逗号分隔格式
-          tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+        if (Array.isArray(row.tags)) {
+          // 已经是数组格式
+          tags = row.tags;
+        } else if (typeof row.tags === 'string') {
+          if (row.tags.startsWith('[')) {
+            // 标准 JSON 数组格式
+            tags = JSON.parse(row.tags);
+          } else {
+            // 逗号分隔格式
+            tags = row.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+          }
         }
       }
     } catch (e) {

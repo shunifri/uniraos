@@ -1,9 +1,12 @@
 import { Router } from "express";
-import { requireAuth, requireAdmin, requirePermission } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import { OpenAIEmbeddingProvider } from "../memory/embedding-provider.js";
 import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig } from "../skills/knowledge-skills.js";
 import type { LLMProviderConfig } from "../llm/types.js";
 import type { RouteDependencies } from "./index.js";
+
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
 
 export function createConfigRoutes(deps: RouteDependencies): Router {
   const {
@@ -22,7 +25,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   const router = Router();
 
   // Get current LLM config (hide API Key)
-  router.get("/config", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/config", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     const config = configManager.get();
     res.json({
       llm: config.llm
@@ -49,7 +52,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Set LLM config
-  router.post("/config/llm", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/config/llm", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     const { type, apiKey, baseUrl, model, maxTokens, temperature } = req.body;
 
     if (!type || !apiKey || !model) {
@@ -70,7 +73,9 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     };
 
     configManager.setLLM(llmConfig);
-    setCurrentProvider(createProvider(llmConfig));
+    const provider = createProvider(llmConfig);
+    setCurrentProvider(provider);
+    sessionManager.setLLMProvider(provider); // 确保 sessionManager 有最新的 llmProvider
     rebuildAllAgentLoops();
     rebuildOrchestrator();
 
@@ -81,7 +86,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Set Agent config
-  router.post("/config/agent", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/config/agent", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     const { maxIterations, systemPrompt, includeTrace } = req.body;
     configManager.setAgent({ maxIterations, systemPrompt, includeTrace });
     rebuildAllAgentLoops();
@@ -90,7 +95,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Get multimodal config
-  router.get("/config/multimodal", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/config/multimodal", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     const mm = configManager.getMultimodal();
     res.json({
       ...mm,
@@ -100,7 +105,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Get all model card configs
-  router.get("/config/model-cards", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/config/model-cards", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     const cards = configManager.getModelCards();
     const masked: Record<string, any> = {};
     for (const [type, card] of Object.entries(cards)) {
@@ -114,7 +119,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Save single model card config
-  router.post("/config/model-cards/:type", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/config/model-cards/:type", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     const cardType = req.params.type as any;
     const validTypes = ["llm", "vision", "imageGen", "tts", "stt", "embedding"];
     if (!validTypes.includes(cardType)) {
@@ -129,7 +134,9 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
 
     if (cardType === "llm" && type && resolvedApiKey && model) {
       configManager.setLLM({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });
-      setCurrentProvider(createProvider({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 }));
+      const provider = createProvider({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });
+      setCurrentProvider(provider);
+      sessionManager.setLLMProvider(provider); // 确保 sessionManager 有最新的 llmProvider
       rebuildAllAgentLoops();
       rebuildOrchestrator();
     }
@@ -163,7 +170,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Set multimodal config
-  router.post("/config/multimodal", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/config/multimodal", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     const { enabled, apiKey, baseUrl, imageModel, visionModel, ttsModel, whisperModel } = req.body;
 
     configManager.setMultimodal({
@@ -187,7 +194,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
 
   // ===== Federation Config APIs =====
 
-  router.get("/config/federation", requireAuth, requireAdmin, (_req, res) => {
+  router.get("/config/federation", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     const cfg = configManager.getFederation();
     res.json({
       success: true,
@@ -198,7 +205,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     });
   });
 
-  router.post("/config/federation", requireAuth, requireAdmin, (req, res) => {
+  router.post("/config/federation", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const { instanceId: iid, federationKey, heartbeatIntervalMs, syncIntervalMs } = req.body;
     configManager.setFederation({
       ...(iid !== undefined && { instanceId: iid }),
@@ -212,7 +219,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, message: "Federation config saved" });
   });
 
-  router.post("/config/federation/peers", requireAuth, requireAdmin, (req, res) => {
+  router.post("/config/federation/peers", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const { endpoint, name } = req.body;
     if (!endpoint) {
       res.status(400).json({ success: false, error: "endpoint is required" });
@@ -230,7 +237,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, message: `Peer ${endpoint} added` });
   });
 
-  router.delete("/config/federation/peers", requireAuth, requireAdmin, (req, res) => {
+  router.delete("/config/federation/peers", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const { endpoint } = req.body;
     if (!endpoint) {
       res.status(400).json({ success: false, error: "endpoint is required" });
@@ -243,12 +250,12 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
 
   // ===== Evolution Engine Config APIs =====
 
-  router.get("/config/evolution-engine", requireAuth, requireAdmin, (_req, res) => {
+  router.get("/config/evolution-engine", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     const cfg = configManager.getEvolution();
     res.json({ success: true, config: cfg });
   });
 
-  router.post("/config/evolution-engine", requireAuth, requireAdmin, (req, res) => {
+  router.post("/config/evolution-engine", pm.requireAuth, pm.requireAdmin(), (req, res) => {
     const updates: Record<string, unknown> = {};
     const fields = [
       "autoExecute", "cycleIntervalMs", "maxActionsPerCycle", "skipApprovalRequired",
@@ -264,7 +271,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
 
   // ===== Document Mind Config APIs =====
 
-  router.get("/config/docmind", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/config/docmind", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     const cfg = configManager.getDocMind();
     res.json({
       success: true,
@@ -276,13 +283,13 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     });
   });
 
-  router.post("/config/docmind", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/config/docmind", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     const { enabled, accessKeyId, accessKeySecret, endpoint, regionId, multimediaMode, maxPollingMinutes, pollingIntervalSeconds } = req.body;
-    
+
     const existing = configManager.getDocMind();
     const resolvedAccessKeyId = (!accessKeyId || accessKeyId.startsWith("***")) ? existing.accessKeyId : accessKeyId;
     const resolvedAccessKeySecret = (!accessKeySecret || accessKeySecret.startsWith("***")) ? existing.accessKeySecret : accessKeySecret;
-    
+
     configManager.setDocMind({
       enabled: enabled ?? existing.enabled ?? false,
       accessKeyId: resolvedAccessKeyId || "",
@@ -302,7 +309,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Full config
-  router.get("/config/full", requireAuth, requireAdmin, (_req, res) => {
+  router.get("/config/full", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
     const config = configManager.get();
     res.json({
       success: true,
@@ -316,7 +323,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Test LLM connection
-  router.post("/llm/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  router.post("/llm/test", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), async (req, res) => {
     const provider = getCurrentProvider();
     if (!provider) {
       res.status(400).json({ success: false, error: "LLM not configured" });
@@ -342,7 +349,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Test Model Card connection (vision, imageGen, tts, stt, embedding)
-  router.post("/config/model-cards/:type/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  router.post("/config/model-cards/:type/test", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), async (req, res) => {
     const cardType = req.params.type as any;
     const validTypes = ["vision", "imageGen", "tts", "stt", "embedding"];
     if (!validTypes.includes(cardType)) {
@@ -402,7 +409,6 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
           });
           if (!response.ok) {
             const error = await response.text();
-            // 如果是因为额度或内容限制，也算连接成功
             if (response.status === 429 || response.status === 400) {
               res.json({
                 success: true,
@@ -518,7 +524,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
   });
 
   // Test Document Mind connection
-  router.post("/config/docmind/test", requireAuth, requirePermission("config.read"), async (req, res) => {
+  router.post("/config/docmind/test", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), async (req, res) => {
     const config = configManager.getDocMind();
     if (!config.enabled || !config.accessKeyId || !config.accessKeySecret) {
       res.status(400).json({ success: false, error: "Document Mind not configured" });
@@ -529,7 +535,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       // 尝试调用 Document Mind API 的一个简单端点
       const endpoint = config.endpoint || "docmind-api.cn-hangzhou.aliyuncs.com";
       const url = `https://${endpoint}/?Action=GetDocParserResult&Version=2022-07-11`;
-      
+
       // 尝试获取一个不存在的任务，验证凭证
       const response = await fetch(url, {
         method: "POST",

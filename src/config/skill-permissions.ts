@@ -1,8 +1,11 @@
 /**
  * Skill 权限配置
- * 
+ *
  * 统一管理各角色可访问的 Skill 白名单
  * 避免硬编码在数据库 migration 中
+ *
+ * @deprecated Use src/permissions/constants.ts instead
+ * This module will be removed in a future version.
  */
 
 /** 普通用户可用的 Skill 列表 */

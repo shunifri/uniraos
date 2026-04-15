@@ -72,7 +72,8 @@ export class RecallContextSkill {
 
     // 图遍历增强：发现关联知识
     if (this.graphManager) {
-      const nodeCount = await this.graphManager.getStore().countNodes();
+      const store = await this.graphManager.getStore();
+      const nodeCount = store.countNodes ? await store.countNodes() : await store.nodeCount;
       if (nodeCount > 0) {
       try {
         const subgraph = await this.graphManager.querySubgraph(query, { maxNodes: 3, maxDepth: 2 });

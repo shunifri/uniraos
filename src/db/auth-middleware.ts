@@ -1,6 +1,9 @@
 /**
  * Express 认证中间件
  * 支持 SQLite 和 MySQL
+ *
+ * @deprecated Use src/permissions/middleware/auth-middleware.ts instead
+ * This module will be removed in a future version.
  */
 import type { Request, Response, NextFunction } from "express";
 import { validateSession } from "./auth.js";

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type { GraphNode, GraphEdge, NodeType, EdgeType } from "./types.js";
 import neo4j, { Driver, Session } from "neo4j-driver";
+import { GraphStore } from "./graph-store.js";
 
 export class Neo4jGraphStore {
   private driver: Driver;
@@ -56,6 +57,9 @@ export class Neo4jGraphStore {
 
     const session = this.driver.session({ database: this.database });
     try {
+      // Neo4j 不支持直接存储 Map/Object，需要序列化为 JSON 字符串
+      const propertiesJson = JSON.stringify(full.properties || {});
+
       await session.run(
         `CREATE (n:KBNode:${full.type} {
           id: $id,
@@ -72,7 +76,7 @@ export class Neo4jGraphStore {
           label: full.label,
           type: full.type,
           tags: full.tags,
-          properties: full.properties,
+          properties: propertiesJson,
           createdAt: full.createdAt
         }
       );
@@ -127,12 +131,21 @@ export class Neo4jGraphStore {
       if (result.records.length === 0) return undefined;
 
       const record = result.records[0];
+      const propertiesStr = record.get("properties");
+      let properties = {};
+      if (propertiesStr) {
+        try {
+          properties = typeof propertiesStr === 'string' ? JSON.parse(propertiesStr) : propertiesStr;
+        } catch {
+          properties = {};
+        }
+      }
       const node: GraphNode = {
         id: record.get("id"),
         label: record.get("label"),
         type: record.get("type") as NodeType,
         tags: record.get("tags") || [],
-        properties: record.get("properties") || {},
+        properties,
         createdAt: record.get("createdAt")
       };
 
@@ -144,9 +157,13 @@ export class Neo4jGraphStore {
   }
 
   async findNodeByLabel(label: string): Promise<GraphNode | undefined> {
-    // 先查缓存
+    // 先查缓存，但随后要验证数据库中是否真的存在
+    let cachedNode: GraphNode | undefined;
     for (const node of this.cache.values()) {
-      if (node.label === label) return node;
+      if (node.label === label) {
+        cachedNode = node;
+        break;
+      }
     }
 
     const session = this.driver.session({ database: this.database });
@@ -158,15 +175,30 @@ export class Neo4jGraphStore {
         { label, ownerId: this.owner }
       );
 
-      if (result.records.length === 0) return undefined;
+      if (result.records.length === 0) {
+        // 数据库中不存在，如果缓存中有也清除掉
+        if (cachedNode) {
+          this.cache.delete(cachedNode.id);
+        }
+        return undefined;
+      }
 
       const record = result.records[0];
+      const propertiesStr = record.get("properties");
+      let properties = {};
+      if (propertiesStr) {
+        try {
+          properties = typeof propertiesStr === 'string' ? JSON.parse(propertiesStr) : propertiesStr;
+        } catch {
+          properties = {};
+        }
+      }
       const node: GraphNode = {
         id: record.get("id"),
         label: record.get("label"),
         type: record.get("type") as NodeType,
         tags: record.get("tags") || [],
-        properties: record.get("properties") || {},
+        properties,
         createdAt: record.get("createdAt")
       };
 
@@ -189,12 +221,21 @@ export class Neo4jGraphStore {
 
       const nodes: GraphNode[] = [];
       for (const record of result.records) {
+        const propertiesStr = record.get("properties");
+        let properties = {};
+        if (propertiesStr) {
+          try {
+            properties = typeof propertiesStr === 'string' ? JSON.parse(propertiesStr) : propertiesStr;
+          } catch {
+            properties = {};
+          }
+        }
         const node: GraphNode = {
           id: record.get("id"),
           label: record.get("label"),
           type: record.get("type") as NodeType,
           tags: record.get("tags") || [],
-          properties: record.get("properties") || {},
+          properties,
           createdAt: record.get("createdAt")
         };
         this.cache.set(node.id, node);
@@ -219,12 +260,21 @@ export class Neo4jGraphStore {
 
       const nodes: GraphNode[] = [];
       for (const record of result.records) {
+        const propertiesStr = record.get("properties");
+        let properties = {};
+        if (propertiesStr) {
+          try {
+            properties = typeof propertiesStr === 'string' ? JSON.parse(propertiesStr) : propertiesStr;
+          } catch {
+            properties = {};
+          }
+        }
         const node: GraphNode = {
           id: record.get("id"),
           label: record.get("label"),
           type: record.get("type") as NodeType,
           tags: record.get("tags") || [],
-          properties: record.get("properties") || {},
+          properties,
           createdAt: record.get("createdAt")
         };
         this.cache.set(node.id, node);
@@ -270,10 +320,12 @@ export class Neo4jGraphStore {
 
     const session = this.driver.session({ database: this.database });
     try {
+      // 验证关系类型的安全性
+      const safeEdgeType = edge.type.replace(/[^a-zA-Z0-9_]/g, '_');
       await session.run(
         `MATCH (a:KBNode {id: $source, ownerId: $ownerId}),
                (b:KBNode {id: $target, ownerId: $ownerId})
-         CREATE (a)-[r:${edge.type} {
+         CREATE (a)-[r:${safeEdgeType} {
            id: $id,
            label: $label,
            type: $type,
@@ -640,6 +692,39 @@ export class Neo4jGraphStore {
     this.cache.clear();
     this.cacheEdges.clear();
   }
+
+  /**
+   * 清除所有节点和边（清空整个图谱）
+   */
+  async clearGraph(): Promise<{ nodesRemoved: number; edgesRemoved: number }> {
+    const session = this.driver.session({ database: this.database });
+    try {
+      // 获取要删除的节点和边的数量
+      const countResult = await session.run(
+        `MATCH (n:KBNode {ownerId: $ownerId})
+         OPTIONAL MATCH (n)-[r]-()
+         RETURN count(n) as nodeCount, count(r) as edgeCount`,
+        { ownerId: this.owner }
+      );
+
+      const nodeCount = countResult.records[0]?.get("nodeCount")?.toNumber() || 0;
+      const edgeCount = countResult.records[0]?.get("edgeCount")?.toNumber() || 0;
+
+      // 删除所有节点（会自动删除关联的边）
+      await session.run(
+        `MATCH (n:KBNode {ownerId: $ownerId})
+         DETACH DELETE n`,
+        { ownerId: this.owner }
+      );
+
+      // 清除内存缓存
+      this.clearCache();
+
+      return { nodesRemoved: nodeCount, edgesRemoved: edgeCount };
+    } finally {
+      await session.close();
+    }
+  }
 }
 
 // 工厂方法
@@ -650,8 +735,7 @@ export function getGraphStore(
   if (backend === "neo4j") {
     return new Neo4jGraphStore(owner);
   } else {
-    // 默认使用 MySQL 版本（需要导入）
-    const { GraphStore } = require("./graph-store.js");
+    // 默认使用 MySQL 版本
     return new GraphStore(owner);
   }
 }

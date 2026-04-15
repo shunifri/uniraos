@@ -58,7 +58,7 @@ export async function removeKBFromUserGraph(
     if (!session.graphManager) return;
 
     // Find and remove document nodes from user's graph
-    const store = session.graphManager.getStore();
+    const store = await session.graphManager.getStore();
     const nodes = await store.getAllNodes();
 
     // Remove nodes that reference this document
@@ -141,9 +141,38 @@ export async function removeKBFromAllGraphs(
 /**
  * Get all users who have access to a shared KB document
  */
-export async function getSharedKBTargetUsers(sharedByUserId: string): Promise<string[]> {
-  // For now, return all tenants except the owner
-  // In a more sophisticated system, this would check share_rules table
+export async function getSharedKBTargetUsers(
+  sharedByUserId: string,
+  scope?: "all" | "role" | "department" | "user",
+  targetId?: string
+): Promise<string[]> {
   const tenants = await getAllTenants();
-  return tenants.filter((t: string) => t !== sharedByUserId);
+
+  if (!scope) {
+    return tenants.filter((t: string) => t !== sharedByUserId);
+  }
+
+  if (scope === "all") {
+    return tenants.filter((t: string) => t !== sharedByUserId);
+  }
+
+  if (scope === "user" && targetId) {
+    return [targetId];
+  }
+
+  if (scope === "role" && targetId) {
+    // Import user-repository dynamically
+    const { getUsersByRole } = await import("./db/user-repository.js");
+    const users = await getUsersByRole(targetId);
+    return users.map((u: any) => u.id).filter((id: string) => id !== sharedByUserId);
+  }
+
+  if (scope === "department" && targetId) {
+    // Import user-repository and department-repository dynamically
+    const { getUsersByDepartment } = await import("./db/user-repository.js");
+    const users = await getUsersByDepartment(targetId);
+    return users.map((u: any) => u.id).filter((id: string) => id !== sharedByUserId);
+  }
+
+  return [];
 }

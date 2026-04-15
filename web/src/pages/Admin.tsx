@@ -50,11 +50,12 @@ import { api } from "@/api";
 interface User {
   id: string;
   username: string;
+  displayName?: string;
   nickname?: string;
   email?: string;
   phone?: string;
   departmentId?: string;
-  roleIds?: string[];
+  roles?: Array<{ id: string; name: string; description: string }>;
   status?: string;
   createdAt?: string;
 }
@@ -64,6 +65,8 @@ interface Department {
   name: string;
   parentId?: string;
   children?: Department[];
+  path?: string;
+  level?: number;
 }
 
 interface Role {

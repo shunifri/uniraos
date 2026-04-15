@@ -55,6 +55,38 @@ const TOOL_USAGE_GUIDELINES = `
 - **回答必须忠于原文内容，禁止编造知识库中不存在的信息**
 - 如果知识库中没有相关信息，坦诚告知用户，然后通过网络搜索等其他方式回答
 
+### 用户交互（极其重要！）
+以下场景**必须**使用 user_confirm 技能，**绝对不能直接回答**：
+
+1. **当用户需要填报个人信息时**
+   - 例如："我要填报下个人信息"
+   - **必须**调用 user_confirm 收集表单信息（姓名、邮箱、电话、地址等）
+
+2. **需要用户提供信息/确认时**
+   - 用户请求需要多个选项的问题（如"我想学习编程，给我些建议"）
+   - 需要确认用户偏好、目标、时间安排、预算等个性化信息
+   - 问题描述不够清晰，需要用户补充细节
+
+3. **推荐/选择类问题**
+   - 提供推荐时，应先询问用户的偏好（如学习方向、风格、优先级等）
+   - 有多个方案可供选择时，使用 selection 模式展示选项供用户选择
+
+4. **制定计划/方案时**
+   - 制定学习计划、工作计划、旅行计划等
+   - 确认用户的时间安排、目标、预算等关键参数
+
+**user_confirm 使用示例（必须严格遵守！）**：
+- 场景："我要填报下个人信息" → 使用 type="form" 收集姓名、邮箱、电话
+- 场景："我想学习编程" → 使用 type="selection" 提供选项（前端开发、后端开发、数据分析等）
+- 场景："帮我制定学习计划" → 使用 type="form" 收集学习时间、目标、预算
+
+**使用规范**：
+- type: "selection" — 用于提供选项供用户选择（单选或多选）
+- type: "form" — 用于收集表单信息（用户输入）
+- type: "approval" — 用于简单的确认/取消操作
+- title: 卡片标题，清晰说明交互目的
+- description: 补充说明，解释为什么需要这些信息
+
 ### 降低幻觉（极其重要！）
 - 如果知识库或上下文中有**相关**内容，**必须基于原文回答**，不要凭空生成
 - 如果没有找到相关信息，明确告知用户"知识库中未找到相关信息"，不要编造
@@ -300,17 +332,41 @@ export class Orchestrator {
       const skills = this.deps.registry.list();
       const hasLtmSearch = skills.some((s) => s.name === "ltm_search");
       const hasKbSearch = skills.some((s) => s.name === "kb_search");
+      const hasLtmList = skills.some((s) => s.name === "ltm_list");
+      const hasGraphQuery = skills.some((s) => s.name === "graph_query");
 
-      // 并行检索 LTM 和知识库
+      // 并行检索 LTM、知识库和知识图谱
       const promises: Promise<{ type: string; data: any } | null>[] = [];
 
       if (hasLtmSearch) {
-        promises.push(
-          Promise.race([
-            this.deps.engine.execute("ltm_search", { query: userMessage, limit: 5 }).then((r) => r.success ? { type: "ltm", data: r.data } : null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
-          ]).catch(() => null)
-        );
+        // 对于身份查询问题，直接检索用户信息相关的记忆
+        const isIdentityQuery = userMessage.includes("我是谁") || userMessage.includes("你知道我吗") || userMessage.includes("我的名字");
+
+        if (isIdentityQuery) {
+          // 首先尝试搜索用户相关信息
+          promises.push(
+            Promise.race([
+              this.deps.engine.execute("ltm_search", { query: "user_name user_identity name 姓名 身份 user", limit: 10 }).then((r) => r.success ? { type: "ltm", data: r.data } : null),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+            ]).catch(() => null)
+          );
+          // 同时也尝试列出所有记忆，确保不遗漏
+          if (hasLtmList) {
+            promises.push(
+              Promise.race([
+                this.deps.engine.execute("ltm_list", { limit: 20 }).then((r) => r.success ? { type: "ltm_list", data: r.data } : null),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+              ]).catch(() => null)
+            );
+          }
+        } else {
+          promises.push(
+            Promise.race([
+              this.deps.engine.execute("ltm_search", { query: userMessage, limit: 5 }).then((r) => r.success ? { type: "ltm", data: r.data } : null),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+            ]).catch(() => null)
+          );
+        }
       }
 
       if (hasKbSearch) {
@@ -322,7 +378,20 @@ export class Orchestrator {
         );
       }
 
+      if (hasGraphQuery) {
+        // 查询知识图谱
+        promises.push(
+          Promise.race([
+            this.deps.engine.execute("graph_query", { query: userMessage, maxDepth: 2, maxNodes: 20 }).then((r) => r.success ? { type: "graph", data: r.data } : null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+          ]).catch(() => null)
+        );
+      }
+
       const results = await Promise.all(promises);
+
+      // 收集所有 LTM 记忆
+      const allLtmEntries: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> = [];
 
       for (const res of results) {
         if (!res || !res.data || typeof res.data !== "object") continue;
@@ -330,10 +399,55 @@ export class Orchestrator {
         if (res.type === "ltm") {
           const data = res.data as { results?: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> };
           if (data.results && data.results.length > 0) {
-            context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n`;
-            for (const r of data.results) {
-              const val = r.summary || (typeof r.value === "string" ? r.value : JSON.stringify(r.value));
-              context += `- [${r.key}] ${String(val).slice(0, 300)}\n`;
+            allLtmEntries.push(...data.results);
+          }
+        }
+
+        if (res.type === "ltm_list") {
+          const data = res.data as { entries?: Array<{ key: string; value: unknown; summary?: string; tags?: string[] }> };
+          if (data.entries && data.entries.length > 0) {
+            // 过滤出用户信息相关的记忆
+            const userEntries = data.entries.filter((e) =>
+              e.key.toLowerCase().includes("user") ||
+              e.key.toLowerCase().includes("name") ||
+              e.key.toLowerCase().includes("identity") ||
+              e.key.toLowerCase().includes("姓名") ||
+              e.key.toLowerCase().includes("身份")
+            );
+            allLtmEntries.push(...userEntries);
+          }
+        }
+      }
+
+      // 如果有 LTM 记忆，添加到上下文
+      if (allLtmEntries.length > 0) {
+        context += `\n\n## 你对用户的了解（内部参考，禁止直接列举给用户）\n`;
+        for (const r of allLtmEntries) {
+          const val = r.summary || (typeof r.value === "string" ? r.value : JSON.stringify(r.value));
+          context += `- [${r.key}] ${String(val).slice(0, 300)}\n`;
+        }
+      }
+
+      // 处理知识图谱数据
+      for (const res of results) {
+        if (!res || !res.data || typeof res.data !== "object") continue;
+
+        if (res.type === "graph") {
+          const graphData = res.data;
+          if (graphData.nodes && graphData.nodes.length > 0) {
+            // 构建知识图谱上下文
+            const nodeLines: string[] = [];
+            for (const node of graphData.nodes.slice(0, 10)) { // 最多显示 10 个节点
+              const nodeInfo = `[${node.label}] ${node.properties?.value || "无内容"}`;
+              nodeLines.push(nodeInfo);
+            }
+
+            if (nodeLines.length > 0) {
+              context += `\n\n## 个人记忆知识图谱\n${nodeLines.join("\n")}\n\n⚠️ 知识图谱使用规则（必须严格遵守）：
+- 知识图谱包含用户的个人记忆和关系网络
+- 仅当知识图谱内容与用户问题**确实相关**时才引用
+- 如果知识图谱结果与用户问题**不相关**（主题不匹配），则**忽略这些结果**，不要引用
+- 禁止基于不相关的知识图谱内容编造关联关系`;
             }
           }
         }
@@ -404,6 +518,10 @@ export class Orchestrator {
   async run(input: AgentInput & { userId?: string }): Promise<AgentOutput> {
     const userId = input.userId ?? "__default__";
 
+    // 在对话开始时重置引用，确保不显示上一次对话的残留引用
+    this.lastKbReferences = [];
+    this.lastWebReferences = [];
+
     let result: AgentOutput;
     if (!this.config.autoStrategy) {
       const enrichedInput = await this.buildEnrichedInput(input);
@@ -449,6 +567,10 @@ export class Orchestrator {
     const userId = input.userId ?? "__default__";
     let finalResponse = "";
     const toolNames: string[] = [];
+
+    // 在对话开始时重置引用，确保不显示上一次对话的残留引用
+    this.lastKbReferences = [];
+    this.lastWebReferences = [];
 
     if (!this.config.autoStrategy) {
       const enrichedInput = await this.buildEnrichedInput(input);
@@ -519,7 +641,9 @@ export class Orchestrator {
     }
 
     const skills = this.deps.registry.listVisible();
-    const skillNames = skills.map((s) => s.name).join(", ");
+    const skillListText = skills
+      .map((s) => `- ${s.name}: ${s.description}`)
+      .join("\n");
 
     // 获取最近对话历史摘要
     const historySummary = userId ? this.getRecentHistorySummary(userId) : "";
@@ -533,7 +657,7 @@ ${historySection}
 ${message}
 
 ## 可用工具/技能
-${skillNames || "（无）"}
+${skillListText || "（无）"}
 
 ## 策略选项
 
@@ -704,17 +828,46 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
   private quickAnalyzeStrategy(message: string): StrategyDecision | null {
     const lowerMsg = message.toLowerCase().trim();
 
+    // 首先检查是否是追问模式（如"继续"、"详细分析"等）
+    const followUpPatterns = [
+      /^继续.*$|^.*继续$/, // 继续之前的任务
+      /^详细.*$|^.*详细$/, // 详细分析
+      /^再.*一下$|^.*再.*$/, // 再次查询
+      /^深入.*$|^.*深入$/, // 深入分析
+      /^接下来.*$|^.*接下来$/, // 接下来的步骤
+    ];
+
+    for (const pattern of followUpPatterns) {
+      if (pattern.test(lowerMsg)) {
+        return {
+          level: "react",
+          reasoning: "用户的追问，需要延续之前的任务",
+          topicChange: false,
+          taskType: 'followup',
+          complexity: 0.6,
+          confidence: 0.9,
+        };
+      }
+    }
+
     // 关键词识别规则
     const patterns = {
-      // simple 模式识别
+      // simple 模式识别（只识别真正简单的、不需要任何工具调用的问题）
       simple: [
         /^[\s]*$/, // 空消息
         /^你好$|^您好$|^早上好$|^晚上好$|^下午好$|^再见$|^拜拜$/, // 简单问候
-        /^翻译.*$|^.*翻译$/, // 翻译请求
-        /^今天.*天气.*$|^.*天气.*今天$/, // 天气预报
-        /^现在.*时间.*$|^.*时间.*现在$|^几点.*$|^.*几点$/, // 时间查询
-        /^日期.*$|^.*日期$|^年月日.*$|^.*年月日$/, // 日期查询
-        /^计算.*$|^.*计算$|^.+等于多少$|^.+是多少$/, // 简单计算
+      ],
+
+      // 需要用户确认的场景（选择 react 策略以确保 user_confirm 可用）
+      needsConfirm: [
+        /^我想学习.*$|^学习.*建议$|^如何学习.*$|^学习.*方法$/, // 学习建议类问题（需要确认学习方向/时间）
+        /^帮我制定.*$|^制定.*计划$|^帮我规划.*$|^规划.*方案$/, // 制定计划类（需要确认需求/时间安排）
+        /^我想.*推荐$|^.*推荐.*$|^给我推荐.*$/, // 推荐类问题（需要确认偏好）
+        /^帮我选择.*$|^选择.*方案$|^哪个.*好$|^.*哪个.*$/, // 选择类问题（需要确认选项）
+        /^帮我设置.*$|^设置.*参数$|^配置.*$|^.*配置.*$/, // 配置类问题（需要确认参数）
+        /^我想.*减肥$|^减肥.*计划$|^健身.*方案$|^运动.*安排$/, // 健康类计划（需要确认身体状态/时间）
+        /^我想.*旅行$|^旅行.*计划$|^行程.*安排$|^旅游.*建议$/, // 旅行类（需要确认时间/预算/目的地）
+        /^帮我.*安排.*时间$|^时间.*安排$|^日程.*规划$/, // 时间安排类（需要确认时间表）
       ],
 
       // plan 模式识别
@@ -743,11 +896,25 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
       if (pattern.test(lowerMsg)) {
         return {
           level: "simple",
-          reasoning: "简单对话或查询，不需要工具调用",
+          reasoning: "简单对话或问候，不需要工具调用",
           topicChange: false,
           taskType: 'qa',
           complexity: 0.1,
           confidence: 0.9,
+        };
+      }
+    }
+
+    // 检查是否需要用户确认的场景（优先于 plan 模式）
+    for (const pattern of patterns.needsConfirm) {
+      if (pattern.test(lowerMsg)) {
+        return {
+          level: "react", // 使用 react 策略以支持 tool use（user_confirm）
+          reasoning: "需要用户确认或数据回填的任务，使用 react 策略以支持交互",
+          topicChange: false,
+          taskType: 'confirmation',
+          complexity: 0.5,
+          confidence: 0.85,
         };
       }
     }

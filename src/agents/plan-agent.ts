@@ -266,8 +266,14 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
 2. 步骤之间可以传递数据（后续步骤可引用前序结果）
 3. 最多 ${this.maxSteps} 个步骤
 4. 如果任务无法用现有 Skill 完成，返回 {"steps": [], "reason": "原因"}
+5. 对于简单的信息查询或整理任务，通常只需要使用 1-2 个步骤
+6. 确保每个步骤的 params 是有效的，符合该 Skill 的预期参数格式
 
 只输出 JSON，不要其他内容。`;
+
+      console.log("=== 生成执行计划 ===");
+      console.log("任务:", input.message);
+      console.log("可用技能:", availableSkills.map(s => s.name).join(", "));
 
       const response = await this.deps.provider.chat([
         { role: "user", content: planPrompt },
@@ -277,14 +283,45 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
       if (jsonStr.startsWith("```")) {
         jsonStr = jsonStr.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
       }
+
+      console.log("=== LLM 回复 ===");
+      console.log(jsonStr);
+
       const plan = JSON.parse(jsonStr);
 
       if (!plan.steps || plan.steps.length === 0) {
+        console.log("=== 计划为空，返回 null ===");
         return null;
       }
 
-      return plan;
-    } catch {
+      // 验证生成的步骤是否有效
+      const validSteps = plan.steps.filter((step: any) => {
+        if (!step.skill) {
+          console.log("无效步骤：缺少 skill 字段");
+          return false;
+        }
+        if (!availableSkills.some(s => s.name === step.skill)) {
+          console.log(`无效步骤：未知技能 ${step.skill}`);
+          return false;
+        }
+        if (!step.params || typeof step.params !== "object") {
+          step.params = {};
+        }
+        return true;
+      });
+
+      if (validSteps.length === 0) {
+        console.log("=== 所有步骤都无效，返回 null ===");
+        return null;
+      }
+
+      console.log("=== 生成的有效计划 ===");
+      console.log(validSteps);
+
+      return { steps: validSteps };
+    } catch (error) {
+      console.error("=== 生成计划失败 ===");
+      console.error(error);
       return null;
     }
   }

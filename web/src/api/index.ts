@@ -167,27 +167,27 @@ export const stopSchedule = () => api.post('/api/memory/schedule/stop');
 // Admin - Users / Departments / Roles / Resources
 // ---------------------------------------------------------------------------
 
-export const getUsers = () => api.get('/api/admin/users');
+export const getUsers = () => api.get('/api/users');
 
-export const createUser = (user: unknown) => api.post('/api/admin/users', user);
+export const createUser = (user: unknown) => api.post('/api/users', user);
 
 export const updateUser = (userId: string, data: unknown) =>
-  api.put(`/api/admin/users/${userId}`, data);
+  api.put(`/api/users/${userId}`, data);
 
-export const deleteUser = (userId: string) => api.del(`/api/admin/users/${userId}`);
+export const deleteUser = (userId: string) => api.del(`/api/users/${userId}`);
 
-export const getDepartments = () => api.get('/api/admin/departments');
+export const getDepartments = () => api.get('/api/departments');
 
-export const createDept = (dept: unknown) => api.post('/api/admin/departments', dept);
+export const createDept = (dept: unknown) => api.post('/api/departments', dept);
 
 export const deleteDept = (deptId: string) =>
-  api.del(`/api/admin/departments/${deptId}`);
+  api.del(`/api/departments/${deptId}`);
 
-export const getRoles = () => api.get('/api/admin/roles');
+export const getRoles = () => api.get('/api/roles');
 
-export const createRole = (role: unknown) => api.post('/api/admin/roles', role);
+export const createRole = (role: unknown) => api.post('/api/roles', role);
 
-export const getResources = () => api.get('/api/admin/resources');
+export const getResources = () => api.get('/api/resources');
 
 // ---------------------------------------------------------------------------
 // Federation

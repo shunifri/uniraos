@@ -2,11 +2,14 @@
  * 共享规则 API 路由
  */
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { RouteDependencies } from "./index.js";
+
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
 
 export function createShareRoutes(deps: RouteDependencies & { shareRepository: ShareRepository }): Router {
   const router = Router();
@@ -22,7 +25,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   }
 
   // POST /api/share — 创建共享规则
-  router.post("/share", requireAuth, async (req, res) => {
+  router.post("/share", pm.requireAuth, async (req, res) => {
     try {
       const { resourceType, resourceId, scope, targetId, permission } = req.body;
       if (!resourceType || !resourceId || !scope) {
@@ -51,7 +54,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       }
 
       // ===== 权限检查 =====
-      
+
       // 1. Skill 分享需要 owner 验证
       if (resourceType === "skill") {
         const skill = registry.lookup(resourceId);
@@ -59,12 +62,12 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
           res.status(404).json({ success: false, error: "Skill not found" });
           return;
         }
-        
+
         // 获取用户信息
         const userPermissions = await getUserRoles(req.user!.id);
         const isAdmin = userPermissions.some(r => r.name === "admin");
         const isOwner = !skill.owner || skill.owner === req.user!.id;
-        
+
         // 系统 Skill：仅管理员可以分享
         if (skill.isSystem) {
           if (!isAdmin) {
@@ -96,7 +99,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // DELETE /api/share/:id — 撤销共享
-  router.delete("/share/:id", requireAuth, async (req, res) => {
+  router.delete("/share/:id", pm.requireAuth, async (req, res) => {
     try {
       const id = req.params.id as string;
       const rule = await repo.getById(id);
@@ -117,7 +120,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // GET /api/share/my — 我创建的共享
-  router.get("/share/my", requireAuth, async (req, res) => {
+  router.get("/share/my", pm.requireAuth, async (req, res) => {
     try {
       const rules = await repo.getByOwner(req.user!.id);
       res.json({ success: true, data: rules });
@@ -127,7 +130,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // GET /api/share/to-me — 共享给我的资源
-  router.get("/share/to-me", requireAuth, async (req, res) => {
+  router.get("/share/to-me", pm.requireAuth, async (req, res) => {
     try {
       const userId = req.user!.id;
       const roles = await getUserRoles(userId);
@@ -141,7 +144,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
   });
 
   // PUT /api/share/:id — 修改共享规则
-  router.put("/share/:id", requireAuth, async (req, res) => {
+  router.put("/share/:id", pm.requireAuth, async (req, res) => {
     try {
       const id = req.params.id as string;
       const rule = await repo.getById(id);

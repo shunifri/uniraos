@@ -101,7 +101,8 @@ export interface AgentStreamEvent {
     | "blackboard_update"
     | "agent_done"
     | "done"
-    | "error";
+    | "error"
+    | "user_confirm";
   agentRole?: string;
   data: Record<string, unknown>;
 }
@@ -122,7 +123,7 @@ export interface StrategyDecision {
   /** AI 判断是否需要深度思考 */
   needsDeepThink?: boolean;
   /** 任务类型分类 */
-  taskType?: 'qa' | 'analysis' | 'planning' | 'execution' | 'collaboration' | 'creative';
+  taskType?: 'qa' | 'analysis' | 'planning' | 'execution' | 'collaboration' | 'creative' | 'confirmation' | 'followup';
   /** 复杂度评分（0-1） */
   complexity?: number;
   /** 建议的 Plan 步骤（plan 级别） */

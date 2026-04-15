@@ -597,6 +597,34 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 2,
+    name: 'add_custom_skills_table',
+    up: `
+      -- ============================================
+      -- 自定义 Skill 持久化表
+      -- ============================================
+      CREATE TABLE IF NOT EXISTS custom_skills (
+        id VARCHAR(64) PRIMARY KEY COMMENT 'Skill ID',
+        name VARCHAR(200) NOT NULL UNIQUE COMMENT 'Skill 名称',
+        description TEXT COMMENT 'Skill 描述',
+        version VARCHAR(20) NOT NULL DEFAULT '1.0.0' COMMENT '版本号',
+        definition JSON NOT NULL COMMENT 'Skill 定义（JSON）',
+        owner_id VARCHAR(64) NOT NULL COMMENT '创建者用户ID',
+        is_system TINYINT NOT NULL DEFAULT 0 COMMENT '是否系统 Skill（0=否，1=是）',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
+        updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间（毫秒）',
+        INDEX idx_custom_skills_owner (owner_id) COMMENT '所有者索引',
+        INDEX idx_custom_skills_name (name) COMMENT '名称索引',
+        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='自定义 Skill 持久化表';
+    `,
+    down: `
+      SET FOREIGN_KEY_CHECKS = 0;
+      DROP TABLE IF EXISTS custom_skills;
+      SET FOREIGN_KEY_CHECKS = 1;
+    `
+  },
+  {
+    version: 3,
     name: 'add_graph_and_ltm_tables',
     up: `
       -- ============================================

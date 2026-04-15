@@ -22,7 +22,7 @@ interface FormField {
   label: string;
   type: "text" | "number" | "select" | "radio" | "checkbox" | "textarea" | "date";
   required?: boolean;
-  options?: string[];
+  options?: { id: string; label: string }[];
   placeholder?: string;
   defaultValue?: unknown;
 }
@@ -109,6 +109,12 @@ export default function ConfirmCard({
             title={title}
           />
           {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+          <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(139, 92, 246, 0.04)", border: "1px solid rgba(139, 92, 246, 0.1)" }}>
+            <Text style={{ fontSize: 12, color: "#64748B" }}>
+              <span style={{ marginRight: 4 }}>📋</span>
+              单选模式：请点击一个选项进行选择
+            </Text>
+          </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {options.map((opt) => {
               const isSelected = selectedSingle === opt.id;
@@ -145,6 +151,12 @@ export default function ConfirmCard({
           title={title}
         />
         {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+        <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(139, 92, 246, 0.04)", border: "1px solid rgba(139, 92, 246, 0.1)" }}>
+          <Text style={{ fontSize: 12, color: "#64748B" }}>
+            <span style={{ marginRight: 4 }}>☑️</span>
+            多选模式：请点击选择多个选项，选择完成后点击「确认」按钮
+          </Text>
+        </div>
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, flexWrap: "wrap" }}>
           {options.map((opt) => {
             const isSelected = selectedMulti.includes(opt.id);
@@ -196,18 +208,52 @@ export default function ConfirmCard({
         case "text": return <Input placeholder={field.placeholder} />;
         case "number": return <InputNumber placeholder={field.placeholder} style={{ width: "100%" }} />;
         case "textarea": return <TextArea placeholder={field.placeholder} rows={3} />;
-        case "select": return (
-          <Select placeholder={field.placeholder ?? "请选择"}>
-            {(field.options ?? []).map(opt => <Select.Option key={opt} value={opt}>{opt}</Select.Option>)}
-          </Select>
-        );
+        case "select": {
+          const chipStyle = (isSelected: boolean): React.CSSProperties => ({
+            padding: "8px 18px",
+            borderRadius: 20,
+            fontSize: 14,
+            fontWeight: 500,
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+            background: isSelected ? "linear-gradient(135deg, #8B5CF6, #EC4899)" : "rgba(139, 92, 246, 0.06)",
+            color: isSelected ? "white" : "#475569",
+            border: `1px solid ${isSelected ? "transparent" : "rgba(139, 92, 246, 0.15)"}`,
+            boxShadow: isSelected ? "0 2px 12px rgba(139, 92, 246, 0.3)" : "none",
+            whiteSpace: "nowrap" as const,
+          });
+
+          const [selectedId, setSelectedId] = useState<string | null>(null);
+
+          return (
+            <div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {(field.options ?? []).map(opt => {
+                  const isSelected = selectedId === opt.id;
+                  return (
+                    <div
+                      key={opt.id}
+                      onClick={() => { if (disabled) return; setSelectedId(opt.id); form.setFieldValue(field.key, opt.id); }}
+                      style={chipStyle(isSelected)}
+                      onMouseEnter={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.12)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.3)"; } }}
+                      onMouseLeave={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.06)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.15)"; } }}
+                    >
+                      {opt.label}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        }
         case "radio": return (
           <Radio.Group>
-            {(field.options ?? []).map(opt => <Radio key={opt} value={opt}>{opt}</Radio>)}
+            {(field.options ?? []).map(opt => <Radio key={opt.id} value={opt.id}>{opt.label}</Radio>)}
           </Radio.Group>
         );
         case "checkbox": return (
-          <Checkbox.Group options={field.options ?? []} />
+          <Checkbox.Group options={(field.options ?? []).map(opt => ({ label: opt.label, value: opt.id }))} />
         );
         case "date": return <DatePicker style={{ width: "100%" }} />;
         default: return <Input placeholder={field.placeholder} />;

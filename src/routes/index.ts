@@ -34,10 +34,12 @@ import { createFileRoutes } from "./file-routes.js";
 import { createGraphRoutes } from "./graph-routes.js";
 import { createShareRoutes } from "./share-routes.js";
 import type { ShareRepository } from "../db/share-repository.js";
+import type { SkillAccessService } from "../engine/index.js";
 
 export interface RouteDependencies {
   registry: SkillRegistry;
   engine: ExecutionEngine;
+  skillAccessService: SkillAccessService;
   wal: WALManager;
   configManager: ConfigManager;
   sessionManager: UserSessionManager;
