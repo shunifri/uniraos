@@ -20,6 +20,7 @@ export type {
 export { Protocol } from "./types.js";
 export { SimpleAgent } from "./simple-agent.js";
 export { ReactAgent } from "./react-agent.js";
+export { PlanAgent } from "./plan-agent.js";
 export { TeamAgent } from "./team-agent.js";
 export { Orchestrator } from "./orchestrator.js";
 export type { OrchestratorConfig } from "./orchestrator.js";

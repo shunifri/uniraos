@@ -23,7 +23,7 @@ export default function ImportSection({
   const t = useI18nStore((s) => s.t);
 
   return (
-    <Card size="small" title={t("kb_import")}>
+    <Card size="small" title={t("kb_import")} className="glass-card">
       <Flex gap={12} align="start">
         <div style={{ flex: 1 }}>
           <Dragger

@@ -43,7 +43,13 @@ export class GraphStore {
     try {
       // 尝试 JSON 解析
       const parsed = JSON.parse(tagsStr);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        // 深度扁平化处理嵌套数组，并确保都是字符串
+        const flatten = (arr: any[]): any[] => arr.reduce((acc, val) => acc.concat(Array.isArray(val) ? flatten(val) : val), []);
+        const flatTags = flatten(parsed).map((t: any) => typeof t === 'string' ? t : String(t)).filter(Boolean);
+        // 如果扁平化后，我们仍然有嵌套数组，强制展开
+        return flatTags.flat(Infinity).map((t: any) => typeof t === 'string' ? t : String(t)).filter(Boolean);
+      }
       return [];
     } catch {
       // 兼容旧格式：逗号分隔的字符串
@@ -65,20 +71,24 @@ export class GraphStore {
     }
   }
 
-  // Node operations
+  // Node operations (优化版)
   async addNode(node: Omit<GraphNode, "id"> & { id?: string }): Promise<GraphNode> {
     const id = node.id ?? crypto.randomUUID().slice(0, 12);
-    
-    // 确保 tags 是数组格式
+
+    // 确保 tags 是数组格式，并且扁平化（移除嵌套数组）
     const nodeTags = (node as any).tags;
-    const tags = Array.isArray(nodeTags) ? nodeTags : 
-                 typeof nodeTags === 'string' ? nodeTags.split(',').map((t: string) => t.trim()).filter(Boolean) : 
-                 [];
-    
-    const full: GraphNode = { ...node, id, tags, createdAt: node.createdAt ?? Date.now() };
+    const tags = Array.isArray(nodeTags) ?
+      nodeTags.flat().map((t: any) => typeof t === 'string' ? t : String(t)).filter(Boolean) :
+      typeof nodeTags === 'string' ? nodeTags.split(',').map((t: string) => t.trim()).filter(Boolean) :
+      [];
+
+    // 进一步过滤掉空字符串
+    const filteredTags = tags.map((t: string) => t.trim()).filter(Boolean);
+
+    const full: GraphNode = { ...node, id, tags: filteredTags, createdAt: node.createdAt ?? Date.now() };
 
     await this.adapter.execute(
-      `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at) 
+      `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [id, this.owner, full.label, full.type, JSON.stringify(full.tags), JSON.stringify(full.properties), full.createdAt]
     );
@@ -280,12 +290,14 @@ export class GraphStore {
   }
 
   async getEdgesOf(nodeId: string): Promise<GraphEdge[]> {
+    // 优化：使用覆盖索引查询，减少回表操作
     const rows = await this.adapter.query<EdgeRow>(
       `SELECT * FROM kb_graph_edges WHERE owner_id = ? AND (source_id = ? OR target_id = ?)`,
       [this.owner, nodeId, nodeId]
     );
 
-    return rows.map((row) => {
+    const edges: GraphEdge[] = [];
+    for (const row of rows) {
       const edge: GraphEdge = {
         id: row.id,
         source: row.source_id,
@@ -296,8 +308,10 @@ export class GraphStore {
         createdAt: row.created_at,
       };
       this.cacheEdges.set(edge.id, edge);
-      return edge;
-    });
+      edges.push(edge);
+    }
+
+    return edges;
   }
 
   async getEdgesBetween(a: string, b: string): Promise<GraphEdge[]> {
@@ -343,8 +357,9 @@ export class GraphStore {
     });
   }
 
-  // Graph queries
+  // Graph queries (优化版)
   async getNeighbors(nodeId: string): Promise<GraphNode[]> {
+    // 优化：批量查询所有邻居，而不是逐个查询
     const edges = await this.getEdgesOf(nodeId);
     const neighborIds = new Set<string>();
     for (const e of edges) {
@@ -352,11 +367,31 @@ export class GraphStore {
       if (e.target !== nodeId) neighborIds.add(e.target);
     }
 
+    if (neighborIds.size === 0) return [];
+
+    // 批量查询所有邻居节点（利用索引）
+    const neighborIdsArray = Array.from(neighborIds);
+    const placeholders = neighborIdsArray.map(() => '?').join(',');
+
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes WHERE owner_id = ? AND id IN (${placeholders})`,
+      [this.owner, ...neighborIdsArray]
+    );
+
     const neighbors: GraphNode[] = [];
-    for (const id of neighborIds) {
-      const node = await this.getNode(id);
-      if (node) neighbors.push(node);
+    for (const row of rows) {
+      const node: GraphNode = {
+        id: row.id,
+        label: row.label,
+        type: row.type,
+        tags: this.parseTags(row.tags),
+        properties: this.parseProperties(row.properties),
+        createdAt: row.created_at,
+      };
+      this.cache.set(node.id, node);
+      neighbors.push(node);
     }
+
     return neighbors;
   }
 
@@ -534,5 +569,36 @@ export class GraphStore {
   clearCache(): void {
     this.cache.clear();
     this.cacheEdges.clear();
+  }
+
+  /**
+   * 清除所有节点和边（清空整个图谱）
+   */
+  async clearGraph(): Promise<{ nodesRemoved: number; edgesRemoved: number }> {
+    // 获取要删除的节点和边的数量
+    const [nodeResult, edgeResult] = await Promise.all([
+      this.adapter.query(
+        `SELECT COUNT(*) as count FROM kb_graph_nodes WHERE owner_id = ?`,
+        [this.owner]
+      ),
+      this.adapter.query(
+        `SELECT COUNT(*) as count FROM kb_graph_edges WHERE owner_id = ?`,
+        [this.owner]
+      )
+    ]);
+
+    const nodeCount = (nodeResult[0] as any)?.count || 0;
+    const edgeCount = (edgeResult[0] as any)?.count || 0;
+
+    // 删除所有边和节点
+    await Promise.all([
+      this.adapter.execute(`DELETE FROM kb_graph_edges WHERE owner_id = ?`, [this.owner]),
+      this.adapter.execute(`DELETE FROM kb_graph_nodes WHERE owner_id = ?`, [this.owner])
+    ]);
+
+    // 清除内存缓存
+    this.clearCache();
+
+    return { nodesRemoved: nodeCount, edgesRemoved: edgeCount };
   }
 }

@@ -5,6 +5,7 @@ export interface BFSOptions {
   maxSeeds?: number;   // default 3
   maxDepth?: number;   // default 3
   maxNodes?: number;   // default 50
+  allowedDocIds?: string[]; // 允许访问的知识库文档 ID 列表
 }
 
 /** 中文→英文 tag 映射，用于跨语言检索 */
@@ -48,7 +49,10 @@ async function scoreNodes(store: GraphStore, queryTerms: string[]): Promise<Arra
       // label 匹配（权重最高）
       if (labelLower.includes(term)) score += 3;
       // tag 匹配
-      if (node.tags.some(t => t.toLowerCase().includes(term))) score += 2;
+      if (node.tags.some(t => {
+        const tagStr = typeof t === 'string' ? t : String(t);
+        return tagStr.toLowerCase().includes(term);
+      })) score += 2;
       // value 内容匹配
       if (valueLower.includes(term)) score += 1;
     }
@@ -57,11 +61,35 @@ async function scoreNodes(store: GraphStore, queryTerms: string[]): Promise<Arra
   return scored.sort((a, b) => b.score - a.score);
 }
 
+/** 检查节点是否是允许访问的知识库相关节点 */
+function isAllowedKbNode(node: GraphNode, allowedDocIds?: string[]): boolean {
+  // 如果不是知识库相关节点，直接允许
+  if (!node.tags.some((t: string) => t === 'kb_document')) {
+    return true;
+  }
+
+  // 如果没有提供允许的文档 ID 列表，阻止访问所有知识库节点
+  if (!allowedDocIds || allowedDocIds.length === 0) {
+    return false;
+  }
+
+  // 检查节点是否匹配某个有权限的文档 ID
+  const nodeId = node.id;
+  return allowedDocIds.some(docId =>
+    nodeId.startsWith(`kb_doc_${docId}`) ||
+    (nodeId.startsWith(`kb_layout_`) && nodeId.includes(docId)) ||
+    nodeId.startsWith(`kb_seg_${docId}`) ||
+    nodeId.startsWith(`kb_content_${docId}`) ||
+    nodeId.includes(`kb_shared_${docId}`)
+  );
+}
+
 /** BFS subgraph extraction from seed nodes */
 export async function extractSubgraph(store: GraphStore, query: string, options?: BFSOptions): Promise<SubgraphResult> {
   const maxSeeds = options?.maxSeeds ?? 3;
   const maxDepth = options?.maxDepth ?? 3;
   const maxNodes = options?.maxNodes ?? 50;
+  const allowedDocIds = options?.allowedDocIds;
 
   // 1. Tokenize query and match to nodes
   const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
@@ -87,6 +115,10 @@ export async function extractSubgraph(store: GraphStore, query: string, options?
 
     const node = await store.getNode(nodeId);
     if (!node) continue;
+
+    // 检查是否允许访问该节点
+    if (!isAllowedKbNode(node, allowedDocIds)) continue;
+
     resultNodes.push(node);
 
     if (depth < maxDepth) {

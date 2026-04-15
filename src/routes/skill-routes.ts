@@ -1,45 +1,21 @@
 import { Router } from "express";
-import { requireAuth, requirePermission } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
-import { getUserPermissions, getUserRoles, getUserById } from "../db/user-repository.js";
-import { getDepartmentById } from "../db/department-repository.js";
-import { ShareRepository } from "../db/share-repository.js";
-import { getDb, isMySQL } from "../db/database.js";
 import type { RouteDependencies } from "./index.js";
+
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
   const { registry, engine, wal, taskManager, pluginLoader, syncSkillsToResources } = deps;
   const router = Router();
 
   // List all Skills (filtered by user permissions for non-admin)
-  router.get("/skills", requireAuth, requirePermission("skills.read"), async (req, res) => {
+  router.get("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), async (req, res) => {
     const userId = req.user!.id;
-    const permissions = await getUserPermissions(userId);
-    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
-    const allSkills = isAdmin ? registry.list() : registry.listByPermissions(permissions);
-    
-    // Get shared skill names for this user
-    const roles = await getUserRoles(userId);
-    const roleIds = roles.map(r => r.id);
-    let deptPath = "/";
-    const user = await getUserById(userId);
-    if (user?.departmentId) {
-      const dept = await getDepartmentById(user.departmentId);
-      if (dept) deptPath = dept.path;
-    }
-    const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
-    const sharedSkillNames = await shareRepo.getSharedResourceIds("skill", userId, roleIds, deptPath);
-    
-    // Determine source for each skill
-    const getSkillSource = (s: any): "own" | "shared" | "role" | "system" => {
-      if (s.isSystem || !s.owner) return "system";
-      if (s.owner === userId) return "own";
-      if (sharedSkillNames.includes(s.name)) return "shared";
-      return "role";
-    };
-    
-    const skills = allSkills.map((s) => ({
+    const result = await permissions.getAccessibleSkills(userId);
+    const skills = result.skills.map((s) => ({
       name: s.name,
       visible: s.visible,
       autonomy: s.autonomy,
@@ -50,18 +26,16 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       paramSchema: s.paramSchema ?? null,
       owner: s.owner,
       isSystem: s.isSystem ?? false,
-      source: getSkillSource(s),
+      source: result.sourceMap.get(s.name) || (s.isSystem || !s.owner ? "system" : "role"),
     }));
     res.json(skills);
   });
 
   // List visible Skills (filtered by user permissions)
-  router.get("/skills/visible", requireAuth, requirePermission("skills.read"), async (req, res) => {
+  router.get("/skills/visible", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), async (req, res) => {
     const userId = req.user!.id;
-    const permissions = await getUserPermissions(userId);
-    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
-    const allSkills = isAdmin ? registry.listVisible() : registry.listVisibleByPermissions(permissions);
-    const skills = allSkills.map((s) => ({
+    const result = await permissions.getAccessibleSkills(userId, { visibleOnly: true });
+    const skills = result.skills.map((s) => ({
       name: s.name,
       autonomy: s.autonomy,
       dependencies: s.dependencies,
@@ -71,17 +45,16 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Execute Skill (with per-skill permission check)
-  router.post("/execute", requireAuth, requirePermission("skills.execute"), async (req, res) => {
+  router.post("/execute", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_EXECUTE), async (req, res) => {
     const { skillName, params } = req.body as {
       skillName: string;
       params?: Record<string, unknown>;
     };
 
-    // 检查用户是否有该 skill 的执行权限
+    // 检查用户是否有该 skill 的执行权限（使用统一权限服务完整检查）
     const userId = req.user!.id;
-    const permissions = await getUserPermissions(userId);
-    const isAdmin = permissions.some(p => p === "users.manage" || p === "roles.manage");
-    if (!isAdmin && !permissions.includes(`skill:${skillName}.execute`)) {
+    const canExecute = await permissions.hasSkillPermission(userId, skillName);
+    if (!canExecute) {
       res.status(403).json({ success: false, error: `无权执行技能: ${skillName}` });
       return;
     }
@@ -99,7 +72,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Dynamic Skill registration
-  router.post("/skills", requireAuth, requirePermission("skills.manage"), (req, res) => {
+  router.post("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), (req, res) => {
     const { name, visible, autonomy, dependencies, timeout, description } =
       req.body;
 
@@ -128,7 +101,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Delete Skill
-  router.delete("/skills/:name", requireAuth, requirePermission("skills.manage"), (req, res) => {
+  router.delete("/skills/:name", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), (req, res) => {
     try {
       registry.unregister(req.params.name as string);
       res.json({ success: true });
@@ -141,7 +114,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Topological order
-  router.get("/topology", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  router.get("/topology", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
     try {
       const order = registry.getTopologicalOrder();
       res.json({ order });
@@ -153,7 +126,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // WAL status
-  router.get("/wal", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  router.get("/wal", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
     res.json({
       all: wal.getAll(),
       incomplete: wal.getIncomplete(),
@@ -162,12 +135,12 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Execution history
-  router.get("/history", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  router.get("/history", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
     res.json(engine.getHistory());
   });
 
   // Metrics
-  router.get("/metrics", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  router.get("/metrics", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
     res.json({
       success: true,
       summary: engine.metrics.getSummary(),
@@ -175,7 +148,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     });
   });
 
-  router.get("/metrics/skill/:name", requireAuth, requirePermission("skills.read"), (req, res) => {
+  router.get("/metrics/skill/:name", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (req, res) => {
     const name = req.params.name as string;
     const metrics = engine.metrics.getMetrics(name);
     if (!metrics) {
@@ -186,13 +159,13 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // LLM Tools
-  router.get("/llm/tools", requireAuth, requirePermission("skills.read"), (_req, res) => {
+  router.get("/llm/tools", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
     const tools = skillsToTools(registry.list());
     res.json(tools);
   });
 
   // Async Task APIs
-  router.get("/tasks", requireAuth, requirePermission("tasks.read"), (_req, res) => {
+  router.get("/tasks", pm.requireAuth, pm.requirePermission(permissions.constants.API.TASKS_READ), (_req, res) => {
     const status = _req.query.status as string | undefined;
     const tasks = status
       ? taskManager.list({ status: status as import("../types/index.js").TaskStatus })
@@ -200,7 +173,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     res.json({ tasks, total: tasks.length });
   });
 
-  router.get("/tasks/:taskId", requireAuth, requirePermission("tasks.read"), (req, res) => {
+  router.get("/tasks/:taskId", pm.requireAuth, pm.requirePermission(permissions.constants.API.TASKS_READ), (req, res) => {
     const taskId = req.params.taskId as string;
     const task = taskManager.get(taskId);
     if (!task) {
@@ -210,7 +183,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     res.json(task);
   });
 
-  router.post("/tasks/:taskId/cancel", requireAuth, requirePermission("tasks.read"), (req, res) => {
+  router.post("/tasks/:taskId/cancel", pm.requireAuth, pm.requirePermission(permissions.constants.API.TASKS_READ), (req, res) => {
     const taskId = req.params.taskId as string;
     const task = taskManager.cancel(taskId);
     if (!task) {
@@ -220,7 +193,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, task });
   });
 
-  router.post("/tasks/:taskId/wait", requireAuth, requirePermission("tasks.read"), async (req, res) => {
+  router.post("/tasks/:taskId/wait", pm.requireAuth, pm.requirePermission(permissions.constants.API.TASKS_READ), async (req, res) => {
     const taskId = req.params.taskId as string;
     const timeoutMs = Number(req.body?.timeoutMs ?? 30000);
     try {
@@ -232,11 +205,11 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Plugin APIs
-  router.get("/plugins", requireAuth, requirePermission("plugins.manage"), (_req, res) => {
+  router.get("/plugins", pm.requireAuth, pm.requirePermission(permissions.constants.API.PLUGINS_MANAGE), (_req, res) => {
     res.json({ plugins: pluginLoader.getLoaded() });
   });
 
-  router.post("/plugins/reload", requireAuth, requirePermission("plugins.manage"), async (req, res) => {
+  router.post("/plugins/reload", pm.requireAuth, pm.requirePermission(permissions.constants.API.PLUGINS_MANAGE), async (req, res) => {
     const { name } = req.body as { name?: string };
     if (name) {
       try {
@@ -258,7 +231,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // WAL recovery APIs
-  router.get("/wal/status", requireAuth, (req, res) => {
+  router.get("/wal/status", pm.requireAuth, pm.requirePermission(permissions.constants.API.SYSTEM_MANAGE), (req, res) => {
     const incomplete = wal.getIncomplete();
     const lastRecovery = wal.getLastRecoveryResult();
     res.json({
@@ -273,7 +246,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     });
   });
 
-  router.post("/wal/replay", requireAuth, async (req, res) => {
+  router.post("/wal/replay", pm.requireAuth, pm.requirePermission(permissions.constants.API.SYSTEM_MANAGE), async (req, res) => {
     try {
       const result = await wal.replay(engine);
       res.json({ success: true, ...result });
@@ -285,7 +258,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/wal/compact", requireAuth, (req, res) => {
+  router.post("/wal/compact", pm.requireAuth, pm.requirePermission(permissions.constants.API.SYSTEM_MANAGE), (req, res) => {
     try {
       wal.compact();
       res.json({ success: true, message: "WAL compacted" });
@@ -298,7 +271,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Models
-  router.get("/models", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/models", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     res.json({
       success: true,
       models: deps.modelRouter.getModels().map((m) => ({
@@ -312,11 +285,11 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Prompts
-  router.get("/prompts", requireAuth, requirePermission("config.read"), (_req, res) => {
+  router.get("/prompts", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {
     res.json({ success: true, templates: deps.promptManager.list() });
   });
 
-  router.post("/prompts", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.post("/prompts", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     try {
       const pt = deps.promptManager.register(req.body.name, req.body.template, {
         description: req.body.description,
@@ -328,7 +301,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/prompts/render", requireAuth, requirePermission("config.read"), (req, res) => {
+  router.post("/prompts/render", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (req, res) => {
     try {
       const rendered = deps.promptManager.render(req.body.name, req.body.variables || {});
       res.json({ success: true, rendered });
@@ -337,7 +310,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.delete("/prompts/:name", requireAuth, requirePermission("config.write"), (req, res) => {
+  router.delete("/prompts/:name", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_WRITE), (req, res) => {
     deps.promptManager.delete(req.params.name as string);
     res.json({ success: true });
   });

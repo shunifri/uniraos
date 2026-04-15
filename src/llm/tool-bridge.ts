@@ -22,22 +22,28 @@ export function skillToTool(skill: SkillDefinition): ToolDefinition {
 }
 
 function buildTypedTool(skill: SkillDefinition, schema: ParamSchema): ToolDefinition {
-  const properties: Record<string, unknown> = {};
-  for (const [key, prop] of Object.entries(schema.properties)) {
+  const buildProp = (prop: any): Record<string, unknown> => {
     const toolProp: Record<string, unknown> = { type: prop.type };
     if (prop.description) toolProp.description = prop.description;
     if (prop.enum) toolProp.enum = prop.enum;
-    if (prop.items) toolProp.items = { type: prop.items.type };
-    if (prop.properties) {
-      toolProp.properties = {};
-      for (const [k, v] of Object.entries(prop.properties)) {
-        (toolProp.properties as Record<string, unknown>)[k] = {
-          type: v.type,
-          ...(v.description ? { description: v.description } : {}),
-        };
-      }
+    if (prop.default !== undefined) toolProp.default = prop.default;
+    if (prop.items) {
+      toolProp.items = buildProp(prop.items);
     }
-    properties[key] = toolProp;
+    if (prop.properties) {
+      const nestedProps: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(prop.properties)) {
+        nestedProps[k] = buildProp(v);
+      }
+      toolProp.properties = nestedProps;
+      if (prop.required) toolProp.required = prop.required;
+    }
+    return toolProp;
+  };
+
+  const properties: Record<string, unknown> = {};
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    properties[key] = buildProp(prop);
   }
 
   return {

@@ -7,6 +7,7 @@
 import type { ExecutionResult } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
+import type { SkillAccessService } from "../engine/skill-access-service.js";
 import type {
   ChatOptions,
   LLMProvider,
@@ -199,6 +200,8 @@ export class AgentLoop {
   private toolSchemas = new Map<string, ToolDefinition>();
   /** 用户权限列表（用于按权限过滤 Skill） */
   private userPermissions: string[] | null = null;
+  /** Skill 访问服务（用于完整的权限检查） */
+  private skillAccessService?: SkillAccessService;
   /** 对话历史（跨 run 保持） */
   private conversationHistory: Message[] = [];
   /** 增强记忆模块（可选） */
@@ -211,11 +214,13 @@ export class AgentLoop {
     engine: ExecutionEngine,
     provider: LLMProvider,
     config?: Partial<AgentLoopConfig>,
+    skillAccessService?: SkillAccessService,
   ) {
     this.registry = registry;
     this.engine = engine;
     this.provider = provider;
     this.config = { ...DEFAULT_AGENT_CONFIG, ...config };
+    this.skillAccessService = skillAccessService;
     // 如果用户没有自定义 systemPrompt，使用记忆感知版本
     if (config?.systemPrompt === undefined || config.systemPrompt === "") {
       this.config.systemPrompt = MEMORY_AWARE_PROMPT;
@@ -229,12 +234,44 @@ export class AgentLoop {
     this.refreshTools();
   }
 
+  /** 设置 Skill 访问服务，用于完整的权限检查（包括分享和所有权） */
+  setSkillAccessService(service: SkillAccessService): void {
+    this.skillAccessService = service;
+    this.refreshTools();
+  }
+
   registerToolSchema(toolDef: ToolDefinition): void {
     this.toolSchemas.set(toolDef.function.name, toolDef);
     this.refreshTools();
   }
 
   refreshTools(): void {
+    // 优先使用 SkillAccessService（考虑分享和所有权）
+    if (this.skillAccessService) {
+      try {
+        const userId = getCurrentUserId();
+        if (userId && userId !== "default") {
+          this.skillAccessService.getAccessibleSkills(userId, { visibleOnly: true }, false)
+            .then((result) => {
+              this.toolDefs = skillsToTools(result.skills).map((td) => {
+                const custom = this.toolSchemas.get(td.function.name);
+                return custom ?? td;
+              });
+            })
+            .catch(() => {
+              // 如果获取失败，回退到简单的权限过滤
+              this.fallbackRefreshTools();
+            });
+          return;
+        }
+      } catch {
+        // 获取用户 ID 失败，回退到简单的权限过滤
+      }
+    }
+    this.fallbackRefreshTools();
+  }
+
+  private fallbackRefreshTools(): void {
     const skills = this.userPermissions
       ? this.registry.listVisibleByPermissions(this.userPermissions)
       : this.registry.list();

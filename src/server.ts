@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { dirname, join, resolve } from "path";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync } from "fs";
 import { SkillRegistry } from "./registry/index.js";
-import { ExecutionEngine, AsyncTaskManager } from "./engine/index.js";
+import { ExecutionEngine, AsyncTaskManager, SkillAccessService } from "./engine/index.js";
 import { WALManager } from "./wal/index.js";
 import { FileWALStore } from "./wal/file-wal-store.js";
 import { Autonomy, defineSkill } from "./types/index.js";
@@ -25,14 +25,18 @@ import { createKnowledgeSkills } from "./skills/knowledge-skills.js";
 import { createApiGenSkills } from "./skills/api-gen-skills.js";
 import { createMetaSkills } from "./skills/meta-skills.js";
 import { createPlanningSkill } from "./skills/planning-skill.js";
+import { createGraphSkills } from "./skills/graph-skills.js";
+import { createUserConfirmSkill } from "./skills/user-confirm-skill.js";
 import { SkillMarketplace } from "./skills/skill-marketplace.js";
 import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
 import { PluginLoader } from "./plugin/plugin-loader.js";
 import { UserSessionManager } from "./user/user-session.js";
 import { requestContext } from "./user/request-context.js";
 import { initDatabaseAsync, getDb, isMySQL } from "./db/database.js";
+import { ShareRepository } from "./db/share-repository.js";
 import { extractPptxStyle } from "./services/pptx-style-extractor.js";
 import { authMiddleware, requireAuth, requirePermission, requireAdmin } from "./db/auth-middleware.js";
+import { initPermissionService, permissions } from "./permissions/index.js";
 import { createSession, destroySession, cleanExpiredSessions } from "./db/auth.js";
 import * as userRepo from "./db/user-repository.js";
 import * as deptRepo from "./db/department-repository.js";
@@ -82,6 +86,8 @@ app.use((req, _res, next) => {
 
 // 核心实例
 const registry = new SkillRegistry();
+// 初始化统一权限服务
+initPermissionService(registry);
 const walStore = new FileWALStore(join(process.cwd(), ".raos", "wal.jsonl"));
 const wal = new WALManager(walStore);
 const configManager = new ConfigManager();
@@ -112,6 +118,7 @@ if (configManager.isDocMindConfigured()) {
   }
 }
 let engine = new ExecutionEngine(registry, wal);
+const skillAccessService = new SkillAccessService(registry);
 const evolutionController = new EvolutionController(
   undefined,
   join(process.cwd(), ".raos", "evolution.db")
@@ -222,7 +229,7 @@ function getAgentLoop(userId: string): AgentLoop | null {
   if (!currentProvider) return null;
   const session = sessionManager.getOrCreate(userId);
   if (!session.agentLoop) {
-    session.agentLoop = new AgentLoop(registry, engine, currentProvider, getAgentConfig());
+    session.agentLoop = new AgentLoop(registry, engine, currentProvider, getAgentConfig(), skillAccessService);
   }
   return session.agentLoop;
 }
@@ -465,6 +472,16 @@ createFederationSkills(registry, migrationManager, federationManager, evolutionE
 // 注册元 Skills (compose/template/info)
 createMetaSkills(registry, engine, () => currentProvider);
 
+// 注册知识图谱 Skills
+for (const skill of createGraphSkills(sessionManager)) {
+  registry.register(skill);
+}
+console.log(`   Graph skills registered (graph_query/graph_path/graph_communities/graph_deduplicate)`);
+
+// 注册用户确认 Skill
+registry.register(createUserConfirmSkill());
+console.log(`   User confirmation skill registered (user_confirm)`);
+
 // 注册 Prompt 管理 Skills
 registry.register(
   defineSkill({
@@ -536,6 +553,7 @@ pluginLoader.loadAll().then(({ loaded, errors }) => {
 if (configManager.isLLMConfigured()) {
   const llmConfig = configManager.getLLM()!;
   currentProvider = createProvider(llmConfig);
+  sessionManager.setLLMProvider(currentProvider); // 确保 sessionManager 有 llmProvider
   console.log(`   LLM restored: ${llmConfig.type} / ${llmConfig.model}`);
 }
 
@@ -882,7 +900,8 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
 });
 app.put("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
   try {
-    await userRepo.updateUser(req.params.id, req.body);
+    const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await userRepo.updateUser(userId, req.body);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -890,7 +909,8 @@ app.put("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
 });
 app.delete("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
   try {
-    await userRepo.deleteUser(req.params.id);
+    const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await userRepo.deleteUser(userId);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -912,7 +932,8 @@ app.post("/api/admin/departments", requireAuth, requireAdmin, async (req, res) =
 });
 app.delete("/api/admin/departments/:id", requireAuth, requireAdmin, async (req, res) => {
   try {
-    await deptRepo.deleteDepartment(req.params.id);
+    const deptId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await deptRepo.deleteDepartment(deptId);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -921,12 +942,12 @@ app.delete("/api/admin/departments/:id", requireAuth, requireAdmin, async (req, 
 
 // 角色管理兼容路由
 app.get("/api/admin/roles", requireAuth, requireAdmin, async (_req, res) => {
-  const roles = await resRepo.listRoles();
+  const roles = await userRepo.listRoles();
   res.json({ success: true, roles });
 });
 app.post("/api/admin/roles", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const role = await resRepo.createRole(req.body);
+    const role = await userRepo.createRole(req.body);
     res.json({ success: true, role });
   } catch (err) {
     res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -1897,22 +1918,12 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
       if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
       for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
         if (closed) break;
-        // 在第一个 text_delta 之前发送 KB 引用（必须先于 processEvent）
-        if (!kbRefsSent && (event.event === "strategy_selected" || event.event === "text_delta")) {
-          const refs = orchestrator.getLastKbReferences();
-          console.log(`[KB-REF] event=${event.event}, refs.length=${refs.length}`);
-          if (refs.length > 0) {
-            write("kb_references", { references: refs });
-            kbRefsSent = true;
-            kbRefsForSave = refs;
-          }
-        }
         // 从 tool_result 中收集 web 引用
         if (event.event === "tool_result") {
           const ed = event.data as any;
           orchestrator.collectWebReferences(ed.skillName ?? "", ed.result);
         }
-        // 在 done/agent_done 事件保存消息之前，收集并过滤 web 引用
+        // 在 done/agent_done 事件保存消息之前，收集并过滤 web 引用和 KB 引用
         if (event.event === "agent_done" || event.event === "done") {
           const allWebRefs = orchestrator.getLastWebReferences();
           if (allWebRefs.length > 0) {
@@ -1930,6 +1941,22 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
             if (webRefs.length > 0) {
               write("web_references", { references: webRefs });
               webRefsForSave = webRefs;
+            }
+          }
+
+          // 过滤 KB 引用：只保留 AI 回复中实际引用了的（包含 [^1] 这样的引用标记）
+          const allKbRefs = orchestrator.getLastKbReferences();
+          if (allKbRefs.length > 0) {
+            const text = currentAssistantText || "";
+            // 检查是否包含引用标记，如 [^1], [^2] 等
+            const hasKbReferences = allKbRefs.some((ref) => {
+              const referencePattern = new RegExp(`\\[\\^${ref.index}\\]`);
+              return referencePattern.test(text);
+            });
+            // 只有在实际引用了的情况下才发送
+            if (hasKbReferences) {
+              write("kb_references", { references: allKbRefs });
+              kbRefsForSave = allKbRefs;
             }
           }
         }
@@ -2307,7 +2334,8 @@ app.get("/api/marketplace", requireAuth, requirePermission("skills.read"), (req,
 // POST /api/marketplace/search - 兼容前端调用
 app.post("/api/marketplace/search", requireAuth, requirePermission("skills.read"), (req, res) => {
   const { query, filters } = req.body;
-  const results = marketplace.search(query, filters);
+  // search 方法现在只接受一个参数，忽略 filters（如需支持 filters，需要修改 SkillMarketplace）
+  const results = marketplace.search(query);
   res.json({ success: true, packages: results, stats: marketplace.stats() });
 });
 
@@ -3178,7 +3206,7 @@ app.post("/api/federation/peers", requireAuth, requireAdmin, (req, res) => {
 
 // 删除联邦节点
 app.delete("/api/federation/peers/:id", requireAuth, requireAdmin, (req, res) => {
-  const peerId = req.params.id;
+  const peerId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   configManager.removeFederationPeer(peerId);
   federationTransport.removePeer(peerId);
   res.json({ success: true, message: `Peer ${peerId} removed` });
@@ -3214,58 +3242,84 @@ function getGraphManagerForUser(userId: string) {
 
 // GET /api/graph/data — full graph for visualization
 app.get("/api/graph/data", requireAuth, requirePermission("memory.read"), async (req, res) => {
-  const userId = (req as any).user?.id ?? "default";
-  const gm = getGraphManagerForUser(userId);
-  if (!gm) { res.json({ nodes: [], edges: [] }); return; }
-  const store = gm.getStore();
-  const [nodes, edges] = await Promise.all([
-    store.getAllNodes(),
-    store.getAllEdges(),
-  ]);
-  res.json({ nodes, edges });
+  try {
+    const userId = (req as any).user?.id ?? "default";
+    const gm = getGraphManagerForUser(userId);
+    if (!gm) { res.json({ nodes: [], edges: [] }); return; }
+    const store = await gm.getStore();
+    const [nodes, edges] = await Promise.all([
+      store.getAllNodes(),
+      store.getAllEdges(),
+    ]);
+    res.json({ nodes, edges });
+  } catch (err) {
+    console.error("[Graph API] /api/graph/data error:", err);
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // GET /api/graph/stats
 app.get("/api/graph/stats", requireAuth, requirePermission("memory.read"), async (req, res) => {
-  const userId = (req as any).user?.id ?? "default";
-  const gm = getGraphManagerForUser(userId);
-  if (!gm) { res.json({ nodeCount: 0, edgeCount: 0 }); return; }
-  res.json(await gm.getStats());
+  try {
+    const userId = (req as any).user?.id ?? "default";
+    const gm = getGraphManagerForUser(userId);
+    if (!gm) { res.json({ nodeCount: 0, edgeCount: 0 }); return; }
+    const stats = await gm.getStats();
+    res.json(stats);
+  } catch (err) {
+    console.error("[Graph API] /api/graph/stats error:", err);
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // POST /api/graph/query
 app.post("/api/graph/query", requireAuth, requirePermission("memory.read"), async (req, res) => {
-  const userId = (req as any).user?.id ?? "default";
-  const gm = getGraphManagerForUser(userId);
-  if (!gm) { res.json({ nodes: [], edges: [], seedNodes: [] }); return; }
-  const { query, maxDepth, maxNodes } = req.body;
-  const result = await gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
-  res.json(result);
+  try {
+    const userId = (req as any).user?.id ?? "default";
+    const gm = getGraphManagerForUser(userId);
+    if (!gm) { res.json({ nodes: [], edges: [], seedNodes: [] }); return; }
+    const { query, maxDepth, maxNodes } = req.body;
+    const result = await gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
+    res.json(result);
+  } catch (err) {
+    console.error("[Graph API] /api/graph/query error:", err);
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // POST /api/graph/sync — sync from LTM
 app.post("/api/graph/sync", requireAuth, requirePermission("memory.write"), async (req, res) => {
-  const userId = (req as any).user?.id ?? "default";
-  const session = sessionManager.getOrCreate(userId);
-  const gm = session.graphManager;
-  if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
-  const entries = await session.ltm.list();
-  const result = await gm.syncFromLTM(entries.map((e: any) => ({
-    id: e.id, key: e.key, value: e.value, tags: e.tags ?? [],
-  })));
-  res.json(result);
+  try {
+    const userId = (req as any).user?.id ?? "default";
+    const session = sessionManager.getOrCreate(userId);
+    const gm = session.graphManager;
+    if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
+    const entries = await session.ltm.list();
+    const result = await gm.syncFromLTM(entries.map((e: any) => ({
+      id: e.id, key: e.key, value: e.value, tags: e.tags ?? [],
+    })));
+    res.json(result);
+  } catch (err) {
+    console.error("[Graph API] /api/graph/sync error:", err);
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // POST /api/graph/communities
 app.post("/api/graph/communities", requireAuth, requirePermission("memory.read"), async (req, res) => {
-  const userId = (req as any).user?.id ?? "default";
-  const gm = getGraphManagerForUser(userId);
-  if (!gm) { res.json({ communities: [], stats: { count: 0, avgSize: 0 } }); return; }
-  const result = await gm.getCommunities();
-  const commList = [...result.communities.entries()].map(([id, nodes]: [number, string[]]) => ({
-    id, size: nodes.length, nodes: nodes.slice(0, 20),
-  }));
-  res.json({ communities: commList, stats: result.stats });
+  try {
+    const userId = (req as any).user?.id ?? "default";
+    const gm = getGraphManagerForUser(userId);
+    if (!gm) { res.json({ communities: [], stats: { count: 0, avgSize: 0 } }); return; }
+    const result = await gm.getCommunities();
+    const commList = [...result.communities.entries()].map(([id, nodes]: [number, string[]]) => ({
+      id, size: nodes.length, nodes: nodes.slice(0, 20),
+    }));
+    res.json({ communities: commList, stats: result.stats });
+  } catch (err) {
+    console.error("[Graph API] /api/graph/communities error:", err);
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ===== 文件上传 API（委托给 file_upload Skill） =====
@@ -4668,6 +4722,7 @@ const PORT = process.env.PORT ?? 3000;
 mountRoutes(app, {
   registry,
   engine,
+  skillAccessService,
   wal,
   configManager,
   sessionManager,
@@ -4688,8 +4743,8 @@ mountRoutes(app, {
   getCurrentMultimodalProvider: () => currentMultimodalProvider,
   createProvider,
   setCurrentProvider: (p) => { currentProvider = p; },
-  getAgentLoop: (userId: string) => agentLoops.get(userId) ?? null,
-  getOrchestrator: () => orchestrator,
+  getAgentLoop: (userId: string) => sessionManager.getOrCreate(userId).agentLoop ?? null,
+  getOrchestrator: () => getOrchestrator(),
   getAgentConfig: () => configManager.getAgent(),
   getVisionConfig: () => {
     const mm = configManager.getMultimodal();
@@ -4702,34 +4757,32 @@ mountRoutes(app, {
       currentMultimodalProvider = null;
       return;
     }
-    currentMultimodalProvider = new OpenAIMultimodalProvider(mm.apiKey, mm.baseUrl || undefined, mm.imageModel, mm.visionModel, mm.ttsModel, mm.whisperModel);
+    currentMultimodalProvider = new OpenAIMultimodalProvider({
+      apiKey: mm.apiKey,
+      baseUrl: mm.baseUrl || undefined,
+      imageModel: mm.imageModel,
+      visionModel: mm.visionModel,
+      ttsModel: mm.ttsModel,
+      whisperModel: mm.whisperModel,
+    });
   },
   rebuildAllAgentLoops: () => {
-    for (const [userId, loop] of agentLoops) {
-      const config = configManager.getLLM();
-      if (!config) continue;
-      const provider = createProvider(config);
-      loop.updateProvider(provider);
-      const agentCfg = configManager.getAgent();
-      loop.updateConfig({
-        maxIterations: agentCfg.maxIterations ?? 10,
-        systemPrompt: agentCfg.systemPrompt,
-        includeTrace: agentCfg.includeTrace ?? false,
-      });
+    if (currentProvider) {
+      sessionManager.rebuildAllAgentLoops(registry, engine, currentProvider, configManager.getAgent());
     }
   },
   rebuildOrchestrator: () => {
-    if (!currentProvider) return;
-    orchestrator = new Orchestrator(registry, engine, currentProvider, configManager.getAgent().maxIterations);
+    (globalThis as any).__orchestrator = null;
   },
   syncSkillsToResources: () => {
     // 同步技能到资源
-    const skills = registry.getAll();
+    const skills = registry.list();
     const resourceSkills = skills.filter((s: any) => s.type === "resource").map((s: any) => s.name);
     if (resourceSkills.length > 0) {
       console.log(`   Skills synced to resources: ${resourceSkills.length} total`);
     }
   },
+  shareRepository: ShareRepository.getInstance(),
 });
 
 // 启动时自动 WAL 恢复

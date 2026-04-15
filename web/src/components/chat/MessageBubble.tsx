@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Flex, Typography, Button, Collapse } from "antd";
+import { Flex, Typography, Button, Collapse, Spin } from "antd";
 import { Bubble } from "@ant-design/x";
 import { XMarkdown } from "@ant-design/x-markdown";
 import ReactECharts from "echarts-for-react";
@@ -14,12 +14,14 @@ import {
   FileOutlined,
   DatabaseOutlined,
   ToolOutlined,
+  LoadingOutlined,
 } from "@ant-design/icons";
 import type { ChatMsg, KbReference } from "./types";
 import { markdownComponents } from "./MarkdownConfig";
 import { useI18nStore } from "@/i18n";
 import { apiFetch } from "@/api";
 import KBReferenceCard from "@/components/KBReferenceCard";
+import ConfirmCard from "@/components/ConfirmCard";
 
 const { Text } = Typography;
 
@@ -33,6 +35,52 @@ interface MessageBubbleProps {
 
 export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewKbDoc, onConfirmCard }: MessageBubbleProps) {
   const t = useI18nStore((s) => s.t);
+
+  // 渲染用户确认卡片
+  if (msg.role === "user_confirm") {
+    const data = JSON.parse(msg.content);
+    const isDisabled = confirmedCards.has(data.confirmId);
+    return (
+      <div style={{ marginLeft: 46 }}>
+        <ConfirmCard
+          confirmId={data.confirmId}
+          type={data.type}
+          title={data.title}
+          description={data.description}
+          options={data.options}
+          multiSelect={data.multiSelect}
+          fields={data.fields}
+          confirmText={data.confirmText}
+          cancelText={data.cancelText}
+          disabled={isDisabled}
+          onConfirm={async (confirmId, response) => {
+            try {
+              await apiFetch("/api/agent/chat/confirm", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirmId, response }),
+              });
+              onConfirmCard(confirmId, true);
+            } catch (err) {
+              console.error("Confirm failed:", err);
+            }
+          }}
+          onCancel={async (confirmId) => {
+            try {
+              await apiFetch("/api/agent/chat/confirm", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirmId, cancelled: true }),
+              });
+              onConfirmCard(confirmId, false);
+            } catch (err) {
+              console.error("Cancel failed:", err);
+            }
+          }}
+        />
+      </div>
+    );
+  }
 
   // 渲染用户消息
   if (msg.role === "user") {
@@ -119,7 +167,7 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
             label: (
               <Flex align="center" gap={10} style={{ padding: '2px 0', overflow: 'hidden', minWidth: 0 }}>
                 <span style={{ color: isRunning ? '#667eea' : msg.isError ? '#EF4444' : '#64748B', fontSize: 15, flexShrink: 0 }}>
-                  {isRunning ? toolIcon : toolIcon}
+                  {isRunning ? <Spin indicator={<LoadingOutlined spin />} size="small" /> : toolIcon}
                 </span>
                 <Text style={{ fontSize: 14, color: '#334155', fontWeight: 500, flexShrink: 0 }}>{toolLabel}</Text>
                 {summary && (

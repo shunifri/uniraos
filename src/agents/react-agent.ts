@@ -221,6 +221,9 @@ export class ReactAgent implements Agent {
           // 检测 user_confirm：暂停等待用户确认
           if (result.success && (result.data as any)?.__userConfirm) {
             const confirmData = result.data as any;
+            // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
+            yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
+            // 发送 tool_result 事件，确保工具状态更新
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
             // 等待用户确认（通过 confirmQueue）
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
@@ -268,6 +271,8 @@ export class ReactAgent implements Agent {
           // 检测 user_confirm
           if (result.success && (result.data as any)?.__userConfirm) {
             const confirmData = result.data as any;
+            // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
+            yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {

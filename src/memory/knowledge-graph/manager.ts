@@ -8,22 +8,89 @@ import type { BFSOptions } from "./bfs-extractor.js";
 import type { LLMProvider } from "../../llm/types.js";
 
 export class KnowledgeGraphManager {
-  private store: GraphStore;
+  private storePromise: Promise<any>;
+  private store: any | null = null;
   private llmProvider?: LLMProvider;
+  private backend: string;
 
-  constructor(owner: string, llmProvider?: LLMProvider) {
-    this.store = new GraphStore(owner);
+  constructor(
+    owner: string,
+    llmProvider?: LLMProvider,
+    backend: string = process.env.GRAPH_STORE_BACKEND || "mysql"
+  ) {
+    this.backend = backend;
+    this.storePromise = this.createStore(owner, backend);
     this.llmProvider = llmProvider;
+    // 异步初始化 store
+    this.storePromise.then((store) => {
+      this.store = store;
+    }).catch((err) => {
+      console.error("[KnowledgeGraphManager] Failed to initialize store:", err);
+    });
+  }
+
+  /** 获取已初始化的 store（内部使用） */
+  private async ensureStore(): Promise<any> {
+    if (this.store) return this.store;
+    return this.storePromise;
+  }
+
+  /** 公共接口：获取 store 实例（异步，确保已初始化） */
+  async getStore(): Promise<any> {
+    return this.ensureStore();
+  }
+
+  private async createStore(owner: string, backend: string): Promise<any> {
+    if (backend === "neo4j") {
+      try {
+        const { Neo4jGraphStore } = await import("./neo4j-store.js");
+        const store = new Neo4jGraphStore(owner);
+        // 验证 Neo4j 连接
+        const connectionValid = await store.verifyConnection();
+        if (!connectionValid) {
+          console.error("Neo4j 连接验证失败，将使用 MySQL 存储作为备用方案");
+          return new GraphStore(owner);
+        }
+        return store;
+      } catch (error) {
+        console.error("Neo4j 存储创建失败，将使用 MySQL 存储作为备用方案:", error);
+        return new GraphStore(owner);
+      }
+    } else {
+      return new GraphStore(owner);
+    }
   }
 
   /** Called after ltm_store — auto-creates graph node and edges */
   async onFactStored(entry: {
     id: string; key: string; value: unknown; tags: string[]; relation?: string;
   }): Promise<void> {
-    // 1. Create or update node
-    let node = await this.store.findNodeByLabel(entry.key);
+    const store = await this.ensureStore();
+
+    // 1. 处理个人信息节点关联（优化核心逻辑）
+    let corePersonNode: any = null;
+
+    // 如果是个人标识信息，尝试找到或创建核心人物节点
+    if (entry.key.startsWith("user_") || entry.tags.some(tag =>
+        ["personal", "identity", "contact", "职业信息", "技术", "背景"].includes(tag)
+    )) {
+      // 查找核心人物节点（优先找姓名节点）
+      corePersonNode = await store.findNodeByLabel("user_name");
+
+      // 如果找不到姓名节点，尝试从其他个人信息中推断
+      if (!corePersonNode) {
+        const personalNodes = await store.findNodesByType("ltm");
+        corePersonNode = personalNodes.find((n: any) =>
+            n.tags.some((t: string) => ["personal", "identity"].includes(t)) &&
+            !n.label.startsWith("user_")
+        );
+      }
+    }
+
+    // 2. Create or update node
+    let node = await store.findNodeByLabel(entry.key);
     if (!node) {
-      node = await this.store.addNode({
+      node = await store.addNode({
         id: entry.id,
         label: entry.key,
         type: "ltm" as NodeType,
@@ -33,49 +100,76 @@ export class KnowledgeGraphManager {
       });
     }
 
-    // 2. If relation param provided, create EXTRACTED edge to target
+    // 3. 建立个人信息节点与核心人物节点的关联
+    if (corePersonNode && corePersonNode.id !== node.id) {
+      const existingEdge = await store.getEdgesBetween(corePersonNode.id, node.id);
+      if (existingEdge.length === 0) {
+        // 根据属性类型创建语义化的边
+        let edgeLabel = "has_property";
+        if (entry.key.startsWith("user_name")) {
+          edgeLabel = "identity";
+        } else if (entry.key.startsWith("user_phone") || entry.key.startsWith("user_email")) {
+          edgeLabel = "contact";
+        } else if (entry.key.startsWith("user_company") || entry.key.startsWith("user_job")) {
+          edgeLabel = "employment";
+        } else if (entry.key.startsWith("user_")) {
+          edgeLabel = "attribute";
+        } else if (entry.tags.includes("技术") || entry.tags.includes("背景")) {
+          edgeLabel = "background";
+        } else if (entry.tags.includes("职业信息")) {
+          edgeLabel = "professional";
+        }
+
+        await store.addEdge(corePersonNode.id, node.id, "PERSONAL", edgeLabel);
+      }
+    }
+
+    // 4. If relation param provided, create EXTRACTED edge to target
     if (entry.relation) {
-      const targetNode = await this.store.findNodeByLabel(entry.relation);
+      const targetNode = await store.findNodeByLabel(entry.relation);
       if (targetNode) {
         // Avoid duplicate edges
-        const existing = await this.store.getEdgesBetween(node.id, targetNode.id);
+        const existing = await store.getEdgesBetween(node.id, targetNode.id);
         if (existing.length === 0) {
-          await this.store.addEdge(node.id, targetNode.id, "EXTRACTED", "related_to");
+          await store.addEdge(node.id, targetNode.id, "EXTRACTED", "related_to");
         }
       }
     }
 
-    // 3. Tag-based TEMPORAL edges
-    const existingNodes = (await this.store.getAllNodes())
-      .filter(n => n.id !== node!.id)
-      .map(n => ({ id: n.id, label: n.label, tags: n.tags }));
+    // 5. Tag-based TEMPORAL edges
+    const existingNodes = (await store.getAllNodes())
+      .filter((n: any) => n.id !== node!.id)
+      .map((n: any) => ({ id: n.id, label: n.label, tags: n.tags }));
     const tagRelations = extractTagRelationships(entry.tags, existingNodes);
     for (const rel of tagRelations.slice(0, 5)) { // max 5 tag edges per entry
-      const existing = await this.store.getEdgesBetween(node.id, rel.targetId);
+      const existing = await store.getEdgesBetween(node.id, rel.targetId);
       if (existing.length === 0) {
-        await this.store.addEdge(node.id, rel.targetId, "TEMPORAL", `shared_tags:${rel.sharedTags.join(",")}`);
+        await store.addEdge(node.id, rel.targetId, "TEMPORAL", `shared_tags:${rel.sharedTags.join(",")}`);
       }
     }
   }
 
   /** BFS subgraph query */
   async querySubgraph(query: string, options?: BFSOptions): Promise<SubgraphResult> {
-    return extractSubgraph(this.store, query, options);
+    const store = await this.ensureStore();
+    return extractSubgraph(store, query, options);
   }
 
   /** Shortest path between two node labels */
   async getPath(sourceKey: string, targetKey: string, maxDepth = 10): Promise<{
     path: GraphNode[]; edges: any[];
   } | null> {
-    const source = await this.store.findNodeByLabel(sourceKey);
-    const target = await this.store.findNodeByLabel(targetKey);
+    const store = await this.ensureStore();
+    const source = await store.findNodeByLabel(sourceKey);
+    const target = await store.findNodeByLabel(targetKey);
     if (!source || !target) return null;
-    return findShortestPath(this.store, source.id, target.id, maxDepth);
+    return findShortestPath(store, source.id, target.id, maxDepth);
   }
 
   /** Get or rebuild communities */
   async getCommunities(): Promise<{ communities: Map<number, string[]>; stats: { count: number; avgSize: number } }> {
-    const communities = await detectCommunities(this.store);
+    const store = await this.ensureStore();
+    const communities = await detectCommunities(store);
     const count = communities.size;
     const totalNodes = [...communities.values()].reduce((s, ids) => s + ids.length, 0);
     return {
@@ -85,7 +179,8 @@ export class KnowledgeGraphManager {
   }
 
   async rebuildCommunities(): Promise<Map<number, string[]>> {
-    return detectCommunities(this.store);
+    const store = await this.ensureStore();
+    return detectCommunities(store);
   }
 
   /** Graph statistics */
@@ -95,29 +190,50 @@ export class KnowledgeGraphManager {
     nodeTypeDistribution: Record<string, number>;
     edgeTypeDistribution: Record<string, number>;
   }> {
-    const nodes = await this.store.getAllNodes();
-    const edges = await this.store.getAllEdges();
+    const store = await this.ensureStore();
+    const nodes = await store.getAllNodes();
+    const edges = await store.getAllEdges();
     const nodeTypeDist: Record<string, number> = {};
     const edgeTypeDist: Record<string, number> = {};
     for (const n of nodes) nodeTypeDist[n.type] = (nodeTypeDist[n.type] ?? 0) + 1;
     for (const e of edges) edgeTypeDist[e.type] = (edgeTypeDist[e.type] ?? 0) + 1;
 
+    const nodeCount = store.countNodes ? await store.countNodes() : await store.nodeCount;
+    const edgeCount = store.countEdges ? await store.countEdges() : await store.edgeCount;
+
     return {
-      nodeCount: await this.store.nodeCount,
-      edgeCount: await this.store.edgeCount,
-      godNodes: await identifyGodNodes(this.store, 5),
+      nodeCount,
+      edgeCount,
+      godNodes: await identifyGodNodes(store, 5),
       nodeTypeDistribution: nodeTypeDist,
       edgeTypeDistribution: edgeTypeDist,
     };
   }
 
+  /** Clear entire graph */
+  async clearGraph(): Promise<{ nodesRemoved: number; edgesRemoved: number }> {
+    const store = await this.ensureStore();
+    if (store.clearGraph) {
+      return await store.clearGraph();
+    } else {
+      // 兼容没有 clearGraph 方法的旧版本存储
+      const nodes = await store.getAllNodes();
+      const edges = await store.getAllEdges();
+      for (const node of nodes) {
+        await store.removeNode(node.id);
+      }
+      return { nodesRemoved: nodes.length, edgesRemoved: edges.length };
+    }
+  }
+
   /** Sync all LTM entries into graph */
   async syncFromLTM(ltmEntries: Array<{ id: string; key: string; value: unknown; tags: string[] }>): Promise<{ added: number }> {
+    const store = await this.ensureStore();
     let added = 0;
     for (const entry of ltmEntries) {
-      const existingNode = await this.store.findNodeByLabel(entry.key);
+      const existingNode = await store.findNodeByLabel(entry.key);
       if (!existingNode) {
-        await this.store.addNode({
+        await store.addNode({
           id: entry.id,
           label: entry.key,
           type: "ltm",
@@ -128,29 +244,71 @@ export class KnowledgeGraphManager {
         added++;
       }
     }
+
+    // 优化：同步后建立个人信息节点之间的关联
+    const allNodes = await store.getAllNodes();
+    const corePersonNode = allNodes.find((n: any) => n.label === "user_name");
+
+    if (corePersonNode) {
+      // 找出所有个人信息相关的节点
+      const personalNodes = allNodes.filter((n: any) => {
+        return (
+          n.id !== corePersonNode.id &&
+          (n.label.startsWith("user_") || n.tags.some((tag: string) =>
+            ["personal", "identity", "contact", "职业信息", "技术", "背景"].includes(tag)
+          ))
+        );
+      });
+
+      // 建立关联
+      for (const personalNode of personalNodes) {
+        const existingEdge = await store.getEdgesBetween(corePersonNode.id, personalNode.id);
+        if (existingEdge.length === 0) {
+          // 根据属性类型创建语义化的边
+          let edgeLabel = "has_property";
+          if (personalNode.label.startsWith("user_name")) {
+            edgeLabel = "identity";
+          } else if (personalNode.label.startsWith("user_phone") || personalNode.label.startsWith("user_email")) {
+            edgeLabel = "contact";
+          } else if (personalNode.label.startsWith("user_company") || personalNode.label.startsWith("user_job")) {
+            edgeLabel = "employment";
+          } else if (personalNode.label.startsWith("user_")) {
+            edgeLabel = "attribute";
+          } else if (personalNode.tags.includes("技术") || personalNode.tags.includes("背景")) {
+            edgeLabel = "background";
+          } else if (personalNode.tags.includes("职业信息")) {
+            edgeLabel = "professional";
+          }
+
+          await store.addEdge(corePersonNode.id, personalNode.id, "PERSONAL", edgeLabel);
+        }
+      }
+    }
+
     // Create TEMPORAL edges based on tag overlap - 优化版本
     // 使用倒排索引避免 O(n²) 复杂度
-    const allNodes = await this.store.getAllNodes();
     if (allNodes.length < 2) return { added };
-    
+
     // 构建 tag -> nodeIds 倒排索引
     const tagIndex = new Map<string, string[]>();
     for (const node of allNodes) {
       for (const tag of node.tags) {
-        const normalizedTag = tag.toLowerCase();
+        // 确保 tag 是字符串类型
+        const tagStr = typeof tag === 'string' ? tag : String(tag || '');
+        const normalizedTag = tagStr.toLowerCase();
         if (!tagIndex.has(normalizedTag)) {
           tagIndex.set(normalizedTag, []);
         }
         tagIndex.get(normalizedTag)!.push(node.id);
       }
     }
-    
+
     // 收集需要创建的边（去重）
     const edgesToCreate = new Map<string, { source: string; target: string; sharedTags: string[] }>();
     for (const [tag, nodeIds] of tagIndex) {
       // 只处理有多个节点的 tag
       if (nodeIds.length < 2) continue;
-      
+
       // 为共享该 tag 的所有节点对创建边
       for (let i = 0; i < nodeIds.length; i++) {
         for (let j = i + 1; j < nodeIds.length; j++) {
@@ -158,12 +316,12 @@ export class KnowledgeGraphManager {
           const nodeId2 = nodeIds[j];
           // 确保边 ID 一致性（小的在前）
           const edgeKey = nodeId1 < nodeId2 ? `${nodeId1}-${nodeId2}` : `${nodeId2}-${nodeId1}`;
-          
+
           if (!edgesToCreate.has(edgeKey)) {
-            edgesToCreate.set(edgeKey, { 
-              source: nodeId1, 
-              target: nodeId2, 
-              sharedTags: [tag] 
+            edgesToCreate.set(edgeKey, {
+              source: nodeId1,
+              target: nodeId2,
+              sharedTags: [tag]
             });
           } else {
             // 累积共享标签
@@ -172,19 +330,17 @@ export class KnowledgeGraphManager {
         }
       }
     }
-    
+
     // 批量添加边（跳过已存在的）
     for (const [, edgeData] of edgesToCreate) {
       // 检查是否已存在边
-      const existing = await this.store.getEdgesBetween(edgeData.source, edgeData.target);
+      const existing = await store.getEdgesBetween(edgeData.source, edgeData.target);
       if (existing.length === 0) {
         const uniqueTags = [...new Set(edgeData.sharedTags)];
-        await this.store.addEdge(edgeData.source, edgeData.target, "TEMPORAL", `shared_tags:${uniqueTags.join(",")}`);
+        await store.addEdge(edgeData.source, edgeData.target, "TEMPORAL", `shared_tags:${uniqueTags.join(",")}`);
       }
     }
-    
+
     return { added };
   }
-
-  getStore(): GraphStore { return this.store; }
 }

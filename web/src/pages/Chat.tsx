@@ -260,6 +260,10 @@ export default function ChatPage() {
   const pptxThemesFetched = useRef(false);
   // 移动端侧边栏开关
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // 显示 "正在思考" 指示器的状态
+  const [showThinking, setShowThinking] = useState(false);
+  // 定时器 Ref
+  const thinkingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const setActiveConvId = (id: string | null) => {
     activeConvIdRef.current = id;
@@ -292,6 +296,36 @@ export default function ChatPage() {
       }
     }
   }, [messages]);
+
+  // 管理"正在思考"指示器的显示逻辑
+  useEffect(() => {
+    if (loading) {
+      // 正在加载中：清除之前的定时器，延迟 2 秒后显示"正在思考"
+      if (thinkingTimerRef.current) {
+        clearTimeout(thinkingTimerRef.current);
+      }
+      setShowThinking(false);
+      thinkingTimerRef.current = setTimeout(() => {
+        setShowThinking(true);
+      }, 2000);
+    } else {
+      // 加载结束：清除定时器，隐藏指示器
+      if (thinkingTimerRef.current) {
+        clearTimeout(thinkingTimerRef.current);
+        thinkingTimerRef.current = null;
+      }
+      setShowThinking(false);
+    }
+  }, [messages, loading]);
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (thinkingTimerRef.current) {
+        clearTimeout(thinkingTimerRef.current);
+      }
+    };
+  }, []);
 
   // 自动加载 md 文件预览内容
   useEffect(() => {
@@ -1601,6 +1635,35 @@ export default function ChatPage() {
             );
           })}
           <div ref={messagesEndRef} />
+
+          {/* 对话过程中的"正在思考"指示器 */}
+          {showThinking && (
+            <div style={{
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              marginLeft: 46,
+              padding: '12px 0',
+              animation: 'fade-in-up 0.3s ease-out'
+            }}>
+              <div style={{
+                display: "flex",
+                gap: 4,
+                padding: "10px 16px",
+                borderRadius: 16,
+                background: "rgba(139, 92, 246, 0.06)"
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#8B5CF6", opacity: 0.6, animation: "pulse-border 1.2s infinite" }} />
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#A78BFA", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.2s" }} />
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#C4B5FD", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.4s" }} />
+              </div>
+              <div style={{
+                fontSize: 12,
+                color: "#64748B",
+                fontStyle: "italic"
+              }}>正在思考/等待确认...</div>
+            </div>
+          )}
         </div>
 
         {/* Sender with Attachments Header */}

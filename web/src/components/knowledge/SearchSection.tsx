@@ -62,7 +62,7 @@ export default function SearchSection({
   const t = useI18nStore((s) => s.t);
 
   return (
-    <Card size="small" title={t("kb_search")}>
+    <Card size="small" title={t("kb_search")} className="glass-card">
       <Input.Search
         placeholder={t("kb_search_hint")}
         enterButton={<SearchOutlined />}
@@ -78,7 +78,7 @@ export default function SearchSection({
             const hasBbox = r.bboxes && r.bboxes.length > 0 && r.docId;
             const hasPage = r.pageNumber != null && r.docId;
             return (
-              <Card key={i} size="small" style={{ marginBottom: 8 }}>
+              <Card key={i} size="small" className="glass-card" style={{ marginBottom: 8 }}>
                 <Flex justify="space-between" align="center">
                   <Text
                     strong

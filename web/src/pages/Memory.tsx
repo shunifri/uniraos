@@ -71,6 +71,10 @@ export default function MemoryPage() {
 
   // Profile 面板状态
   const [profile, setProfile] = useState<any>(null);
+  const [ltmPageSize, setLtmPageSize] = useState(10);
+  const [profileQuery, setProfileQuery] = useState("");
+  const [profileQueryResult, setProfileQueryResult] = useState<any>(null);
+  const [profileQuerying, setProfileQuerying] = useState(false);
 
   // Forgotten 面板状态
   const [forgottenLog, setForgottenLog] = useState<any[]>([]);
@@ -476,11 +480,6 @@ export default function MemoryPage() {
       )}
     </Flex>
   );
-
-  const [ltmPageSize, setLtmPageSize] = useState(10);
-  const [profileQuery, setProfileQuery] = useState("");
-  const [profileQueryResult, setProfileQueryResult] = useState<any>(null);
-  const [profileQuerying, setProfileQuerying] = useState(false);
 
   const handleProfileQuery = async () => {
     if (!profileQuery.trim()) return;

@@ -305,6 +305,49 @@ export async function authenticate(username: string, password: string): Promise<
 
 // ===== 角色管理 =====
 
+export async function getUsersByRole(roleId: string): Promise<User[]> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    return await adapter.query(`
+      SELECT u.*
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      WHERE ur.role_id = ? AND u.status != 'deleted'
+    `, [roleId]);
+  } else {
+    return getDb().prepare(`
+      SELECT u.*
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      WHERE ur.role_id = ? AND u.status != 'deleted'
+    `).all(roleId) as any[];
+  }
+}
+
+export async function getUsersByDepartment(departmentId: string): Promise<User[]> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    return await adapter.query(`
+      SELECT * FROM users WHERE department_id = ? AND status != 'deleted'
+    `, [departmentId]);
+  } else {
+    return getDb().prepare(`
+      SELECT * FROM users WHERE department_id = ? AND status != 'deleted'
+    `).all(departmentId) as any[];
+  }
+}
+
+export async function getUserDepartment(userId: string): Promise<{ id: string; name: string; path: string } | null> {
+  const user = await getUserById(userId);
+  if (!user?.departmentId) return null;
+
+  const { getDepartmentById } = await import('./department-repository.js');
+  const dept = await getDepartmentById(user.departmentId);
+  if (!dept) return null;
+
+  return { id: dept.id, name: dept.name, path: dept.path };
+}
+
 export async function getUserRoles(userId: string): Promise<Array<{ id: string; name: string; description: string }>> {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();

@@ -17,22 +17,22 @@ export default function KBStats({ stats }: KBStatsProps) {
   return (
     <Row gutter={16}>
       <Col span={6}>
-        <Card size="small">
+        <Card size="small" className="glass-card">
           <Statistic title={t("kb_doc_count")} value={stats.documentCount ?? 0} prefix={<FileTextOutlined />} />
         </Card>
       </Col>
       <Col span={6}>
-        <Card size="small">
+        <Card size="small" className="glass-card">
           <Statistic title={t("kb_chunk_count")} value={stats.chunkCount ?? 0} prefix={<NumberOutlined />} />
         </Card>
       </Col>
       <Col span={6}>
-        <Card size="small">
+        <Card size="small" className="glass-card">
           <Statistic title="Tokens" value={stats.totalTokens ?? 0} prefix={<DatabaseOutlined />} />
         </Card>
       </Col>
       <Col span={6}>
-        <Card size="small">
+        <Card size="small" className="glass-card">
           <Statistic
             title={t("kb_vector_status")}
             value={stats.embeddingProvider && stats.embeddingProvider !== "local" ? stats.embeddingProvider : (t("kb_vector_none") as any)}

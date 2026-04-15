@@ -1,17 +1,20 @@
 import { Router } from "express";
 import { createReadStream } from "fs";
-import { requireAuth, requirePermission } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
 import type { RouteDependencies } from "./index.js";
 import type { ParsingUpdate } from "../services/parsing-queue.js";
 import { getParsingQueue } from "../services/parsing-queue.js";
 
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
+
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
   const router = Router();
 
-  router.get("/knowledge/documents", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
+  router.get("/knowledge/documents", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
       const result = await engine.execute("kb_list", {
         query: req.query.q || undefined,
@@ -25,7 +28,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/ingest", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
+  router.post("/knowledge/ingest", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
     try {
       const { name, content, path, tags } = req.body;
       if (!name || (!content && !path)) {
@@ -117,7 +120,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/search", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
+  router.get("/knowledge/search", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
       const result = await engine.execute("kb_search", {
         query: String(req.query.q || ""),
@@ -131,7 +134,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/documents/:docId/content", requireAuth, requirePermission("knowledge.read"), (req, res) => {
+  router.get("/knowledge/documents/:docId/content", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
     try {
       const kb = getKnowledgeBase(req.user!.id);
       const content = kb.getDocumentContent(req.params.docId as string);
@@ -145,7 +148,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/documents/:docId/pages", requireAuth, requirePermission("knowledge.read"), (req, res) => {
+  router.get("/knowledge/documents/:docId/pages", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
     const page = req.query.page ? String(req.query.page) : undefined;
@@ -167,17 +170,17 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/knowledge/documents/:docId/layouts — Get document layouts and media items
-  router.get("/knowledge/documents/:docId/layouts", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
+  router.get("/knowledge/documents/:docId/layouts", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
       const owner = req.user!.id;
       const docId = String(req.params.docId);
       const kb = getKnowledgeBase(owner);
-      
+
       // Get document data using existing KB methods
       const layouts = await kb.getLayouts(docId);
       const segments = await kb.getSegments(docId);
       const parsingStatus = await kb.getParsingStatus(docId);
-      
+
       // Check if document exists (getParsingStatus returns null if not found)
       if (!parsingStatus) {
         res.status(404).json({ success: false, error: "Document not found" });
@@ -189,8 +192,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const mediaType = parsingStatus.mediaType || 'document';
       const pageCount = layouts.length || 0;
 
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         layouts,
         mediaItems,
         mediaType,
@@ -201,7 +204,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.delete("/knowledge/documents/:docId", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
+  router.delete("/knowledge/documents/:docId", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
     try {
       const result = await engine.execute("kb_delete", { docId: req.params.docId, owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -210,7 +213,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/knowledge/stats", requireAuth, requirePermission("knowledge.read"), async (req, res) => {
+  router.get("/knowledge/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
       const result = await engine.execute("kb_stats", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -219,7 +222,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/rebuild", requireAuth, requirePermission("knowledge.manage"), async (req, res) => {
+  router.post("/knowledge/rebuild", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_MANAGE), async (req, res) => {
     try {
       const result = await engine.execute("kb_rebuild", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
@@ -228,7 +231,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/knowledge/share", requireAuth, requirePermission("knowledge.write"), async (req, res) => {
+  router.post("/knowledge/share", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
     try {
       const { docId, shared } = req.body;
       const result = await engine.execute("kb_share", { docId, shared: !!shared, owner: req.user!.id });
@@ -239,7 +242,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   });
 
   // SSE: 文档解析进度流
-  router.get("/knowledge/documents/:docId/stream", requireAuth, requirePermission("knowledge.read"), (req, res) => {
+  router.get("/knowledge/documents/:docId/stream", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
 
@@ -268,7 +271,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     // 订阅进度更新
     const unsubscribe = queue.subscribe(docId, (update: ParsingUpdate) => {
       res.write(`data: ${JSON.stringify(update)}\n\n`);
-      
+
       // 如果任务完成或失败，关闭连接并取消订阅
       if (update.status === 'success' || update.status === 'failed') {
         unsubscribe(); // 立即取消订阅防止内存泄漏

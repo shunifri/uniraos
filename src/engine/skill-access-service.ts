@@ -10,6 +10,9 @@
  * - 对话开始时计算可用 Skill 列表
  * - 支持动态刷新（自建 Skill、被分享 Skill 后更新）
  * - 订阅 Skill 变更事件，自动更新
+ *
+ * @deprecated Use src/permissions/services/permission-service.ts instead
+ * This module will be removed in a future version.
  */
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";

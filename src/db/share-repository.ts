@@ -4,14 +4,14 @@
  */
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { isMySQL } from "./database.js";
+import { getDb, isMySQL } from "./database.js";
 
 export interface ShareRule {
   id: string;
   resourceType: "skill" | "kb_document" | "file";
   resourceId: string;
   ownerId: string;
-  scope: "all" | "role" | "department" | "user";
+  scope: "all" | "role" | "department" | "user" | "none";
   targetId?: string;
   permission: "read" | "execute" | "write";
   createdAt: number;
@@ -48,6 +48,11 @@ async function getMySQLAdapter() {
 
 export class ShareRepository {
   constructor(private sqliteDb?: Database.Database) {}
+
+  /** 获取共享规则仓库实例 */
+  static getInstance(): ShareRepository {
+    return new ShareRepository(isMySQL() ? undefined : getDb());
+  }
 
   /** 创建共享规则 */
   async create(rule: Omit<ShareRule, "id" | "createdAt">): Promise<ShareRule> {

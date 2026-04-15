@@ -18,6 +18,7 @@ import type { SkillDefinition, ExecutionContext } from "../types/index.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { LLMProvider } from "../llm/types.js";
 import { EnhancedLTMBackend } from "./enhanced/enhanced-ltm-backend.js";
+import type { EnhancedLTMEntry } from "./enhanced/version-chain.js";
 import * as VersionChainModule from "./enhanced/version-chain.js";
 import { ForgettingManager } from "./enhanced/forgetting-manager.js";
 import { getCurrentUserId } from "../user/request-context.js";
@@ -129,7 +130,8 @@ export function createMemorySkills(
       autonomy: Autonomy.MANUAL,
       description: "存储到长期记忆（持久化）。参数: key(string), value(any), tags?(string[]), summary?(string), relation?(string), expiresInSec?(number)",
       handler: async (params, context) => {
-        const { stm, ltm } = getSession(sessionManager);
+        const session = getSession(sessionManager);
+        const { stm, ltm, graphManager } = session;
         const { key, value, tags, summary, relation, expiresInSec } = params as {
           key: string;
           value: unknown;
@@ -146,6 +148,21 @@ export function createMemorySkills(
         if (expiresInSec) storeOptions.expiresInSec = expiresInSec;
 
         const id = await ltm.store(key, value, storeOptions);
+
+        // 同步到知识图谱
+        if (graphManager) {
+          try {
+            await graphManager.onFactStored({
+              id,
+              key,
+              value,
+              tags: tags || [],
+              relation,
+            });
+          } catch (err) {
+            console.warn("[memory-skills] Failed to sync to knowledge graph:", err);
+          }
+        }
 
         // 递归自指：通过 engine 调用 stm_store 同步到短期记忆
         if (engineRef && canRecurse(context, "stm_store")) {
@@ -185,7 +202,7 @@ export function createMemorySkills(
         const cacheKey = `_search_cache:${query}`;
         if (engineRef && canRecurse(context, "stm_retrieve")) {
           try {
-            const cached = await engineRef.execute("stm_retrieve", { key: cacheKey });
+            const cached = await engineRef.execute("stm_retrieve", { key: cacheKey }) as any;
             if (cached?.data?.found && cached.data.value) {
               return {
                 success: true,
@@ -244,7 +261,7 @@ export function createMemorySkills(
 
         // 对于 Enhanced 后端，优先使用软删除（除非明确指定 hard=true）
         if (isEnhancedBackend(ltm) && !hard) {
-          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as EnhancedLTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {
@@ -320,7 +337,7 @@ export function createMemorySkills(
         let value: unknown;
         if (engineRef && canRecurse(context, "stm_retrieve")) {
           try {
-            const result = await engineRef.execute("stm_retrieve", { key });
+            const result = await engineRef.execute("stm_retrieve", { key }) as any;
             value = result?.data?.value;
           } catch {
             value = stm.get(key);
@@ -336,7 +353,7 @@ export function createMemorySkills(
         // 递归自指：通过 engine 调用 ltm_store 存储
         if (engineRef && canRecurse(context, "ltm_store")) {
           try {
-            const result = await engineRef.execute("ltm_store", { key, value, tags, summary: `consolidated from STM` });
+            const result = await engineRef.execute("ltm_store", { key, value, tags, summary: `consolidated from STM` }) as any;
             return { success: true, data: { id: result?.data?.id, key, consolidated: true, recursive: true } };
           } catch {
             // 回退到直接调用
@@ -364,7 +381,7 @@ export function createMemorySkills(
 
         if (engineRef && canRecurse(context, "ltm_search")) {
           try {
-            const result = await engineRef.execute("ltm_search", { query: target, limit: 3 });
+            const result = await engineRef.execute("ltm_search", { query: target, limit: 3 }) as any;
             if (result?.data?.results) {
               memories = result.data.results;
             }
@@ -413,10 +430,18 @@ export function createMemorySkills(
         // 对于 Enhanced 后端，添加额外的统计信息
         const extraStats: any = {};
         if (isEnhancedBackend(ltm)) {
-          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
-          const versionChains = new Set(allEntries.map((e) => e.rootId).filter(Boolean)).size;
-          const forgottenCount = allEntries.filter((e) => e.forgotten).length;
-          const expiredPending = allEntries.filter((e) => e.expiresAt && e.expiresAt <= Date.now() && !e.forgotten).length;
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as unknown as {
+            rootId?: string;
+            forgotten?: boolean;
+            expiresAt?: number;
+          }[];
+          const versionChains = new Set(
+            allEntries.map((e) => e.rootId).filter(Boolean)
+          ).size;
+          const forgottenCount = allEntries.filter((e) => !!e.forgotten).length;
+          const expiredPending = allEntries.filter(
+            (e) => e.expiresAt && e.expiresAt <= Date.now() && !e.forgotten
+          ).length;
 
           extraStats.version_chains = versionChains;
           extraStats.forgotten_count = forgottenCount;
@@ -673,7 +698,7 @@ export function createMemorySkills(
         const { key, includeForgotten } = params as { key: string; includeForgotten?: boolean };
         if (!key) return { success: false, error: new Error("key is required") };
 
-        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as VersionChainModule.VersionChainEntry[];
+        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as EnhancedLTMEntry[];
         const versions = VersionChainModule.getHistory(key, allEntries, includeForgotten);
 
         return {
@@ -760,7 +785,7 @@ export function createMemorySkills(
 
         const { since, limit = 50, reason } = params as { since?: number; limit?: number; reason?: string };
 
-        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
+        const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as EnhancedLTMEntry[];
         const fm = new ForgettingManager();
         const log = fm.getForgottenLog(allEntries, { since, limit });
 
@@ -923,7 +948,7 @@ export function createMemorySkills(
 
         if (isEnhancedBackend(ltm)) {
           // Enhanced 后端：调用 ForgettingManager 的 forget 方法
-          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as EnhancedLTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {
@@ -981,7 +1006,7 @@ export function createMemorySkills(
 
         if (isEnhancedBackend(ltm)) {
           // Enhanced 后端：调用 ForgettingManager 的 setExpiration 方法
-          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as LTMEntry[];
+          const allEntries = (await ltm.list({ limit: DEFAULT_LTM_LIST_LIMIT })) as EnhancedLTMEntry[];
           const fm = new ForgettingManager();
 
           if (id) {

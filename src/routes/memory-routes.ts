@@ -1,29 +1,32 @@
 import { Router } from "express";
-import { requireAuth, requirePermission } from "../db/auth-middleware.js";
+import { permissions } from "../permissions/index.js";
 import type { RouteDependencies } from "./index.js";
+
+// 创建权限中间件实例
+const pm = permissions.createMiddleware(permissions.service);
 
 export function createMemoryRoutes(deps: RouteDependencies): Router {
   const { engine, sessionManager } = deps;
   const router = Router();
 
-  router.get("/memory/stm", requireAuth, requirePermission("memory.read"), (req, res) => {
+  router.get("/memory/stm", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), (req, res) => {
     const { stm } = sessionManager.getOrCreate(req.user!.id);
     res.json({ entries: stm.list(), size: stm.size });
   });
 
-  router.get("/memory/ltm", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/ltm", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const stats = await ltm.stats();
     // 返回全部条目（画像图谱等需要完整数据）
     res.json({ entries: await ltm.list({ limit: 10000 }), ...stats });
   });
 
-  router.get("/memory/archives", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/archives", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     res.json({ archives: await ltm.getArchiveManifests() });
   });
 
-  router.get("/memory/stats", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     try {
       const result = await engine.execute("memory_stats", {});
 
@@ -38,7 +41,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Scheduled archive management
-  router.get("/memory/schedule", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/schedule", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const stats = await ltm.stats();
     res.json({
@@ -47,7 +50,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     });
   });
 
-  router.post("/memory/schedule", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.post("/memory/schedule", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const { action, intervalMinutes } = req.body as {
       action: "start" | "stop";
@@ -71,7 +74,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Manual archive trigger
-  router.post("/memory/archive", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.post("/memory/archive", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const reason = (req.body?.reason as string) || "manual_ui";
     const result = await ltm.archive(reason);
@@ -84,7 +87,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Restore from archive
-  router.post("/memory/restore", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.post("/memory/restore", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { ltm } = sessionManager.getOrCreate(req.user!.id);
     const { archiveId, keys } = req.body as { archiveId: string; keys?: string[] };
     if (!archiveId) {
@@ -114,11 +117,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
     }
   };
-  router.get("/memory/profile/:userId", requireAuth, requirePermission("memory.read"), profileHandler);
-  router.get("/memory/profile", requireAuth, requirePermission("memory.read"), profileHandler);
+  router.get("/memory/profile/:userId", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), profileHandler);
+  router.get("/memory/profile", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), profileHandler);
 
   // Version history
-  router.get("/memory/versions/:key", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/versions/:key", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { key } = req.params;
     const { includeForgotten } = req.query as { includeForgotten?: string };
 
@@ -139,7 +142,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Forgotten log
-  router.get("/memory/forgotten", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/forgotten", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { since, limit, reason } = req.query as { since?: string; limit?: string; reason?: string };
 
     try {
@@ -160,7 +163,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Check conflicts
-  router.post("/memory/check-conflicts", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.post("/memory/check-conflicts", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { key, value, topN } = req.body as { key: string; value: unknown; topN?: number };
 
     if (!key) {
@@ -190,7 +193,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Extract facts
-  router.post("/memory/extract-facts", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.post("/memory/extract-facts", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { text, entityContext, tags } = req.body as { text: string; entityContext?: string; tags?: string[] };
 
     if (!text) {
@@ -216,7 +219,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Store memory
-  router.post("/memory/store", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.post("/memory/store", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { key, value, tags, summary, relation, expiresInSec } = req.body as {
       key: string;
       value: unknown;
@@ -252,7 +255,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Search memory
-  router.get("/memory/search", requireAuth, requirePermission("memory.read"), async (req, res) => {
+  router.get("/memory/search", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     const { query, limit, tags, rerank, filters, includeForgotten } = req.query as {
       query?: string;
       limit?: string;
@@ -299,7 +302,7 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   });
 
   // Delete memory
-  router.delete("/memory/:id", requireAuth, requirePermission("memory.write"), async (req, res) => {
+  router.delete("/memory/:id", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
     const { id } = req.params;
     const { reason, hard } = req.body as { reason?: string; hard?: boolean };
 

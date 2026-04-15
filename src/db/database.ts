@@ -503,7 +503,26 @@ function runMigrations(db: Database.Database): void {
         insertAnonSkill.run(`skill:${skill}.execute`);
       }
     },
-    // v8: 新增权限资源类型 - knowledge, files, conversation, system
+    // v8: 自定义 Skill 持久化表
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS custom_skills (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT,
+          version TEXT NOT NULL DEFAULT '1.0.0',
+          definition TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          is_system INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_custom_skills_owner ON custom_skills(owner_id);
+        CREATE INDEX idx_custom_skills_name ON custom_skills(name);
+      `);
+    },
+    // v9: 新增权限资源类型 - knowledge, files, conversation, system
     () => {
       // 1. 新增资源
       const newResources = [

@@ -41,9 +41,35 @@ export function createUserConfirmSkill() {
         type: { type: "string", description: "交互类型", enum: ["selection", "form", "approval"] },
         title: { type: "string", description: "卡片标题" },
         description: { type: "string", description: "补充说明" },
-        options: { type: "array", description: "选项列表 [{id, label, description?}]" },
+        options: {
+          type: "array",
+          description: "选项列表 [{id, label, description?}]",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "选项ID" },
+              label: { type: "string", description: "选项文字" },
+              description: { type: "string", description: "选项详细说明" }
+            }
+          }
+        },
         multiSelect: { type: "boolean", description: "是否多选" },
-        fields: { type: "array", description: "表单字段 [{key, label, type, required?, options?, placeholder?}]" },
+        fields: {
+          type: "array",
+          description: "表单字段 [{key, label, type, required?, options?, placeholder?}]",
+          items: {
+            type: "object",
+            properties: {
+              key: { type: "string", description: "字段名" },
+              label: { type: "string", description: "字段标签" },
+              type: { type: "string", description: "字段类型", enum: ["text", "number", "select", "radio", "checkbox", "textarea", "date"] },
+              required: { type: "boolean", description: "是否必填" },
+              options: { type: "array", description: "下拉/单选选项 [{id, label}]", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } } } },
+              placeholder: { type: "string", description: "占位文字" },
+              defaultValue: { type: "string", description: "默认值" }
+            }
+          }
+        },
         confirmText: { type: "string", description: "确认按钮文字" },
         cancelText: { type: "string", description: "取消按钮文字" },
       },

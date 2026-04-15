@@ -74,7 +74,8 @@ export class UserSessionManager {
       ltm: this.createLTMBackend(userId),
       agentLoop: null,
       lastActiveAt: Date.now(),
-      graphManager: new KnowledgeGraphManager(userId),
+      // 根据环境变量配置创建对应的知识图谱后端
+      graphManager: new KnowledgeGraphManager(userId, this.llmProvider ?? undefined, process.env.GRAPH_STORE_BACKEND || "neo4j"),
     };
 
     this.sessions.set(userId, session);
