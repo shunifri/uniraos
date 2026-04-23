@@ -6,6 +6,7 @@ import {
   createFormInstance, getFormInstance, updateFormInstance
 } from '../services/form-service.js';
 import { resolveDataSource } from '../services/data-source-service.js';
+import { testConnection, testConnectionConfig } from '../services/database-connector.js';
 
 const router = Router();
 
@@ -109,6 +110,24 @@ router.post('/form/instances/:id/submit', requireAuth, (req, res) => {
 router.post('/form/data-source/resolve', requireAuth, async (req, res) => {
   try {
     const result = await resolveDataSource(req.body);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Data Source Connection Test
+router.post('/form/data-source/test-connection', requireAuth, async (req, res) => {
+  try {
+    const { connectionId, config } = req.body;
+    let result;
+    if (connectionId) {
+      result = await testConnection(connectionId);
+    } else if (config) {
+      result = await testConnectionConfig(config);
+    } else {
+      return res.status(400).json({ success: false, error: 'connectionId or config required' });
+    }
     res.json({ success: true, data: result });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
