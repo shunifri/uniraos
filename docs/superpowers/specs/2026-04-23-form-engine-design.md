@@ -157,19 +157,30 @@ interface RaosFieldSchema {
   description?: string;
   default?: any;
 
-  // 验证规则
+  // 验证规则（字段级 required 仅作为快捷标记，根级 required 数组为权威定义）
+  required?: boolean;        // 快捷标记，最终生效以根级 required 数组为准
   minLength?: number;
   maxLength?: number;
   minimum?: number;
   maximum?: number;
   pattern?: string;
   format?: 'email' | 'url' | 'date' | 'datetime' | 'time' | 'mobile' | 'idCard';
-  errorMessage?: string | Record<string, string>;
+  errorMessage?: string | {
+    required?: string;
+    minLength?: string;
+    maxLength?: string;
+    minimum?: string;
+    maximum?: string;
+    pattern?: string;
+    format?: string;
+    custom?: string;
+    async?: string;
+  };
 
   // UI 配置（ui: 前缀）
   'ui:widget'?: string;
   'ui:props'?: Record<string, any>;
-  'ui:colSpan'?: number;
+  'ui:colSpan'?: number;          // 默认值 24（占满整行）
   'ui:placeholder'?: string;
   'ui:help'?: string;
   'ui:hidden'?: boolean | string;
@@ -178,6 +189,12 @@ interface RaosFieldSchema {
 
   // 联动规则
   'x-linkage'?: LinkageRule[];
+
+  // ── 权限控制（字段级） ──
+  'x-permission'?: {
+    read?: string[];    // 可读取该字段的角色列表，空数组表示所有人
+    write?: string[];   // 可编辑该字段的角色列表，空数组表示所有人
+  };
 
   // 数据源
   'x-dataSource'?: DataSourceConfig;
@@ -213,13 +230,21 @@ interface FormAction {
   onClick?: string;
 }
 
+// ============ 表达式上下文 ============
+// 表达式中可访问的上下文变量：
+// - {{fieldName}}        — 表单字段值（支持嵌套如 {{user.name}}）
+// - {{user.xxx}}         — 当前登录用户属性（id, name, email, deptId, role, directManager, deptManager）
+// - {{workflowVar.xxx}}  — 流程变量（仅在审批场景可用）
+// - expr:...             — JavaScript 表达式前缀，在受控沙箱中执行
+
 // ============ 联动规则 ============
 interface LinkageRule {
   type: 'visible' | 'hidden' | 'disabled' | 'enabled'
-      | 'setValue' | 'setOptions' | 'validate' | 'required';
-  when: string;
-  then?: any;
-  else?: any;
+      | 'readonly' | 'editable' | 'required' | 'optional'
+      | 'setValue' | 'clearValue' | 'setOptions' | 'validate';
+  when: string;        // 条件表达式
+  then?: any;          // 条件为真时的值/行为
+  else?: any;          // 条件为假时的值/行为（可选）
 }
 ```
 
@@ -403,7 +428,8 @@ formEngine.registerComponent('customWidget', CustomWidget);
 
 ```typescript
 interface DataSourceConfig {
-  type: 'static' | 'remote' | 'cascade' | 'database' | 'workflowVar' | 'expression';
+  type: 'static' | 'remote' | 'database' | 'workflowVar' | 'expression';
+  // 注意：cascade 不是独立的 type，而是通过 cascade 配置项启用在任何数据源上
 
   // static: 硬编码选项
   options?: Array<{ label: string; value: any; children?: any[] }>;
@@ -603,6 +629,20 @@ POST /api/form/data-source/resolve
 }
 ```
 
+### 5.4 数据筛选器表达式
+
+`DataFilter.value` 支持完整的表达式语法（与 `x-linkage.when` 一致）：
+
+```json
+{
+  "filters": [
+    { "field": "status", "operator": "eq", "value": "active" },
+    { "field": "deptId", "operator": "eq", "value": "{{department}}" },
+    { "field": "createTime", "operator": "gte", "value": "{{startDate}}", "logic": "and" }
+  ]
+}
+```
+
 ### 5.5 性能优化策略
 
 | 策略 | 实现 |
@@ -637,7 +677,7 @@ interface ValidationConfig {
   // 第3层：异步验证（后端接口）
   asyncValidator?: {
     url: string;
-    params?: Record<string, any>;
+    params?: Record<string, any>;  // 支持 {{fieldName}} / {{user.xxx}} 表达式
     message: string;
     debounce?: number;
   };
@@ -655,10 +695,10 @@ interface ValidationConfig {
 
 ### 6.2 验证执行流程
 
-1. **JSON Schema 标准验证**（同步）
-2. **联动依赖验证**：被联动隐藏且非强制的字段跳过 required 验证
-3. **自定义表达式验证**（同步）
-4. **异步验证**（带防抖，仅在前三层通过后执行）
+1. **JSON Schema 标准验证**（同步，前端执行）
+2. **联动依赖验证**：被联动隐藏的字段跳过所有验证；根级 `required` 数组中字段若被联动设置为 `optional` 则跳过 required 验证
+3. **自定义表达式验证**（同步，前端受控沙箱执行，`expr:` 表达式仅可访问 Math/String/Date/Array 等标准对象，禁止访问 DOM/Window/Document）
+4. **异步验证**（带防抖，仅在前三层通过后执行，后端 API 验证）
 
 ### 6.3 验证示例
 
@@ -714,9 +754,17 @@ interface LinkageRule {
 
 ### 7.2 表达式语法
 
-- `{{fieldName}}` — 引用表单字段值
-- `expr:...` — JavaScript 表达式前缀
-- 支持比较运算符、逻辑运算符、函数调用
+| 语法 | 示例 | 说明 |
+|------|------|------|
+| `{{fieldName}}` | `{{amount}}` | 引用表单字段值，支持嵌套如 `{{user.name}}` |
+| `{{user.xxx}}` | `{{user.deptId}}` | 引用当前登录用户属性 |
+| `{{workflowVar.xxx}}` | `{{workflowVar.applicant}}` | 引用流程变量（审批场景） |
+| `expr:...` | `expr:Math.ceil({{days}})` | JavaScript 表达式，在前端受控沙箱执行 |
+
+**表达式执行环境白名单**：
+- ✅ 允许：`Math`, `String`, `Number`, `Date`, `Array`, `Object`, `JSON`, `console`
+- ❌ 禁止：`window`, `document`, `fetch`, `XMLHttpRequest`, `eval`, `Function`, `setTimeout`, `setInterval`
+- 表达式通过 `new Function()` 在隔离作用域中执行，超时限制 100ms
 
 ### 7.3 联动示例
 
@@ -866,18 +914,22 @@ CREATE TABLE workflow_form_bindings (
   definition_key  VARCHAR(64) NOT NULL,
   node_id         VARCHAR(64) NOT NULL,
   form_id         VARCHAR(36) NOT NULL,
+  form_version    INT DEFAULT 1,           -- 绑定的表单版本，-1 表示始终使用最新版
   is_required     BOOLEAN DEFAULT true,
+  mapping_json    JSON,                    -- WorkflowFormMapping 配置
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(definition_key, node_id)
 );
 
--- ============ 表单数据与流程实例关联 ============
+-- ============ 表单数据与流程实例关联（数据快照，非引用） ============
 CREATE TABLE workflow_form_instances (
   id              VARCHAR(36) PRIMARY KEY,
   instance_id     VARCHAR(36) NOT NULL,
   task_id         VARCHAR(36),
   form_id         VARCHAR(36) NOT NULL,
-  data_json       JSON NOT NULL,
+  form_version    INT NOT NULL,            -- 提交时的表单版本号
+  schema_snapshot JSON NOT NULL,           -- 提交时的表单 Schema 快照
+  data_json       JSON NOT NULL,           -- 表单填写数据快照
   submitted_by    VARCHAR(36),
   submitted_at    DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -917,12 +969,18 @@ Workflow Instance 运行时:
 
 ### 10.2 数据映射
 
+存储在 `workflow_form_bindings.mapping_json` 字段中：
+
 ```typescript
 interface WorkflowFormMapping {
-  variableName?: string;
+  variableName?: string;                    // 表单提交后写入的流程变量名（默认 "formData"）
   autoFillMappings?: Array<{
-    variableName: string;
-    fieldPath: string;
+    variableName: string;                   // 来源流程变量名
+    fieldPath: string;                      // 目标表单字段路径
+  }>;
+  outputMappings?: Array<{
+    fieldPath: string;                      // 来源表单字段路径
+    variableName: string;                   // 目标流程变量名
   }>;
 }
 ```
@@ -960,16 +1018,17 @@ interface WorkflowFormMapping {
 
 ## 12. 实施路线图
 
-### Phase 1：核心引擎（Week 1-3）
+### Phase 1：核心引擎（Week 1-4）
 
 | 周 | 任务 |
 |----|------|
-| W1 | Schema 类型定义 + 基础渲染引擎 + 组件注册表机制 |
-| W1 | 内置基础组件（Input/TextArea/Number/Select/Radio/Checkbox/DatePicker/Switch） |
-| W2 | 表单状态管理（Zustand）+ 字段级独立更新 + 基础布局 |
-| W2 | JSON Schema 验证引擎 |
+| W1 | Schema 类型定义 + 基础渲染引擎框架 + 组件注册表机制 |
+| W2 | 内置基础组件（Input/TextArea/Number/Select/Radio/Checkbox/DatePicker/Switch） |
+| W2 | 表单状态管理（Zustand）+ 字段级独立更新 + 基础布局（vertical/grid） |
+| W3 | JSON Schema 验证引擎（required/min/max/pattern/format） |
 | W3 | 字段联动引擎（visible/disabled/required/setValue） |
-| W3 | ConfirmCard 替换为 DynamicForm，保持向后兼容 |
+| W4 | ConfirmCard 替换为 DynamicForm，保持向后兼容 |
+| W4 | 单元测试覆盖（渲染器、联动、验证各 >= 80%） |
 
 **交付物**：
 - `web/src/components/form-engine/` 渲染引擎
@@ -978,42 +1037,44 @@ interface WorkflowFormMapping {
 - `src/routes/form-routes.ts` 基础 API
 - 数据库表 `form_definitions`, `form_instances`
 
-### Phase 2：数据能力（Week 4-5）
+### Phase 2：数据能力（Week 5-6）
 
 | 周 | 任务 |
 |----|------|
-| W4 | 数据源解析服务 + HTTP remote + static 数据源 |
-| W4 | 数据库连接管理 + SQL 参数化查询执行器 |
-| W5 | 级联数据源 + 联动查询数据流 + 防抖/缓存 |
-| W5 | 后置筛选过滤器 + 业务组件（UserPicker/DeptPicker/FileUploader） |
+| W5 | 数据源解析服务 + HTTP remote + static 数据源 |
+| W5 | 数据库连接管理（复用/扩展 connections 表）+ SQL 参数化查询执行器 |
+| W6 | 级联数据源 + 联动查询数据流 + 防抖/缓存 |
+| W6 | 后置筛选过滤器 + 业务组件（UserPicker/DeptPicker/FileUploader） |
+| W6 | 文件上传存储方案（本地/OSS 可配置） |
 
 **交付物**：
 - `src/services/data-source-service.ts`
 - `src/services/database-connector.ts`
 - `POST /api/form/data-source/resolve`
 
-### Phase 3：Workflow 深度集成（Week 6）
+### Phase 3：Workflow 深度集成（Week 7-8）
 
 | 周 | 任务 |
 |----|------|
-| W6 | Workflow 节点绑定表单（`workflow_form_bindings`） |
-| W6 | 审批任务自动加载关联表单 Schema |
-| W6 | 表单数据写入 workflow_variables |
-| W6 | 审批中心前端页面（我的待办/已办/我发起的） |
+| W7 | Workflow 节点绑定表单（`workflow_form_bindings` + `mapping_json`） |
+| W7 | 审批任务自动加载关联表单 Schema + 流程变量自动填充 |
+| W8 | 表单数据写入 workflow_variables |
+| W8 | 审批中心前端页面（我的待办/已办/我发起的） |
 
 **交付物**：
 - `src/workflow/form-integration.ts`
 - `web/src/pages/Approvals/` 审批中心
 - 表单数据与流程变量双向同步
 
-### Phase 4：高级能力（Week 7-8）
+### Phase 4：高级能力（Week 9-10）
 
 | 周 | 任务 |
 |----|------|
-| W7 | 自定义组件注册机制（插件化）+ 异步验证 |
-| W7 | 子表格（TableField）+ 动态列表（ArrayField）+ 分组（GroupField） |
-| W8 | 表单数据权限（字段级读写权限） |
-| W8 | 性能优化（虚拟滚动、大数据 Select、表单草稿自动保存） |
+| W9 | 自定义组件注册机制（插件化）+ 异步验证 |
+| W9 | 子表格（TableField）+ 动态列表（ArrayField）+ 分组（GroupField） |
+| W10 | 表单数据权限（字段级读写权限 + 表单定义 ACL） |
+| W10 | 性能优化（虚拟滚动、大数据 Select、表单草稿自动保存） |
+| W10 | 国际化支持（Schema 中的 title/description/errorMessage 支持多语言键） |
 
 ### Phase 5：可视化设计器（后续迭代）
 
@@ -1036,6 +1097,7 @@ interface WorkflowFormMapping {
 | SQL 执行 | `mysql2` / `pg` / `better-sqlite3` |
 | 连接池 | `generic-pool` 或驱动原生连接池 |
 | 密码加密 | `crypto` AES-256-GCM |
+| 文件存储 | 本地存储（开发）/ 阿里云 OSS / MinIO（生产，可配置） |
 
 ---
 
@@ -1086,6 +1148,49 @@ interface WorkflowFormMapping {
 | Linkage | 字段间联动规则 |
 | Cascade | 级联数据源查询 |
 | DataSource | 字段选项数据来源 |
+| Snapshot | 表单提交时的 Schema 和数据快照，确保历史记录可正确渲染 |
+
+### C. 表单版本管理策略
+
+1. **版本创建**：表单定义每次发布（publish）时版本号 +1，草稿状态不增加版本号
+2. **版本冻结**：已发布的表单定义不可直接修改，只能克隆为新版本或创建副本
+3. **流程绑定**：`workflow_form_bindings.form_version` 控制绑定行为：
+   - `form_version = -1`：始终使用最新发布版本（默认）
+   - `form_version = N`：固定使用第 N 版本
+4. **历史兼容**：`workflow_form_instances.schema_snapshot` 保存提交时的完整 Schema，确保历史记录永远可正确渲染
+5. **数据迁移**：表单定义更新后，旧版 `form_instances` 数据保持原样，仅新提交使用新版 Schema
+
+### D. 文件上传存储方案
+
+```typescript
+interface FileUploadConfig {
+  storage: 'local' | 'oss' | 'minio';
+  // local: 存储在服务器 uploads/ 目录
+  // oss: 阿里云 OSS
+  // minio: 自建 MinIO 对象存储
+
+  // OSS / MinIO 配置
+  endpoint?: string;
+  bucket?: string;
+  accessKey?: string;       // 加密存储
+  secretKey?: string;       // 加密存储
+  region?: string;
+
+  // 上传限制
+  maxSize?: number;         // 单文件最大字节，默认 10MB
+  maxCount?: number;        // 最多上传文件数，默认 10
+  accept?: string;          // 允许的文件类型，如 ".pdf,.jpg,.png"
+
+  // 返回格式
+  returnType?: 'url' | 'id'; // 表单中存储的是 URL 还是文件 ID
+}
+```
+
+上传流程：
+1. 前端选择文件 → 调用 `POST /api/upload/prepare` 获取预签名 URL 或临时凭证
+2. 前端直传文件到存储服务（避免经过应用服务器）
+3. 存储服务返回文件 URL/ID → 前端写入表单字段
+4. 表单提交时仅提交 URL/ID，不重复上传
 
 ---
 
