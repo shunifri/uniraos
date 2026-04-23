@@ -1,4 +1,4 @@
-import type { DataSourceConfig, RaosFieldSchema } from '../types/form.js';
+import type { DataSourceConfig, DataFilter, RaosFieldSchema } from '../types/form.js';
 
 export interface ResolveDataSourceRequest {
   fieldSchema: RaosFieldSchema;
@@ -68,7 +68,7 @@ export async function resolveDataSource(
           dbConfig.timeout || 5000
         );
 
-        const options = rows.map((row: any) => ({
+        let options = rows.map((row: any) => ({
           label: row[dbConfig.labelField],
           value: row[dbConfig.valueField],
           extra: dbConfig.extraFields?.reduce((acc: any, field: string) => {
@@ -76,6 +76,10 @@ export async function resolveDataSource(
             return acc;
           }, {}),
         }));
+
+        if (dataSource.filters) {
+          options = applyFilters(options, dataSource.filters, request.formData);
+        }
 
         return {
           options,
@@ -88,6 +92,71 @@ export async function resolveDataSource(
     }
     default:
       return { options: [] };
+  }
+}
+
+export function applyFilters(
+  options: DataSourceOption[],
+  filters: DataFilter[],
+  formData: Record<string, any>
+): DataSourceOption[] {
+  if (!filters || filters.length === 0) return options;
+
+  return options.filter((option) => {
+    let result = true;
+
+    for (let i = 0; i < filters.length; i++) {
+      const filter = filters[i];
+      const fieldValue = option.extra?.[filter.field] ?? option[filter.field as keyof DataSourceOption];
+
+      // 解析 value 中的 {{fieldName}} 表达式
+      const filterValue = resolveFilterValue(filter.value, formData);
+
+      const match = evaluateFilter(fieldValue, filter.operator, filterValue);
+
+      if (i === 0) {
+        result = match;
+      } else {
+        const logic = filter.logic || 'and';
+        if (logic === 'and') {
+          result = result && match;
+        } else {
+          result = result || match;
+        }
+      }
+    }
+
+    return result;
+  });
+}
+
+function resolveFilterValue(value: any, formData: Record<string, any>): any {
+  if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
+    const fieldName = value.slice(2, -2);
+    return formData[fieldName];
+  }
+  return value;
+}
+
+function evaluateFilter(fieldValue: any, operator: string, filterValue: any): boolean {
+  switch (operator) {
+    case 'eq': return fieldValue == filterValue;
+    case 'ne': return fieldValue != filterValue;
+    case 'gt': return fieldValue > filterValue;
+    case 'gte': return fieldValue >= filterValue;
+    case 'lt': return fieldValue < filterValue;
+    case 'lte': return fieldValue <= filterValue;
+    case 'contains': return String(fieldValue).includes(String(filterValue));
+    case 'startsWith': return String(fieldValue).startsWith(String(filterValue));
+    case 'endsWith': return String(fieldValue).endsWith(String(filterValue));
+    case 'in': return Array.isArray(filterValue) && filterValue.includes(fieldValue);
+    case 'notIn': return Array.isArray(filterValue) && !filterValue.includes(fieldValue);
+    case 'between':
+      return Array.isArray(filterValue) && filterValue.length === 2
+        && fieldValue >= filterValue[0] && fieldValue <= filterValue[1];
+    case 'isNull': return fieldValue === null || fieldValue === undefined;
+    case 'isNotNull': return fieldValue !== null && fieldValue !== undefined;
+    default: return true;
   }
 }
 
@@ -104,14 +173,20 @@ function resolveStatic(
     filtered = options.filter((opt) => opt.label.toLowerCase().includes(keyword));
   }
 
+  let result = filtered.map((opt) => ({
+    label: opt.label,
+    value: opt.value,
+    extra: opt.extra,
+    disabled: opt.disabled,
+  }));
+
+  if (config.filters) {
+    result = applyFilters(result, config.filters, request.formData);
+  }
+
   return {
-    options: filtered.map((opt) => ({
-      label: opt.label,
-      value: opt.value,
-      extra: opt.extra,
-      disabled: opt.disabled,
-    })),
-    total: filtered.length,
+    options: result,
+    total: result.length,
   };
 }
 
@@ -188,14 +263,20 @@ async function resolveRemote(
       return { options: [] };
     }
 
+    let result = options.map((opt) => ({
+      label: opt.label || opt.name || opt.title || String(opt.value ?? opt.id ?? opt.key ?? ''),
+      value: opt.value ?? opt.id ?? opt.key,
+      extra: opt.extra,
+      disabled: opt.disabled,
+    }));
+
+    if (config.filters) {
+      result = applyFilters(result, config.filters, request.formData);
+    }
+
     return {
-      options: options.map((opt) => ({
-        label: opt.label || opt.name || opt.title || String(opt.value ?? opt.id ?? opt.key ?? ''),
-        value: opt.value ?? opt.id ?? opt.key,
-        extra: opt.extra,
-        disabled: opt.disabled,
-      })),
-      total: options.length,
+      options: result,
+      total: result.length,
     };
   } catch (error) {
     console.error('Remote data source fetch failed:', error);

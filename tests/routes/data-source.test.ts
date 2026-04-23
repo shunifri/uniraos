@@ -5,7 +5,7 @@ vi.mock('../../src/services/database-connector.js', () => ({
   executeQuery: vi.fn(),
 }));
 
-const { resolveDataSource } = await import('../../src/services/data-source-service.js');
+const { resolveDataSource, applyFilters } = await import('../../src/services/data-source-service.js');
 const { executeQuery } = await import('../../src/services/database-connector.js');
 
 describe('Data Source Service', () => {
@@ -542,6 +542,73 @@ describe('Data Source Service', () => {
         formData: {},
       });
       expect(result.options).toHaveLength(0);
+    });
+  });
+
+  describe('applyFilters', () => {
+    const options = [
+      { label: '张三', value: 'u1', extra: { age: 25, dept: 'rd' } },
+      { label: '李四', value: 'u2', extra: { age: 30, dept: 'pm' } },
+      { label: '王五', value: 'u3', extra: { age: 35, dept: 'rd' } }
+    ];
+
+    it('should filter by eq', () => {
+      const result = applyFilters(options, [{ field: 'dept', operator: 'eq', value: 'rd' }], {});
+      expect(result).toHaveLength(2);
+      expect(result[0].label).toBe('张三');
+    });
+
+    it('should filter by gt', () => {
+      const result = applyFilters(options, [{ field: 'age', operator: 'gt', value: 28 }], {});
+      expect(result).toHaveLength(2);
+    });
+
+    it('should filter by contains', () => {
+      const result = applyFilters(options, [{ field: 'label', operator: 'contains', value: '三' }], {});
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('张三');
+    });
+
+    it('should filter by in', () => {
+      const result = applyFilters(options, [{ field: 'dept', operator: 'in', value: ['rd', 'pm'] }], {});
+      expect(result).toHaveLength(3);
+    });
+
+    it('should filter by between', () => {
+      const result = applyFilters(options, [{ field: 'age', operator: 'between', value: [26, 32] }], {});
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('李四');
+    });
+
+    it('should filter by isNull', () => {
+      const optionsWithNull = [
+        ...options,
+        { label: '赵六', value: 'u4', extra: { age: null, dept: 'hr' } }
+      ];
+      const result = applyFilters(optionsWithNull, [{ field: 'age', operator: 'isNull' }], {});
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('赵六');
+    });
+
+    it('should support and/or logic', () => {
+      const result = applyFilters(options, [
+        { field: 'dept', operator: 'eq', value: 'rd', logic: 'and' },
+        { field: 'age', operator: 'gt', value: 30, logic: 'and' }
+      ], {});
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('王五');
+    });
+
+    it('should resolve {{fieldName}} in filter value', () => {
+      const result = applyFilters(options, [
+        { field: 'dept', operator: 'eq', value: '{{selectedDept}}' }
+      ], { selectedDept: 'rd' });
+      expect(result).toHaveLength(2);
+    });
+
+    it('should return all options when no filters', () => {
+      const result = applyFilters(options, [], {});
+      expect(result).toHaveLength(3);
     });
   });
 
