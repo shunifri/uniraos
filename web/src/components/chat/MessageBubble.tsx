@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Flex, Typography, Button, Collapse, Spin } from "antd";
 import { Bubble } from "@ant-design/x";
 import { XMarkdown } from "@ant-design/x-markdown";
@@ -37,16 +37,22 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
 
   // 渲染用户确认卡片
   if (msg.role === "user_confirm") {
-    let data: any;
-    try {
-      data = JSON.parse(msg.content);
-    } catch {
+    const data = useMemo(() => {
+      try {
+        return JSON.parse(msg.content);
+      } catch {
+        return null;
+      }
+    }, [msg.content]);
+
+    if (!data) {
       return (
         <div style={{ marginLeft: 46 }}>
           <Text type="danger" style={{ fontSize: 12 }}>确认卡片数据解析失败</Text>
         </div>
       );
     }
+
     const isDisabled = confirmedCards.has(data.confirmId);
     return (
       <div style={{ marginLeft: 46 }}>

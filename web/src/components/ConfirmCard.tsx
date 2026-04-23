@@ -86,6 +86,7 @@ export default function ConfirmCard({
 }: ConfirmCardProps) {
   const [selectedSingle, setSelectedSingle] = useState<string | null>(null);
   const [selectedMulti, setSelectedMulti] = useState<string[]>([]);
+  const [submittedData, setSubmittedData] = useState<any>(null);
   const [form] = Form.useForm();
 
   // --- NEW FORM ENGINE MODE ---
@@ -99,8 +100,13 @@ export default function ConfirmCard({
         {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
         <DynamicForm
           schema={schema}
+          initialData={disabled ? submittedData ?? undefined : undefined}
+          readOnly={disabled}
           embedded
-          onSubmit={(formData) => onConfirm(confirmId, formData)}
+          onSubmit={(formData) => {
+            setSubmittedData(formData);
+            onConfirm(confirmId, formData);
+          }}
           onCancel={() => onCancel(confirmId)}
         />
         {disabled && (

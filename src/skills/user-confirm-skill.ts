@@ -53,6 +53,19 @@ function convertFieldsToSchema(
         })),
       };
     }
+
+    // 默认使用卡片式/选项式变体，交互更轻便
+    const uiProps: Record<string, any> = {};
+    if (field.type === "radio") {
+      uiProps.variant = "segmented";
+    } else if (field.type === "checkbox") {
+      uiProps.variant = "tag";
+    } else if (field.type === "select") {
+      uiProps.variant = "segmented";
+    }
+    if (Object.keys(uiProps).length > 0) {
+      properties[field.key]["ui:props"] = uiProps;
+    }
   }
 
   return {
