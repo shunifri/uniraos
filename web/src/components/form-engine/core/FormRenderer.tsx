@@ -4,7 +4,7 @@
  * 核心表单渲染器，集成 Zustand 状态管理、验证引擎和联动引擎。
  */
 
-import React, { useRef, useEffect, useReducer, useCallback } from "react";
+import React, { useRef, useState, useEffect, useReducer, useCallback } from "react";
 import { Form, Row, Col } from "antd";
 import type { RaosFormSchema, RaosFieldSchema, FieldState } from "../types";
 import { getComponent, getComponentAsync, hasComponent } from "../registry/componentRegistry";
@@ -157,12 +157,8 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   onChange,
   onSubmit,
 }) => {
-  // 使用 useRef 持有 store，避免重复创建
-  const storeRef = useRef<ReturnType<typeof createFormStore> | null>(null);
-  if (!storeRef.current) {
-    storeRef.current = createFormStore({ schema, initialData, readOnly });
-  }
-  const store = storeRef.current;
+  // 使用 useState lazy initializer 创建 store，避免 StrictMode 双渲染问题
+  const [store] = useState(() => createFormStore({ schema, initialData, readOnly }));
 
   // 防抖定时器管理
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -170,16 +166,19 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   // 强制重渲染机制
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
 
-  // 订阅 store 变化
+  // 订阅 store 变化（使用 ref 防止 onChange 循环）
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   useEffect(() => {
     const unsubscribe = store.subscribe(() => {
       forceUpdate();
-      if (onChange) {
-        onChange(store.getState().formData);
+      const cb = onChangeRef.current;
+      if (cb) {
+        cb(store.getState().formData);
       }
     });
     return unsubscribe;
-  }, [store, onChange]);
+  }, [store]);
 
   // 初始联动应用
   useEffect(() => {

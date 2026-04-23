@@ -84,7 +84,7 @@ export function evaluateExpression(
   formData: Record<string, any>
 ): boolean {
   // 1. 替换所有 {{fieldName}} 为实际值
-  let jsExpression = expression.replace(/\{\{(\w+)\}\}/g, (_match, fieldName) => {
+  let jsExpression = expression.replace(/\{\{([\w.\-\[\]]+)\}\}/g, (_match, fieldName) => {
     const value = formData[fieldName];
     if (value === undefined || value === null) {
       return "null";
@@ -139,7 +139,7 @@ export function findDependentFields(
   changedField: string,
   schemaProperties: Record<string, any>
 ): string[] {
-  const cacheKey = `${changedField}:${Object.keys(schemaProperties).join(",")}`;
+  const cacheKey = `${changedField}:${JSON.stringify(Object.entries(schemaProperties).map(([k, v]) => [k, (v as any)?.['x-linkage'], (v as any)?.['x-dataSource']]))}`;
   const cached = dependentFieldsCache.get(cacheKey);
   if (cached) return cached;
 

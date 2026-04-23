@@ -60,7 +60,7 @@ export function evaluateFieldPermission(
  * Includes role names as implicit permissions.
  */
 export function getUserPermissions(
-  user: { roles?: { name: string }[]; permissions?: string[] } | null
+  user: { roles?: { name: string }[] | null; permissions?: string[] | null } | null
 ): string[] {
   if (!user) return [];
   const rolePerms = (user.roles || []).map((r) => r.name);

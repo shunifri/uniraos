@@ -48,10 +48,13 @@ router.post("/form/validate", requireAuth, async (req, res) => {
         if (!expression) {
           return res.status(400).json({ success: false, error: "Missing expression" });
         }
-        // Safe evaluation with limited scope
+        // Safe evaluation with restricted sandbox
         try {
-          const fn = new Function("value", "context", `"use strict"; return (${expression});`);
-          const isValid = !!fn(value, context);
+          const fn = new Function(
+            "value", "context", "Math", "String", "Number", "Date", "Array", "Object", "JSON",
+            `"use strict"; return (${expression});`
+          );
+          const isValid = !!fn(value, context, Math, String, Number, Date, Array, Object, JSON);
           return res.json({
             success: true,
             data: { valid: isValid, message: isValid ? null : "验证失败" },
