@@ -7,6 +7,7 @@ import {
   updateWorkflowFormBinding,
   deleteWorkflowFormBinding
 } from '../services/workflow-form-service.js';
+import { loadTaskForm } from '../services/workflow-task-form-service.js';
 
 const router = Router();
 
@@ -56,6 +57,19 @@ router.delete('/workflow/form-bindings/:id', requireAuth, (req, res) => {
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.taskId, 10);
+    if (isNaN(taskId)) {
+      return res.status(400).json({ success: false, error: 'Invalid taskId' });
+    }
+    const payload = await loadTaskForm(taskId);
+    res.json({ success: true, data: payload });
+  } catch (error: any) {
+    res.status(404).json({ success: false, error: error.message });
   }
 });
 
