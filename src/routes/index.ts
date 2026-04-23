@@ -37,6 +37,7 @@ import connectionsRoutes from "./connections-routes.js";
 import formRoutes from "./form-routes.js";
 import workflowFormRoutes from "./workflow-form-routes.js";
 import workflowTaskRoutes from "./workflow-task-routes.js";
+import formValidationRoutes from "./form-validation-routes.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { SkillAccessService } from "../engine/index.js";
 
@@ -94,4 +95,5 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
   app.use("/api", formRoutes);
   app.use("/api", workflowFormRoutes);
   app.use("/api", workflowTaskRoutes);
+  app.use("/api", formValidationRoutes);
 }

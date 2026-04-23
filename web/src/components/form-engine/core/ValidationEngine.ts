@@ -187,14 +187,101 @@ export async function validateField(
     }
   }
 
-  // 5. 自定义表达式验证（Phase 1 占位）
+  // 5. 同步自定义表达式验证
   const customValidator = (schema as any).customValidator;
   if (customValidator) {
     // Phase 4 会实现完整表达式沙箱
-    // 目前无论是否以 expr: 开头都返回 null（pass）
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+export interface AsyncValidatorConfig {
+  type: "remote";
+  url: string;
+  method?: "GET" | "POST";
+  fieldParam?: string;
+  debounce?: number;
+}
+
+const asyncValidatorCache = new Map<string, Promise<ValidationResult>>();
+const asyncValidatorTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export async function validateFieldAsync(
+  schema: RaosFieldSchema,
+  value: any,
+  formData: Record<string, any>,
+  isRequired: boolean,
+  options?: { isHidden?: boolean; asyncConfig?: AsyncValidatorConfig }
+): Promise<ValidationResult> {
+  // 先执行同步验证
+  const syncResult = await validateField(schema, value, formData, isRequired, options);
+  if (!syncResult.valid) {
+    return syncResult;
+  }
+
+  const asyncConfig = options?.asyncConfig || (schema as any)["x-asyncValidator"];
+  if (!asyncConfig || isEmptyValue(value)) {
+    return syncResult;
+  }
+
+  if (asyncConfig.type === "remote") {
+    const cacheKey = `${asyncConfig.url}:${JSON.stringify(value)}`;
+    const cached = asyncValidatorCache.get(cacheKey);
+    if (cached) return cached;
+
+    const result = fetchRemoteValidation(asyncConfig, value);
+    asyncValidatorCache.set(cacheKey, result);
+    result.finally(() => {
+      setTimeout(() => asyncValidatorCache.delete(cacheKey), 5000);
+    });
+    return result;
+  }
+
+  return syncResult;
+}
+
+async function fetchRemoteValidation(
+  config: AsyncValidatorConfig,
+  value: any
+): Promise<ValidationResult> {
+  try {
+    const method = config.method || "GET";
+    const paramName = config.fieldParam || "value";
+    const url = method === "GET"
+      ? `${config.url}?${paramName}=${encodeURIComponent(String(value))}`
+      : config.url;
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: method === "POST" ? JSON.stringify({ [paramName]: value }) : undefined,
+    });
+    const data = await res.json();
+    if (data.valid === false) {
+      return { valid: false, errors: [data.message || "验证失败"] };
+    }
+    return { valid: true, errors: [] };
+  } catch {
+    return { valid: true, errors: [] };
+  }
+}
+
+export function debouncedAsyncValidate(
+  fieldName: string,
+  validateFn: () => Promise<ValidationResult>,
+  debounceMs: number = 300
+): Promise<ValidationResult> {
+  return new Promise((resolve) => {
+    const existing = asyncValidatorTimers.get(fieldName);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      asyncValidatorTimers.delete(fieldName);
+      validateFn().then(resolve);
+    }, debounceMs);
+
+    asyncValidatorTimers.set(fieldName, timer);
+  });
 }
 
 export { getErrorMessage, validateFormat };

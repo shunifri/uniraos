@@ -10,7 +10,7 @@ import type { RaosFormSchema, RaosFieldSchema, FieldState } from "../types";
 import { getComponent, getComponentAsync, hasComponent } from "../registry/componentRegistry";
 import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
-import { validateField } from "./ValidationEngine";
+import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
 
 // ───────────────────────────────────────────────────────────────
 // Props 接口
@@ -221,14 +221,30 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
     [store, schema]
   );
 
-  // 字段失焦处理
+  // 字段失焦处理（支持异步验证）
   const handleFieldBlur = useCallback(
     (name: string) => {
       const state = store.getState();
       const value = state.getFieldValue(name);
       const fieldSchema = schema.properties[name];
-      if (fieldSchema) {
-        const fieldState = state.getFieldState(name);
+      if (!fieldSchema) return;
+
+      const fieldState = state.getFieldState(name);
+      const hasAsync = !!(fieldSchema as any)["x-asyncValidator"];
+
+      if (hasAsync) {
+        debouncedAsyncValidate(name, () =>
+          validateFieldAsync(
+            fieldSchema,
+            value,
+            state.formData,
+            fieldState.required,
+            { isHidden: !fieldState.visible }
+          )
+        ).then((result) => {
+          state.setFieldError(name, result.errors);
+        });
+      } else {
         validateField(
           fieldSchema,
           value,
@@ -260,7 +276,9 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         if (!fieldState.visible) {
           continue;
         }
-        const promise = validateField(
+        const hasAsync = !!(fieldSchema as any)["x-asyncValidator"];
+        const validator = hasAsync ? validateFieldAsync : validateField;
+        const promise = validator(
           fieldSchema,
           state.getFieldValue(name),
           state.formData,
