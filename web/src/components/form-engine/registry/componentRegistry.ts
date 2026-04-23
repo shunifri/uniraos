@@ -4,6 +4,10 @@ import { TextInput } from "../components/TextInput.js";
 import { TextArea } from "../components/TextArea.js";
 import { NumberInput } from "../components/NumberInput.js";
 import { PasswordInput } from "../components/PasswordInput.js";
+import { SelectInput } from "../components/SelectInput.js";
+import { RadioGroup } from "../components/RadioGroup.js";
+import { CheckboxGroup } from "../components/CheckboxGroup.js";
+import { SwitchInput } from "../components/SwitchInput.js";
 
 export interface FieldRendererProps {
   schema: RaosFieldSchema;
@@ -47,3 +51,7 @@ registerComponent("input", TextInput);
 registerComponent("textarea", TextArea);
 registerComponent("number", NumberInput);
 registerComponent("password", PasswordInput);
+registerComponent("select", SelectInput);
+registerComponent("radio", RadioGroup);
+registerComponent("checkbox", CheckboxGroup);
+registerComponent("switch", SwitchInput);
