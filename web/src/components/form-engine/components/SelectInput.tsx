@@ -1,5 +1,5 @@
 import React from "react";
-import { Select } from "antd";
+import { Select, Segmented } from "antd";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
 import { formT } from "../i18n/form-i18n";
 
@@ -17,6 +17,26 @@ export const SelectInput: React.FC<FieldRendererProps> = ({
 }) => {
   const uiProps = schema["ui:props"] || {};
   const options = fieldState.options || schema["x-dataSource"]?.options || [];
+  const variant = uiProps.variant || "default";
+  const isMultiple = uiProps.multiple;
+
+  const mappedOptions = options.map((opt) => ({
+    label: opt.label,
+    value: opt.value,
+    disabled: opt.disabled,
+  }));
+
+  // 单选 + variant=segmented 时使用 Segmented 分段控制器
+  if (!isMultiple && variant === "segmented") {
+    return (
+      <Segmented
+        value={value}
+        onChange={(val) => onChange(val)}
+        disabled={fieldState.disabled}
+        options={mappedOptions}
+      />
+    );
+  }
 
   return (
     <Select
@@ -25,13 +45,9 @@ export const SelectInput: React.FC<FieldRendererProps> = ({
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"] || formT("placeholder.select")}
       disabled={fieldState.disabled}
-      options={options.map((opt) => ({
-        label: opt.label,
-        value: opt.value,
-        disabled: opt.disabled,
-      }))}
+      options={mappedOptions}
       loading={fieldState.loading}
-      mode={uiProps.multiple ? "multiple" : undefined}
+      mode={isMultiple ? "multiple" : undefined}
       showSearch={uiProps.showSearch}
       allowClear={uiProps.allowClear}
       status={fieldState.errors?.length ? "error" : undefined}
