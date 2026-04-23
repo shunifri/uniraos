@@ -11,6 +11,8 @@ import { getComponent, getComponentAsync, hasComponent } from "../registry/compo
 import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
+import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
+import { useAuthStore } from "@/store/auth";
 
 // ───────────────────────────────────────────────────────────────
 // Props 接口
@@ -335,14 +337,22 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
     }
   }, [asyncComponents, loadingAsync]);
 
+  // 获取当前用户权限
+  const user = useAuthStore((s) => s.user);
+  const userPermissions = getUserPermissions(user);
+
   // 字段渲染
   const renderField = (name: string, fieldSchema: RaosFieldSchema) => {
     const state = store.getState();
     const fieldState = state.getFieldState(name);
 
-    if (!fieldState.visible) {
+    // 权限评估
+    const permResult = evaluateFieldPermission(fieldSchema["x-permission"], userPermissions);
+    if (!permResult.visible || !fieldState.visible) {
       return null;
     }
+
+    const isFieldReadOnly = readOnly || fieldState.readonly || permResult.readOnly;
 
     const value = state.getFieldValue(name);
     const errors = state.errors[name] || [];
@@ -396,7 +406,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
             onBlur={() => handleFieldBlur(name)}
             formData={state.formData}
             fieldState={fieldState}
-            readOnly={readOnly || fieldState.readonly}
+            readOnly={isFieldReadOnly}
             disabled={fieldState.disabled}
             id={name}
           />
