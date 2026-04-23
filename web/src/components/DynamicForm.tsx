@@ -54,6 +54,15 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
       onReset?.();
     } else if (action.type === "cancel") {
       onCancel?.();
+    } else if (action.type === "custom" && action.onClick) {
+      // 自定义 action 支持 expr: 表达式（简单沙箱执行）
+      try {
+        const expr = action.onClick.replace(/^expr:/, "");
+        const fn = new Function("Math", "String", "Number", "Date", "Array", "Object", "JSON", `"use strict"; return (${expr});`);
+        fn(Math, String, Number, Date, Array, Object, JSON);
+      } catch (e) {
+        console.error("Custom action error:", e);
+      }
     }
   };
 

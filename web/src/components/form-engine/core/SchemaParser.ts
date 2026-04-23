@@ -45,6 +45,9 @@ export function flattenFields(
         properties: fieldSchema.items.properties,
       };
       results.push(...flattenFields(nestedSchema, path));
+    } else if (fieldSchema.type === "array" && fieldSchema.items) {
+      // 简单数组（如 string[] / number[]）也加入结果
+      results.push({ name: path, schema: fieldSchema.items });
     } else {
       // 基础类型直接加入结果
       results.push({ name: path, schema: fieldSchema });

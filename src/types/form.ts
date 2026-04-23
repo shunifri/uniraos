@@ -80,8 +80,17 @@ export interface RaosFieldSchema {
     read?: string[];
     write?: string[];
   };
+  "x-asyncValidator"?: AsyncValidatorConfig;
   properties?: Record<string, RaosFieldSchema>; // type: 'object' 时
   items?: RaosFieldSchema; // type: 'array' 时
+}
+
+export interface AsyncValidatorConfig {
+  type: "remote";
+  url: string;
+  method?: "GET" | "POST";
+  fieldParam?: string;
+  debounce?: number;
 }
 
 // ───────────────────────────────────────────────────────────────

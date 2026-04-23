@@ -159,6 +159,15 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   // 使用 useState lazy initializer 创建 store，避免 StrictMode 双渲染问题
   const [store] = useState(() => createFormStore({ schema, initialData, readOnly }));
 
+  // 当 schema 或 initialData 变化时重置 store
+  useEffect(() => {
+    store.getState().reset();
+    if (initialData) {
+      store.getState().setFieldValues(initialData);
+    }
+    applyLinkageToAllFields(store, schema);
+  }, [schema, initialData, store]);
+
   // 防抖定时器管理
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 

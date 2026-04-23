@@ -83,6 +83,7 @@ const FieldWrapper: React.FC<FieldWrapperProps> = React.memo(
       prev.fieldState.disabled === next.fieldState.disabled &&
       prev.fieldState.readonly === next.fieldState.readonly &&
       prev.fieldState.required === next.fieldState.required &&
+      prev.fieldState.loading === next.fieldState.loading &&
       prev.readOnly === next.readOnly &&
       prev.asyncComponents === next.asyncComponents
     );
