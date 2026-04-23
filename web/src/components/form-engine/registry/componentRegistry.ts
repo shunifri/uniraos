@@ -8,6 +8,9 @@ import { SelectInput } from "../components/SelectInput.js";
 import { RadioGroup } from "../components/RadioGroup.js";
 import { CheckboxGroup } from "../components/CheckboxGroup.js";
 import { SwitchInput } from "../components/SwitchInput.js";
+import { DatePickerField } from "../components/DatePickerField.js";
+import { DateRangePickerField } from "../components/DateRangePickerField.js";
+import { TimePickerField } from "../components/TimePickerField.js";
 
 export interface FieldRendererProps {
   schema: RaosFieldSchema;
@@ -55,3 +58,6 @@ registerComponent("select", SelectInput);
 registerComponent("radio", RadioGroup);
 registerComponent("checkbox", CheckboxGroup);
 registerComponent("switch", SwitchInput);
+registerComponent("datePicker", DatePickerField);
+registerComponent("dateRange", DateRangePickerField);
+registerComponent("timePicker", TimePickerField);
