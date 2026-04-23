@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
+import { resolve } from "path";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      react: resolve(__dirname, "web/node_modules/react"),
+    },
+  },
   test: {
     include: ["tests/**/*.test.ts"],
     env: {
