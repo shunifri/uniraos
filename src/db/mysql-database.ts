@@ -75,6 +75,7 @@ const MIGRATIONS: Migration[] = [
         name VARCHAR(100) NOT NULL UNIQUE COMMENT '角色名称（如：admin, user, anonymous）',
         description TEXT COMMENT '角色描述',
         is_system TINYINT NOT NULL DEFAULT 0 COMMENT '是否系统角色（1=是，不可删除）',
+        agent_config JSON DEFAULT NULL COMMENT 'Agent 配置 JSON',
         created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
         updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间（毫秒）',
         INDEX idx_roles_name (name) COMMENT '角色名索引'
@@ -694,6 +695,221 @@ const MIGRATIONS: Migration[] = [
       DROP TABLE IF EXISTS kb_ltm_entries;
       SET FOREIGN_KEY_CHECKS = 1;
     `
+  },
+  {
+    version: 4,
+    name: 'add_roles_agent_config',
+    up: `
+      ALTER TABLE roles ADD COLUMN agent_config JSON DEFAULT NULL COMMENT 'Agent 配置 JSON';
+    `,
+    down: `
+      ALTER TABLE roles DROP COLUMN agent_config;
+    `
+  },
+  {
+    version: 5,
+    name: 'add_workflow_engine_tables',
+    up: `
+      CREATE TABLE IF NOT EXISTS workflow_definitions (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '流程定义ID',
+        name VARCHAR(128) NOT NULL COMMENT '流程名称',
+        \`key\` VARCHAR(64) NOT NULL UNIQUE COMMENT '流程标识',
+        version INT NOT NULL DEFAULT 1 COMMENT '版本号',
+        category VARCHAR(64) COMMENT '分类',
+        definition JSON NOT NULL COMMENT '流程定义JSON',
+        form_schema JSON COMMENT '表单定义JSON',
+        created_by VARCHAR(64) COMMENT '创建人',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
+        updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间',
+        INDEX idx_workflow_def_key (\`key\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工作流定义表';
+
+      CREATE TABLE IF NOT EXISTS workflow_instances (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '流程实例ID',
+        definition_id BIGINT NOT NULL COMMENT '流程定义ID',
+        definition_version INT NOT NULL DEFAULT 1 COMMENT '定义版本',
+        business_key VARCHAR(128) COMMENT '业务标识',
+        starter VARCHAR(64) COMMENT '发起人',
+        status VARCHAR(32) NOT NULL DEFAULT 'running' COMMENT '状态：running/completed/cancelled/suspended',
+        current_node_id VARCHAR(64) COMMENT '当前节点ID',
+        variables JSON COMMENT '流程变量',
+        started_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '开始时间',
+        completed_at BIGINT COMMENT '完成时间',
+        INDEX idx_workflow_inst_status (status),
+        INDEX idx_workflow_inst_starter (starter),
+        INDEX idx_workflow_inst_def (definition_id),
+        FOREIGN KEY (definition_id) REFERENCES workflow_definitions(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工作流实例表';
+
+      CREATE TABLE IF NOT EXISTS workflow_tasks (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '任务ID',
+        instance_id BIGINT NOT NULL COMMENT '流程实例ID',
+        node_id VARCHAR(64) NOT NULL COMMENT '节点ID',
+        node_name VARCHAR(128) COMMENT '节点名称',
+        task_type VARCHAR(32) COMMENT '任务类型：user_task/service_task',
+        assignee VARCHAR(64) COMMENT '执行人',
+        candidate_users JSON COMMENT '候选人列表',
+        candidate_groups JSON COMMENT '候选角色列表',
+        status VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '状态：pending/claimed/completed/cancelled',
+        form_data JSON COMMENT '表单提交数据',
+        comment TEXT COMMENT '审批意见',
+        action VARCHAR(32) COMMENT '操作：approve/reject/transfer/delegate',
+        due_date BIGINT COMMENT '截止时间',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
+        claimed_at BIGINT COMMENT '认领时间',
+        completed_at BIGINT COMMENT '完成时间',
+        INDEX idx_workflow_task_instance (instance_id),
+        INDEX idx_workflow_task_assignee (assignee),
+        INDEX idx_workflow_task_status (status),
+        FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工作流任务表';
+
+      CREATE TABLE IF NOT EXISTS workflow_variables (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '变量ID',
+        instance_id BIGINT NOT NULL COMMENT '流程实例ID',
+        name VARCHAR(128) NOT NULL COMMENT '变量名',
+        value TEXT COMMENT '变量值',
+        type VARCHAR(32) COMMENT '变量类型：string/number/boolean/json/date',
+        INDEX idx_workflow_var_instance (instance_id),
+        INDEX idx_workflow_var_name (instance_id, name),
+        FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工作流变量表';
+
+      CREATE TABLE IF NOT EXISTS connections (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '连接ID',
+        name VARCHAR(128) NOT NULL COMMENT '连接名称',
+        type VARCHAR(64) NOT NULL COMMENT '连接类型：smtp/ldap/calendar/im/kafka/...',
+        config JSON NOT NULL COMMENT '连接配置JSON',
+        credentials TEXT COMMENT '加密凭证',
+        is_active TINYINT NOT NULL DEFAULT 1 COMMENT '是否启用',
+        created_by VARCHAR(64) COMMENT '创建人',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
+        updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间',
+        INDEX idx_connections_type (type),
+        INDEX idx_connections_name (name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='连接配置中心';
+
+      -- 添加权限资源
+      INSERT IGNORE INTO resources (id, name, type, description) VALUES
+        ('res_workflow', 'workflow', 'api', '工作流管理'),
+        ('res_connection', 'connection', 'api', '连接配置管理');
+
+      INSERT IGNORE INTO permissions (id, name, description, resource_id, action) VALUES
+        ('perm_workflow_read', 'workflow.read', '查看工作流', 'res_workflow', 'read'),
+        ('perm_workflow_write', 'workflow.write', '创建工作流', 'res_workflow', 'write'),
+        ('perm_workflow_manage', 'workflow.manage', '管理工作流', 'res_workflow', 'manage'),
+        ('perm_connection_read', 'connection.read', '查看连接配置', 'res_connection', 'read'),
+        ('perm_connection_write', 'connection.write', '管理连接配置', 'res_connection', 'write');
+
+      INSERT IGNORE INTO department_resources (department_id, resource_id) VALUES
+        ('dept_root', 'res_workflow'),
+        ('dept_root', 'res_connection');
+
+      INSERT IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT 'role_admin', id FROM permissions WHERE name IN ('workflow.read', 'workflow.write', 'workflow.manage', 'connection.read', 'connection.write');
+
+      INSERT IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT 'role_user', id FROM permissions WHERE name IN ('workflow.read', 'workflow.write', 'connection.read');
+
+      INSERT IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT 'role_viewer', id FROM permissions WHERE name IN ('workflow.read', 'connection.read');
+    `,
+    down: `
+      DROP TABLE IF EXISTS workflow_variables;
+      DROP TABLE IF EXISTS workflow_tasks;
+      DROP TABLE IF EXISTS workflow_instances;
+      DROP TABLE IF EXISTS workflow_definitions;
+      DROP TABLE IF EXISTS connections;
+    `
+  },
+  {
+    version: 6,
+    name: 'workflow_tasks_instance_id_nullable',
+    up: `
+      ALTER TABLE workflow_tasks MODIFY instance_id BIGINT NULL COMMENT '流程实例ID';
+    `,
+    down: `
+      ALTER TABLE workflow_tasks MODIFY instance_id BIGINT NOT NULL COMMENT '流程实例ID';
+    `
+  },
+  {
+    version: 7,
+    name: 'form_engine_tables',
+    up: `
+      CREATE TABLE IF NOT EXISTS form_definitions (
+        id VARCHAR(36) PRIMARY KEY COMMENT '表单定义ID',
+        \`key\` VARCHAR(64) NOT NULL UNIQUE COMMENT '表单标识',
+        name VARCHAR(128) NOT NULL COMMENT '表单名称',
+        description TEXT COMMENT '表单描述',
+        category_id VARCHAR(36) COMMENT '分类ID',
+        schema_json JSON NOT NULL COMMENT '表单Schema JSON',
+        version INT DEFAULT 1 COMMENT '版本号',
+        status VARCHAR(20) DEFAULT 'draft' COMMENT '状态',
+        created_by VARCHAR(36) NOT NULL COMMENT '创建人',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
+        published_at DATETIME COMMENT '发布时间',
+        deprecated_at DATETIME COMMENT '废弃时间'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='表单定义表';
+
+      CREATE TABLE IF NOT EXISTS form_categories (
+        id VARCHAR(36) PRIMARY KEY COMMENT '分类ID',
+        name VARCHAR(64) NOT NULL COMMENT '分类名称',
+        code VARCHAR(64) NOT NULL UNIQUE COMMENT '分类编码',
+        parent_id VARCHAR(36) COMMENT '父分类ID',
+        sort_order INT DEFAULT 0 COMMENT '排序号',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='表单分类表';
+
+      CREATE TABLE IF NOT EXISTS form_instances (
+        id VARCHAR(36) PRIMARY KEY COMMENT '表单实例ID',
+        definition_id VARCHAR(36) NOT NULL COMMENT '表单定义ID',
+        definition_version INT DEFAULT 1 COMMENT '定义版本',
+        data_json JSON NOT NULL COMMENT '表单数据JSON',
+        status VARCHAR(20) DEFAULT 'draft' COMMENT '状态',
+        submitted_by VARCHAR(36) COMMENT '提交人',
+        submitted_at DATETIME COMMENT '提交时间',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='表单实例表';
+
+      CREATE TABLE IF NOT EXISTS workflow_form_bindings (
+        id VARCHAR(36) PRIMARY KEY COMMENT '绑定ID',
+        \`definition_key\` VARCHAR(64) NOT NULL COMMENT '流程定义标识',
+        node_id VARCHAR(64) NOT NULL COMMENT '节点ID',
+        form_id VARCHAR(36) NOT NULL COMMENT '表单ID',
+        form_version INT DEFAULT -1 COMMENT '表单版本',
+        is_required BOOLEAN DEFAULT true COMMENT '是否必填',
+        mapping_json JSON COMMENT '字段映射JSON',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UNIQUE(definition_key, node_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='表单与流程关联表';
+
+      CREATE TABLE IF NOT EXISTS workflow_form_instances (
+        id VARCHAR(36) PRIMARY KEY COMMENT '快照ID',
+        instance_id VARCHAR(36) NOT NULL COMMENT '流程实例ID',
+        task_id VARCHAR(36) COMMENT '任务ID',
+        form_id VARCHAR(36) NOT NULL COMMENT '表单ID',
+        form_version INT NOT NULL COMMENT '表单版本',
+        schema_snapshot JSON NOT NULL COMMENT 'Schema快照',
+        data_json JSON NOT NULL COMMENT '表单数据',
+        submitted_by VARCHAR(36) COMMENT '提交人',
+        submitted_at DATETIME COMMENT '提交时间',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT '流程表单实例快照表';
+
+      ALTER TABLE connections ADD COLUMN db_config JSON COMMENT '数据库配置JSON';
+      ALTER TABLE connections ADD COLUMN test_query VARCHAR(256) COMMENT '测试查询语句';
+    `,
+    down: `
+      DROP TABLE IF EXISTS workflow_form_instances;
+      DROP TABLE IF EXISTS workflow_form_bindings;
+      DROP TABLE IF EXISTS form_instances;
+      DROP TABLE IF EXISTS form_categories;
+      DROP TABLE IF EXISTS form_definitions;
+      ALTER TABLE connections DROP COLUMN db_config;
+      ALTER TABLE connections DROP COLUMN test_query;
+    `
   }
 ];
 
@@ -755,6 +971,10 @@ export async function initMySQLDatabase(): Promise<void> {
             }
             if (err.errno === 1062 || err.code === 'ER_DUP_ENTRY') {
               log('debug', 'mysql_migration_dup_entry_skipped', { statement: statement.substring(0, 100) });
+              continue;
+            }
+            if (err.errno === 1060 || err.code === 'ER_DUP_FIELDNAME') {
+              log('debug', 'mysql_migration_column_exists_skipped', { statement: statement.substring(0, 100) });
               continue;
             }
             // Log the actual error for debugging

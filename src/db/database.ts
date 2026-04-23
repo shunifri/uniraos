@@ -134,6 +134,7 @@ function runMigrations(db: Database.Database): void {
           name TEXT NOT NULL UNIQUE,
           description TEXT DEFAULT '',
           is_system INTEGER NOT NULL DEFAULT 0,
+          agent_config TEXT DEFAULT NULL,
           created_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
 
@@ -593,6 +594,234 @@ function runMigrations(db: Database.Database): void {
           SELECT 'role_viewer', id FROM permissions 
           WHERE name IN ('knowledge.read', 'files.read', 'conversation.read');
       `);
+    },
+    // v2: 添加 roles.agent_config 列
+    () => {
+      try {
+        db.exec(`ALTER TABLE roles ADD COLUMN agent_config TEXT DEFAULT NULL;`);
+      } catch {
+        // 列已存在则忽略
+      }
+    },
+    // v11: Workflow Engine Lite 核心表 + Connection 配置中心
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS workflow_definitions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          key TEXT NOT NULL UNIQUE,
+          version INTEGER NOT NULL DEFAULT 1,
+          category TEXT,
+          definition TEXT NOT NULL,
+          form_schema TEXT,
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_def_key ON workflow_definitions(key);
+
+        CREATE TABLE IF NOT EXISTS workflow_instances (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          definition_id INTEGER NOT NULL,
+          definition_version INTEGER NOT NULL DEFAULT 1,
+          business_key TEXT,
+          starter TEXT,
+          status TEXT NOT NULL DEFAULT 'running',
+          current_node_id TEXT,
+          variables TEXT,
+          started_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          completed_at INTEGER,
+          FOREIGN KEY (definition_id) REFERENCES workflow_definitions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_inst_status ON workflow_instances(status);
+        CREATE INDEX IF NOT EXISTS idx_workflow_inst_starter ON workflow_instances(starter);
+        CREATE INDEX IF NOT EXISTS idx_workflow_inst_def ON workflow_instances(definition_id);
+
+        CREATE TABLE IF NOT EXISTS workflow_tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id INTEGER,
+          node_id TEXT NOT NULL,
+          node_name TEXT,
+          task_type TEXT,
+          assignee TEXT,
+          candidate_users TEXT,
+          candidate_groups TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          form_data TEXT,
+          comment TEXT,
+          action TEXT,
+          due_date INTEGER,
+          sign_group TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          claimed_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_instance ON workflow_tasks(instance_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_assignee ON workflow_tasks(assignee);
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_status ON workflow_tasks(status);
+
+        CREATE TABLE IF NOT EXISTS workflow_variables (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          value TEXT,
+          type TEXT,
+          FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_var_instance ON workflow_variables(instance_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_var_name ON workflow_variables(instance_id, name);
+
+        CREATE TABLE IF NOT EXISTS connections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          config TEXT NOT NULL,
+          credentials TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_connections_type ON connections(type);
+        CREATE INDEX IF NOT EXISTS idx_connections_name ON connections(name);
+
+        -- 添加权限资源
+        INSERT OR IGNORE INTO resources (id, name, type, description) VALUES
+          ('res_workflow', 'workflow', 'api', '工作流管理'),
+          ('res_connection', 'connection', 'api', '连接配置管理');
+
+        INSERT OR IGNORE INTO permissions (id, name, description, resource_id, action) VALUES
+          ('perm_workflow_read', 'workflow.read', '查看工作流', 'res_workflow', 'read'),
+          ('perm_workflow_write', 'workflow.write', '创建工作流', 'res_workflow', 'write'),
+          ('perm_workflow_manage', 'workflow.manage', '管理工作流', 'res_workflow', 'manage'),
+          ('perm_connection_read', 'connection.read', '查看连接配置', 'res_connection', 'read'),
+          ('perm_connection_write', 'connection.write', '管理连接配置', 'res_connection', 'write');
+
+        INSERT OR IGNORE INTO department_resources (department_id, resource_id) VALUES
+          ('dept_root', 'res_workflow'),
+          ('dept_root', 'res_connection');
+
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_admin', id FROM permissions WHERE name IN ('workflow.read', 'workflow.write', 'workflow.manage', 'connection.read', 'connection.write');
+
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_user', id FROM permissions WHERE name IN ('workflow.read', 'workflow.write', 'connection.read');
+
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+          SELECT 'role_viewer', id FROM permissions WHERE name IN ('workflow.read', 'connection.read');
+      `);
+    },
+    // v12: 允许 workflow_tasks 的 instance_id 为 NULL（支持独立任务）
+    () => {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE workflow_tasks_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id INTEGER,
+          node_id TEXT NOT NULL,
+          node_name TEXT,
+          task_type TEXT,
+          assignee TEXT,
+          candidate_users TEXT,
+          candidate_groups TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          form_data TEXT,
+          comment TEXT,
+          action TEXT,
+          due_date INTEGER,
+          sign_group TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          claimed_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO workflow_tasks_new SELECT * FROM workflow_tasks;
+
+        DROP TABLE workflow_tasks;
+
+        ALTER TABLE workflow_tasks_new RENAME TO workflow_tasks;
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_instance ON workflow_tasks(instance_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_assignee ON workflow_tasks(assignee);
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_status ON workflow_tasks(status);
+
+        PRAGMA foreign_keys = ON;
+      `);
+    },
+    // v13: 添加 workflow_tasks.sign_group 字段（会签支持）
+    () => {
+      db.exec(`ALTER TABLE workflow_tasks ADD COLUMN sign_group TEXT`);
+    },
+    // v14: 表单引擎表
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS form_definitions (
+          id TEXT PRIMARY KEY,
+          key TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT,
+          category_id TEXT,
+          schema_json TEXT NOT NULL,
+          version INTEGER DEFAULT 1,
+          status TEXT DEFAULT 'draft',
+          created_by TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          published_at DATETIME,
+          deprecated_at DATETIME
+        );
+
+        CREATE TABLE IF NOT EXISTS form_categories (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          code TEXT UNIQUE NOT NULL,
+          parent_id TEXT,
+          sort_order INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS form_instances (
+          id TEXT PRIMARY KEY,
+          definition_id TEXT NOT NULL,
+          definition_version INTEGER DEFAULT 1,
+          data_json TEXT NOT NULL,
+          status TEXT DEFAULT 'draft',
+          submitted_by TEXT,
+          submitted_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_form_bindings (
+          id TEXT PRIMARY KEY,
+          definition_key TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          form_id TEXT NOT NULL,
+          form_version INTEGER DEFAULT -1,
+          is_required INTEGER DEFAULT 1,
+          mapping_json TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(definition_key, node_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_form_instances (
+          id TEXT PRIMARY KEY,
+          instance_id TEXT NOT NULL,
+          task_id TEXT,
+          form_id TEXT NOT NULL,
+          form_version INTEGER NOT NULL,
+          schema_snapshot TEXT NOT NULL,
+          data_json TEXT NOT NULL,
+          submitted_by TEXT,
+          submitted_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      try { db.exec(`ALTER TABLE connections ADD COLUMN db_config TEXT`); } catch (_) { }
+      try { db.exec(`ALTER TABLE connections ADD COLUMN test_query TEXT`); } catch (_) { }
     },
   ];
 

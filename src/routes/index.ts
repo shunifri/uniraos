@@ -33,6 +33,8 @@ import { createKnowledgeRoutes } from "./knowledge-routes.js";
 import { createFileRoutes } from "./file-routes.js";
 import { createGraphRoutes } from "./graph-routes.js";
 import { createShareRoutes } from "./share-routes.js";
+import connectionsRoutes from "./connections-routes.js";
+import formRoutes from "./form-routes.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { SkillAccessService } from "../engine/index.js";
 
@@ -86,4 +88,6 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
   if (deps.shareRepository) {
     app.use("/api", createShareRoutes({ ...deps, shareRepository: deps.shareRepository }));
   }
+  app.use("/api/connections", connectionsRoutes);
+  app.use("/api", formRoutes);
 }
