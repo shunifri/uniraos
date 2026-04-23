@@ -1,5 +1,6 @@
 import { Drawer, Segmented, Typography } from "antd";
 import SafeXMarkdown from "@/components/SafeXMarkdown";
+import DocMindPreview from "./DocMindPreview";
 
 const Text = Typography.Text;
 import { pageImageUrl } from "@/api";
@@ -8,10 +9,11 @@ interface DocumentViewerDrawerProps {
   open: boolean;
   doc: { name: string; content: string; docId: string } | null;
   loading: boolean;
-  viewTab: "markdown" | "images" | "compare";
+  viewTab: "markdown" | "images" | "compare" | "restored";
   pageImages: number[];
+  layouts: any[];
   onClose: () => void;
-  onTabChange: (tab: "markdown" | "images" | "compare") => void;
+  onTabChange: (tab: "markdown" | "images" | "compare" | "restored") => void;
 }
 
 export default function DocumentViewerDrawer({
@@ -20,6 +22,7 @@ export default function DocumentViewerDrawer({
   loading,
   viewTab,
   pageImages,
+  layouts,
   onClose,
   onTabChange,
 }: DocumentViewerDrawerProps) {
@@ -29,25 +32,27 @@ export default function DocumentViewerDrawer({
       open={open}
       onClose={onClose}
       placement="right"
-      width={viewTab === "compare" ? 960 : 600}
+      width={viewTab === "compare" ? 640 : 420}
       loading={loading}
       extra={
-        pageImages.length > 0 ? (
           <Segmented
             size="small"
             value={viewTab}
             onChange={(v) => onTabChange(v as any)}
             options={[
+              ...(layouts.length > 0 ? [{ label: "还原", value: "restored" }] : []),
               { label: "解析内容", value: "markdown" },
-              { label: "原始页面", value: "images" },
-              { label: "对照视图", value: "compare" },
+              ...(pageImages.length > 0 ? [{ label: "原始页面", value: "images" }] : []),
+              ...(pageImages.length > 0 ? [{ label: "对照视图", value: "compare" }] : []),
             ]}
           />
-        ) : null
       }
     >
+      {viewTab === "restored" && (
+        <DocMindPreview layouts={layouts} />
+      )}
       {viewTab === "markdown" && (
-         <div style={{ fontSize: 14, lineHeight: 1.8 }}>
+         <div style={{ fontSize: 11, lineHeight: 1.7 }}>
            <SafeXMarkdown content={doc?.content || "(无内容)"} />
          </div>
       )}
@@ -85,8 +90,8 @@ export default function DocumentViewerDrawer({
                     />
                   ) : <div style={{ padding: 16, color: "var(--ant-color-text-secondary)" }}>无图片</div>}
                 </div>
-                 <div style={{ flex: 1, padding: 16, fontSize: 13, lineHeight: 1.8 }}>
-                   {idx < mdPages.length ? <SafeXMarkdown content={mdPages[idx]} /> : <Text type="secondary">无解析内容</Text>}
+                 <div style={{ flex: 1, padding: 12, fontSize: 10, lineHeight: 1.6 }}>
+                   {idx < mdPages.length ? <SafeXMarkdown content={mdPages[idx]} /> : <Text type="secondary" style={{ fontSize: 10 }}>无解析内容</Text>}
                  </div>
               </div>
             ))}

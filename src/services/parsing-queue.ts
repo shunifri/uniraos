@@ -16,9 +16,11 @@ import type { KnowledgeBase } from "../skills/knowledge-skills.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { PageResult, VisionModelConfig } from "./doc-parser.js";
 import { parseDocument } from "./doc-parser.js";
-import { mkdirSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { cwd } from "process";
+import { saveImages, extractDocumentImages, describeImages } from "../utils/image-extractor.js";
+import type { ImageWithDescription } from "../utils/image-extractor.js";
 
 /** 工作空间根目录 */
 const WORKSPACE_BASE = resolve(cwd(), ".raos", "workspace");
@@ -343,16 +345,13 @@ export class ParsingQueue extends EventEmitter {
     // 1. 提交 Document Mind 任务
     let submitResult;
     try {
-      // 根据文件类型和配置决定是否使用增强模式，避免不必要的失败
+      // 启用增强模式
       const parseOptions: any = {
-        llmEnhancement: false, // 默认关闭 LLM 增强，避免失败
+        llmEnhancement: true, // 启用 LLM 增强，提升复杂表格/公式/版式理解精度
+        enhancementMode: 'VLM', // 启用 VLM 多模态分析
+        formulaEnhancement: true, // 启用公式识别增强
+        outputHtmlTable: true, // 输出 HTML 表格以保留结构
       };
-
-      // 对于需要 VLM 分析的文件类型（如图片、扫描件等）才使用增强模式
-      const fileExt = task.docName.split('.').pop()?.toLowerCase();
-      if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'tif'].includes(fileExt || '')) {
-        parseOptions.enhancementMode = 'VLM';
-      }
 
       submitResult = await this.parser.submitJob(
         task.filePath,
@@ -504,6 +503,7 @@ export class ParsingQueue extends EventEmitter {
             key: `kb:${task.docName}`,
             value: `Knowledge base document: ${task.docName}`,
             tags: ['kb_document', (task.docName.split('.').pop() || 'doc'), ...task.tags].filter(Boolean),
+            type: "kb_document",
           });
 
           // 2. 添加版面节点
@@ -516,6 +516,7 @@ export class ParsingQueue extends EventEmitter {
                 value: ((layout as any).content || (layout as any).text || '').slice(0, 200),
                 tags: ['kb_layout', (layout as any).type, (layout as any).subType, ...task.tags].filter(Boolean),
                 relation: `kb:${task.docName}`,
+                type: "entity",
               });
             }
           }
@@ -530,6 +531,7 @@ export class ParsingQueue extends EventEmitter {
                 value: ((segment as any).synopsis || (segment as any).searchableText || '').slice(0, 200),
                 tags: ['kb_segment', task.mediaType, ...task.tags].filter(Boolean),
                 relation: `kb:${task.docName}`,
+                type: "entity",
               });
             }
           }
@@ -583,13 +585,49 @@ export class ParsingQueue extends EventEmitter {
       }
     }
 
+    // Document Mind 解析完成后，也提取文档内嵌图片（流程图、架构图、操作说明截图等）
+    let imageChunkCount = 0;
+    try {
+      console.log(`[ParsingQueue] Document Mind 解析完成，开始提取内嵌图片: ${task.docId}`);
+      const extracted = await extractDocumentImages(task.filePath);
+      if (extracted.length > 0 && this.visionConfig) {
+        console.log(`[ParsingQueue] 提取到 ${extracted.length} 张图片，生成描述...`);
+        const described = await describeImages(extracted, this.visionConfig);
+        const imageDir = resolve(cwd(), ".raos", "knowledge", task.owner, "doc-images", task.docId);
+        const savedImages = saveImages(described, imageDir);
+        console.log(`[ParsingQueue] 已保存 ${savedImages.length} 张图片到 ${imageDir}`);
+
+        // 为每张图片创建 chunk
+        for (let i = 0; i < described.length; i++) {
+          const img = described[i];
+          const imgContent = `![${img.description}](/api/knowledge/documents/${task.docId}/images/${img.id})\n\n图片描述：${img.description}`;
+          const tokens = imgContent.length; // 简单估算
+          await kb.insertChunkDirect(
+            task.docId,
+            task.processedSegments + i,
+            imgContent,
+            tokens,
+            null, // 图片 chunk 暂时不向量化（后续可优化）
+            img.page ?? null,
+            "[]"
+          );
+        }
+
+        imageChunkCount = described.length;
+        await kb.incrementChunkCount(task.docId, imageChunkCount, described.reduce((sum, img) => sum + img.description.length, 0));
+        console.log(`[ParsingQueue] 已插入 ${imageChunkCount} 个图片 chunks`);
+      }
+    } catch (err: any) {
+      console.error(`[ParsingQueue] 图片提取失败（不影响主流程）: ${err.message}`);
+    }
+
      // 更新数据库状态 - 在所有处理完成后更新
      // 收集完整内容用于显示
      const fullContent = allLayouts.map(l => cleanParsedText(l.markdownContent || l.text)).join('\n\n');
      await kb.updateParsingStatus(task.docId, {
        parsingStatus: 'success',
        parsingProgress: 100,
-       chunkCount: task.processedSegments,
+       chunkCount: task.processedSegments + imageChunkCount,
        parsedContent: fullContent.slice(0, 50000), // 限制大小避免过大
      });
 
@@ -598,6 +636,7 @@ export class ParsingQueue extends EventEmitter {
 
   /**
    * 增量索引版面数据（使用事务）
+   * 先清除旧 chunks，再插入 Document Mind 解析的新 chunks，避免本地解析和异步解析的 chunk 重复
    */
   private async incrementalIndexLayouts(
     task: ParsingTask,
@@ -616,6 +655,18 @@ export class ParsingQueue extends EventEmitter {
     
     // 将版面转换为 chunks
     const chunks = this.layoutsToChunks(layouts);
+    if (chunks.length === 0) {
+      console.warn(`[ParsingQueue] No chunks generated from layouts for ${task.docId}`);
+      return;
+    }
+    
+    // 先清除旧 chunks 和 keywords（避免本地解析和 Document Mind 解析的 chunk 重复）
+    try {
+      await kb.clearDocChunks(task.docId);
+      console.log(`[ParsingQueue] Cleared old chunks for ${task.docId}`);
+    } catch (err: any) {
+      console.error(`[ParsingQueue] Failed to clear old chunks for ${task.docId}: ${err.message}`);
+    }
     
     // 跟踪成功插入的 chunk 数量和 token 数量
     let successfulChunks = 0;
@@ -655,9 +706,9 @@ export class ParsingQueue extends EventEmitter {
       }
     }
 
-    // 只增加成功插入的 chunk 和 token 数量
+    // 重置 chunk_count 和 total_tokens（因为已经清除了旧 chunks）
     if (successfulChunks > 0) {
-      await kb.incrementChunkCount(task.docId, successfulChunks, totalTokens);
+      await kb.setChunkCount(task.docId, successfulChunks, totalTokens);
     }
   }
 
@@ -803,9 +854,10 @@ export class ParsingQueue extends EventEmitter {
 
       currentContent += '\n' + text;
       currentTokens += tokens;
-      // pageNum 可能是数组，取第一个值
-      const pageNum = Array.isArray(layout.pageNum) ? layout.pageNum[0] : layout.pageNum;
-      currentPage = pageNum ?? 0;
+      // pageNum 可能是数组，Document Mind 返回 0-based，转为 1-based 与本地解析一致
+      const rawPageNum = Array.isArray(layout.pageNum) ? layout.pageNum[0] : layout.pageNum;
+      const pageNum = (rawPageNum ?? 0) + 1;
+      currentPage = pageNum;
       
       // 转换 pos 到 bbox
       if (layout.pos && layout.pos.length >= 4) {
@@ -816,7 +868,7 @@ export class ParsingQueue extends EventEmitter {
         const maxX = Math.max(...xs);
         const maxY = Math.max(...ys);
         currentBboxes.push({
-          page: pageNum ?? 0,
+          page: pageNum,
           bbox: [minX, minY, maxX - minX, maxY - minY] as [number, number, number, number],
         });
       }
@@ -882,44 +934,68 @@ export class ParsingQueue extends EventEmitter {
 
   /**
    * 下载版面图片到磁盘，用于前端双视图预览
+   * 使用 1-based 页码，与 saveKBPageImages / getKBPageImagePath 保持一致
    */
   private async downloadLayoutImages(
     task: ParsingTask,
     layouts: DocMindLayout[]
   ): Promise<void> {
     const downloadPromises: Promise<void>[] = [];
+    const savedPages = new Set<number>();
 
     for (const layout of layouts) {
       // Document Mind 新版API中，如果layout有图片URL，下载它
       const imageUrl = (layout as any).imageUrl;
       if (typeof imageUrl === 'string' && imageUrl) {
-        // pageNum 通常是第一个页码
-        const pageNum = Array.isArray(layout.pageNum) ? layout.pageNum[0] : (layout.pageNum ?? 1);
+        // Document Mind pageNum 是 0-based，转为 1-based 与本地解析一致
+        const rawPageNum = Array.isArray(layout.pageNum) ? layout.pageNum[0] : layout.pageNum;
+        const pageNum = (rawPageNum ?? 0) + 1;
         const destPath = this.getLayoutImagePath(task, pageNum);
         
         if (!existsSync(destPath)) {
           mkdirSync(dirname(destPath), { recursive: true });
           downloadPromises.push(
-            downloadFile(imageUrl, destPath).catch((err: any) => {
+            downloadFile(imageUrl, destPath).then(() => { savedPages.add(pageNum); }).catch((err: any) => {
               console.error(`[ParsingQueue] Failed to download layout image for page ${pageNum}: ${err.message}`);
             })
           );
+        } else {
+          savedPages.add(pageNum);
         }
       }
     }
     
     await Promise.all(downloadPromises);
+
+    // 更新 pages.json 索引，确保 getKBPageImageList 能返回正确的页码列表
+    if (savedPages.size > 0) {
+      try {
+        const indexFile = join(process.cwd(), ".raos", "knowledge", task.owner, "page-images", task.docId, "pages.json");
+        let existingPages: number[] = [];
+        if (existsSync(indexFile)) {
+          try { existingPages = JSON.parse(readFileSync(indexFile, "utf-8")); } catch { /* ignore */ }
+        }
+        const merged = [...new Set([...existingPages, ...savedPages])].sort((a, b) => a - b);
+        writeFileSync(indexFile, JSON.stringify(merged));
+      } catch (err: any) {
+        console.error(`[ParsingQueue] Failed to update pages.json for ${task.docId}: ${err.message}`);
+      }
+    }
   }
 
   /**
    * 获取版面图片存储路径
+   * 使用与 saveKBPageImages 一致的路径结构，确保 getKBPageImagePath 能查找到
    */
   private getLayoutImagePath(task: ParsingTask, pageNumber: number): string {
     return join(
-      this.config.kbImagesDir,
+      process.cwd(),
+      ".raos",
+      "knowledge",
       task.owner,
+      "page-images",
       task.docId,
-      `page_${pageNumber}.png`
+      `page-${pageNumber}.png`
     );
   }
 
@@ -1049,12 +1125,26 @@ export class ParsingQueue extends EventEmitter {
         // 传入 task.docId 作为占位符ID，避免重复创建文档
         // 添加 _skipQueue = true 强制不走 Document Mind 队列，直接本地解析（避免递归）
         console.log(`[ParsingQueue] 开始调用知识库 ingest，文档名: ${task.docName}`);
+        // 保存文档内嵌图片到磁盘
+        let savedImages: Array<{ id: string; path: string; description: string; page?: number }> = [];
+        if (parseResult.images && parseResult.images.length > 0) {
+          const imageDir = resolve(cwd(), ".raos", "knowledge", task.owner, "doc-images", task.docId);
+          savedImages = saveImages(parseResult.images, imageDir);
+          console.log(`[ParsingQueue] 已保存 ${savedImages.length} 张内嵌图片到 ${imageDir}`);
+        }
+
         const result = await kb.ingest(task.docName, content, {
           source: task.filePath,
           tags: task.tags,
           skipEmbedding: false,
           _placeholderDocId: task.docId,
           _skipQueue: true,
+          images: savedImages.map((img) => ({
+            id: img.id,
+            description: img.description,
+            page: img.page,
+            url: `/api/knowledge/documents/${task.docId}/images/${img.id}`,
+          })),
         } as any);
         console.log(`[ParsingQueue] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}`);
 
@@ -1075,6 +1165,14 @@ export class ParsingQueue extends EventEmitter {
 
        console.log(`[ParsingQueue] 本地解析完成: ${task.docId}, chunks: ${result.chunkCount}`);
 
+      // 更新数据库状态为成功
+      await kb.updateParsingStatus(task.docId, {
+        parsingStatus: 'success',
+        parsingProgress: 100,
+        chunkCount: result.chunkCount,
+        parsedContent: content.slice(0, 50000),
+      });
+
       // 同步文档到知识图谱（非致命，失败不影响主流程）
       if (this.sessionManager && task.docId) {
         try {
@@ -1089,6 +1187,7 @@ export class ParsingQueue extends EventEmitter {
               key: `kb:${task.docName}`,
               value: `Knowledge base document: ${task.docName}`,
               tags: ['kb_document', (task.docName.split('.').pop() || 'doc'), ...task.tags].filter(Boolean),
+              type: "kb_document",
             });
 
             // 2. LLM 关系抽取（使用数据库中的 parsed_content）

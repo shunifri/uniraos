@@ -5,9 +5,6 @@ import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig } from "../skills
 import type { LLMProviderConfig } from "../llm/types.js";
 import type { RouteDependencies } from "./index.js";
 
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
-
 export function createConfigRoutes(deps: RouteDependencies): Router {
   const {
     configManager,
@@ -23,6 +20,9 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
     getVisionConfig,
   } = deps;
   const router = Router();
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   // Get current LLM config (hide API Key)
   router.get("/config", pm.requireAuth, pm.requirePermission(permissions.constants.API.CONFIG_READ), (_req, res) => {

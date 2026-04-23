@@ -121,6 +121,62 @@ export class InactiveRetirementStrategy implements EvolutionStrategy {
   }
 }
 
+/** 错误驱动生成策略 — 基于高频错误模式自动生成新 Skill */
+export class ErrorDrivenGenerationStrategy implements EvolutionStrategy {
+  readonly name = "error-driven-generation";
+
+  private minErrorCount: number;
+  private protectedPrefixes: string[];
+
+  constructor(opts?: { minErrorCount?: number; protectedPrefixes?: string[] }) {
+    this.minErrorCount = opts?.minErrorCount ?? 10;
+    this.protectedPrefixes = opts?.protectedPrefixes ?? [
+      "file_", "http_", "shell_", "db_", "stm_", "ltm_", "recall_",
+      "skill_", "plan_", "kb_", "api_", "ws_", "mq_", "web_",
+      "doc_", "chart_", "prompt_", "task_",
+    ];
+  }
+
+  async analyze(ctx: EvolutionContext): Promise<EvolutionAction[]> {
+    const actions: EvolutionAction[] = [];
+
+    // 1. 聚合错误类型（按 errorType 汇总，过滤系统 Skill）
+    const errorCounts = new Map<string, number>();
+    for (const err of ctx.recentErrors) {
+      // 跳过系统核心 Skill 的错误
+      if (this.protectedPrefixes.some((p) => err.skillName.startsWith(p))) continue;
+      errorCounts.set(err.errorType, (errorCounts.get(err.errorType) || 0) + err.count);
+    }
+
+    // 2. 对高频错误类型生成处理 Skill
+    for (const [errorType, count] of errorCounts.entries()) {
+      if (count < this.minErrorCount) continue;
+
+      const normalizedType = errorType.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      const handlerSkillName = `error_handler_${normalizedType}`;
+
+      // 如果已存在同名 Skill，跳过
+      if (ctx.registeredSkills.includes(handlerSkillName)) continue;
+
+      actions.push({
+        type: "generate",
+        skillName: handlerSkillName,
+        payload: {
+          description: `自动生成的错误处理 Skill：处理 "${errorType}" 类型错误。当其他 Skill 遇到此错误时，提供重试、降级或恢复策略。`,
+          capabilities: [`error:handle:${errorType}`],
+          errorType,
+          triggerCount: count,
+          source: "error-driven-generation-strategy",
+        },
+        priority: Math.min(80, Math.round(count * 2)),
+        requiresApproval: true, // 自动生成的 Skill 默认需要审批
+      });
+    }
+
+    return actions;
+  }
+}
+
 /** 联邦推荐采纳策略 */
 export class FederatedAdoptionStrategy implements EvolutionStrategy {
   readonly name = "federated-adoption";
@@ -235,6 +291,7 @@ export class EvolutionEngine {
     // 注册内置策略
     this.addStrategy(new BottleneckDetectionStrategy());
     this.addStrategy(new InactiveRetirementStrategy());
+    this.addStrategy(new ErrorDrivenGenerationStrategy());
     this.addStrategy(new FederatedAdoptionStrategy());
 
     // 注册内置执行器

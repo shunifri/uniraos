@@ -12,6 +12,7 @@
 import { randomBytes, scryptSync } from "crypto";
 import { randomUUID } from "crypto";
 import { getDb, isMySQL } from "./database.js";
+import type { RoleAgentConfig } from "../permissions/types/role.js";
 
 export interface User {
   id: string;
@@ -474,6 +475,43 @@ export async function listRoles(): Promise<Array<{ id: string; name: string; des
   } else {
     const rows = getDb().prepare("SELECT * FROM roles ORDER BY is_system DESC, name").all() as any[];
     return rows.map((r) => ({ id: r.id, name: r.name, description: r.description, isSystem: !!r.is_system }));
+  }
+}
+
+export async function getRoleAgentConfig(roleId: string): Promise<RoleAgentConfig | null> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query("SELECT agent_config FROM roles WHERE id = ?", [roleId]);
+    const val = rows[0]?.agent_config;
+    if (!val) return null;
+    // mysql2 会自动解析 JSON 列为对象，如果是对象直接返回
+    if (typeof val === 'object') return val as RoleAgentConfig;
+    try {
+      return JSON.parse(val) as RoleAgentConfig;
+    } catch {
+      return null;
+    }
+  } else {
+    const row = getDb().prepare("SELECT agent_config FROM roles WHERE id = ?").get(roleId) as any;
+    if (!row?.agent_config) return null;
+    try {
+      return JSON.parse(row.agent_config) as RoleAgentConfig;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export async function updateRoleAgentConfig(roleId: string, config: RoleAgentConfig | null): Promise<void> {
+  const configJson = config ? JSON.stringify(config) : null;
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    await adapter.execute(
+      "UPDATE roles SET agent_config = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?",
+      [configJson, roleId]
+    );
+  } else {
+    getDb().prepare("UPDATE roles SET agent_config = ? WHERE id = ?").run(configJson, roleId);
   }
 }
 

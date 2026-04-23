@@ -7,7 +7,7 @@ import { SkillRegistry } from "./registry/index.js";
 import { ExecutionEngine, AsyncTaskManager, SkillAccessService } from "./engine/index.js";
 import { WALManager } from "./wal/index.js";
 import { FileWALStore } from "./wal/file-wal-store.js";
-import { Autonomy, defineSkill } from "./types/index.js";
+import { Autonomy, defineSkill, defineSystemSkill } from "./types/index.js";
 import { ConfigManager } from "./config/config-manager.js";
 import { OpenAIProvider } from "./llm/openai-provider.js";
 import { ClaudeProvider } from "./llm/claude-provider.js";
@@ -23,9 +23,13 @@ import { createChartSkills } from "./skills/chart-skills.js";
 import { createProtocolSkills } from "./skills/protocol-skills.js";
 import { createKnowledgeSkills } from "./skills/knowledge-skills.js";
 import { createApiGenSkills } from "./skills/api-gen-skills.js";
-import { createMetaSkills } from "./skills/meta-skills.js";
+import { createMetaSkills, resolveParams, createTransformSkill, createValidateSkill, createAggregateSkill } from "./skills/meta-skills.js";
 import { createPlanningSkill } from "./skills/planning-skill.js";
 import { createGraphSkills } from "./skills/graph-skills.js";
+import { createWorkflowSkills } from "./skills/workflow-skills.js";
+import { createEnterpriseSkills } from "./skills/enterprise-skills.js";
+import { createIntegrationSkills } from "./skills/integration-skills.js";
+import { createAdvancedSkills } from "./skills/advanced-skills.js";
 import { createUserConfirmSkill } from "./skills/user-confirm-skill.js";
 import { SkillMarketplace } from "./skills/skill-marketplace.js";
 import { OpenAIMultimodalProvider } from "./llm/openai-multimodal-provider.js";
@@ -34,6 +38,7 @@ import { UserSessionManager } from "./user/user-session.js";
 import { requestContext } from "./user/request-context.js";
 import { initDatabaseAsync, getDb, isMySQL } from "./db/database.js";
 import { ShareRepository } from "./db/share-repository.js";
+import { getCustomSkillRepository } from "./db/custom-skill-repository.js";
 import { extractPptxStyle } from "./services/pptx-style-extractor.js";
 import { authMiddleware, requireAuth, requirePermission, requireAdmin } from "./db/auth-middleware.js";
 import { initPermissionService, permissions } from "./permissions/index.js";
@@ -42,6 +47,7 @@ import * as userRepo from "./db/user-repository.js";
 import * as deptRepo from "./db/department-repository.js";
 import * as resRepo from "./db/resource-repository.js";
 import type { LLMProvider, LLMProviderConfig, MultimodalProvider } from "./llm/types.js";
+import type { RoleAgentConfig } from "./permissions/types/role.js";
 import { OpenAIEmbeddingProvider } from "./memory/embedding-provider.js";
 import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig, getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "./skills/knowledge-skills.js";
 import { parseDocument, type VisionModelConfig } from "./services/doc-parser.js";
@@ -78,10 +84,30 @@ setInterval(() => cleanExpiredSessions(), 60 * 60 * 1000);
 // 认证中间件：解析 Bearer token，挂载 req.user
 app.use(authMiddleware);
 
+/** 解析角色 Agent 配置：优先使用请求中显式指定的角色，其次取用户第一个非系统角色 */
+async function resolveRoleAgentConfig(req: any): Promise<RoleAgentConfig | undefined> {
+  const explicitRole = req.body?.role || req.query?.role;
+  if (explicitRole) {
+    return await userRepo.getRoleAgentConfig(explicitRole) ?? undefined;
+  }
+  if (req.user?.id) {
+    const roles = await userRepo.getUserRoles(req.user.id);
+    if (roles.length > 0) {
+      return await userRepo.getRoleAgentConfig(roles[0].id) ?? undefined;
+    }
+  }
+  return undefined;
+}
+
 // userId 上下文中间件：已登录用户用 user.id，未登录降级为 "default"
 app.use((req, _res, next) => {
-  const userId = req.user?.id ?? "default";
-  requestContext.run({ userId }, () => next());
+  const user = req.user;
+  requestContext.run({
+    userId: user?.id ?? "default",
+    userName: user?.username,
+    userDisplayName: user?.displayName,
+    departmentId: user?.departmentId ?? undefined,
+  }, () => next());
 });
 
 // 核心实例
@@ -266,7 +292,7 @@ function rebuildOrchestrator(): void {
 // ===== 注册示例 Skills =====
 function loadExampleSkills() {
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "log_before",
       visible: false,
       autonomy: Autonomy.AUTO_PRE,
@@ -279,7 +305,7 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "log_after",
       visible: false,
       autonomy: Autonomy.AUTO_POST,
@@ -292,7 +318,7 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "checkpoint",
       visible: false,
       autonomy: Autonomy.GUARDIAN,
@@ -305,10 +331,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "greet",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       dependencies: ["log_before", "log_after"],
       handler: async (params) => {
         const name = (params.name as string) || "World";
@@ -319,10 +344,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "add",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const a = Number(params.a ?? 0);
         const b = Number(params.b ?? 0);
@@ -333,10 +357,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "slow_task",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       timeout: 5000,
       retry: { maxRetries: 2, backoffMs: 500, backoffMultiplier: 2 },
       handler: async (params) => {
@@ -349,10 +372,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "random_fail",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       retry: { maxRetries: 3, backoffMs: 200, backoffMultiplier: 2 },
       handler: async () => {
         if (Math.random() < 0.6) {
@@ -365,10 +387,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "get_time",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async () => {
         return {
           success: true,
@@ -384,10 +405,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "calculate",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const { expression } = params as { expression: string };
         if (!expression) {
@@ -405,10 +425,9 @@ function loadExampleSkills() {
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "list_skills",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async () => {
         const skills = registry.listVisible().map((s) => ({
           name: s.name,
@@ -469,8 +488,21 @@ createApiGenSkills(registry);
 // 注册联邦/迁移/进化 Skills (skill_migrate_*/federation_*/evolution_*)
 createFederationSkills(registry, migrationManager, federationManager, evolutionEngine);
 
+// 注册工作流 Skills (approval_submit/approval_query/approval_approve/task_create/task_query/task_update/workflow_generate)
+createWorkflowSkills(registry, () => currentProvider);
+console.log(`   Workflow skills registered`);
+
+// 注册企业基础设施 Skills (email_send/email_read/im_bot_send/ldap_search/ldap_auth/calendar_query/calendar_create)
+await createEnterpriseSkills(registry);
+
+// 注册数据集成 Skills (kafka_consume/kafka_produce/mqtt_publish/mqtt_subscribe)
+await createIntegrationSkills(registry);
+
+// 注册高级 Skills (health_check/alert_query/log_query/metric_query/ftp/sftp/soap/odbc/rpa/saml/oauth2/role_sync)
+await createAdvancedSkills(registry);
+
 // 注册元 Skills (compose/template/info)
-createMetaSkills(registry, engine, () => currentProvider);
+createMetaSkills(registry, engine, () => currentProvider, evolutionController);
 
 // 注册知识图谱 Skills
 for (const skill of createGraphSkills(sessionManager)) {
@@ -484,7 +516,7 @@ console.log(`   User confirmation skill registered (user_confirm)`);
 
 // 注册 Prompt 管理 Skills
 registry.register(
-  defineSkill({
+  defineSystemSkill({
     name: "prompt_register",
     description: "注册 Prompt 模板。参数: name(string), template(string), description?(string), version?(string)",
     handler: async (params) => {
@@ -503,7 +535,7 @@ registry.register(
 );
 
 registry.register(
-  defineSkill({
+  defineSystemSkill({
     name: "prompt_render",
     description: "渲染 Prompt 模板。参数: name(string), variables(object)",
     handler: async (params) => {
@@ -521,7 +553,7 @@ registry.register(
 );
 
 registry.register(
-  defineSkill({
+  defineSystemSkill({
     name: "prompt_list",
     description: "列出所有 Prompt 模板。",
     handler: async () => {
@@ -548,6 +580,34 @@ pluginLoader.loadAll().then(({ loaded, errors }) => {
   // 插件加载后同步 Skill 资源
   syncSkillsToResources();
 });
+
+// 从数据库加载用户自定义 Skill
+(async () => {
+  try {
+    const repo = getCustomSkillRepository();
+    const customSkills = await repo.findAll();
+    let loadedCount = 0;
+    for (const customSkill of customSkills) {
+      try {
+        const skill = await repo.reconstructSkill(customSkill);
+        if (!registry.lookup(skill.name)) {
+          registry.register(skill);
+          loadedCount++;
+        } else {
+          console.log(`   Custom skill "${skill.name}" already registered, skipping`);
+        }
+      } catch (error) {
+        console.warn(`   Failed to load custom skill ${customSkill.name}:`, error);
+      }
+    }
+    if (loadedCount > 0) {
+      console.log(`   Custom skills loaded from database: ${loadedCount}`);
+      syncSkillsToResources();
+    }
+  } catch (error) {
+    console.warn("   Failed to load custom skills from database:", error);
+  }
+})();
 
 // 从持久化配置恢复 LLM Provider
 if (configManager.isLLMConfigured()) {
@@ -598,285 +658,15 @@ async function syncSkillsToResources() {
 }
 syncSkillsToResources();
 
-// ===== Auth Routes（公开） =====
+// ===== Auth Routes（已移至 routes/auth-routes.ts） =====
 
-// 登录
-app.post("/api/auth/login", async (req, res) => {
-  const { username, password } = req.body as { username: string; password: string };
-  if (!username || !password) {
-    res.status(400).json({ success: false, error: "username and password are required" });
-    return;
-  }
+// ===== 用户管理 API（已移至 routes/auth-routes.ts） =====
 
-  const user = await userRepo.authenticate(username, password);
-  if (!user) {
-    res.status(401).json({ success: false, error: "Invalid credentials" });
-    return;
-  }
+// ===== 部门管理 API（已移至 routes/auth-routes.ts） =====
 
-  const session = await createSession(user.id);
-  const details = await userRepo.getUserWithDetails(user.id);
+// ===== 资源管理 API（已移至 routes/auth-routes.ts） =====
 
-  res.json({
-    success: true,
-    token: session.token,
-    expiresAt: session.expiresAt,
-    user: details,
-  });
-});
-
-// 登出
-app.post("/api/auth/logout", requireAuth, async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith("Bearer ")) {
-    await destroySession(authHeader.slice(7));
-  }
-  res.json({ success: true });
-});
-
-// 获取当前用户信息
-app.get("/api/auth/me", requireAuth, async (req, res) => {
-  const details = await userRepo.getUserWithDetails(req.user!.id);
-  if (!details) {
-    res.status(404).json({ success: false, error: "User not found" });
-    return;
-  }
-  res.json({ success: true, user: details });
-});
-
-// ===== 用户管理 API（需要 admin） =====
-
-app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
-  // If ?id= query param is present, return user details
-  const userId = req.query.id as string | undefined;
-  if (userId) {
-    const details = await userRepo.getUserWithDetails(userId);
-    if (!details) {
-      res.status(404).json({ success: false, error: "User not found" });
-      return;
-    }
-    res.json({ success: true, user: details });
-    return;
-  }
-  const users = await userRepo.listUsers();
-  res.json({ success: true, users });
-});
-
-app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
-  const { username, password, displayName, departmentId } = req.body;
-  if (!username || !password) {
-    res.status(400).json({ success: false, error: "username and password are required" });
-    return;
-  }
-  try {
-    const user = await userRepo.createUser({ username, password, displayName, departmentId });
-    res.json({ success: true, user });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-app.put("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
-  const { displayName, avatar, status, departmentId } = req.body;
-  const id = req.params.id as string;
-  const user = await userRepo.updateUser(id, { displayName, avatar, status, departmentId });
-  if (!user) {
-    res.status(404).json({ success: false, error: "User not found" });
-    return;
-  }
-  res.json({ success: true, user });
-});
-
-app.delete("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  if (id === req.user!.id) {
-    res.status(400).json({ success: false, error: "Cannot delete yourself" });
-    return;
-  }
-  const deleted = await userRepo.deleteUser(id);
-  res.json({ success: true, deleted });
-});
-
-// 用户角色分配
-app.post("/api/users/:id/roles", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { roleId, action } = req.body as { roleId: string; action: "assign" | "remove" };
-  if (!roleId || !action) {
-    res.status(400).json({ success: false, error: "roleId and action (assign/remove) are required" });
-    return;
-  }
-  if (action === "assign") {
-    await userRepo.assignRole(id, roleId);
-  } else {
-    await userRepo.removeRole(id, roleId);
-  }
-  const roles = await userRepo.getUserRoles(id);
-  res.json({ success: true, roles });
-});
-
-// 用户密码修改
-app.post("/api/users/:id/password", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { password } = req.body as { password: string };
-  if (!password) {
-    res.status(400).json({ success: false, error: "password is required" });
-    return;
-  }
-  const changed = await userRepo.changePassword(id, password);
-  res.json({ success: true, changed });
-});
-
-// ===== 部门管理 API（需要 admin） =====
-
-app.get("/api/departments", requireAuth, requireAdmin, async (_req, res) => {
-  const departments = await deptRepo.getDepartmentTree();
-  res.json({ success: true, departments });
-});
-
-app.post("/api/departments", requireAuth, requireAdmin, async (req, res) => {
-  const { name, parentId, description } = req.body;
-  if (!name) {
-    res.status(400).json({ success: false, error: "name is required" });
-    return;
-  }
-  try {
-    const dept = await deptRepo.createDepartment({ name, parentId, description });
-    res.json({ success: true, department: dept });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-app.put("/api/departments/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { name, description } = req.body;
-  const dept = await deptRepo.updateDepartment(id, { name, description });
-  if (!dept) {
-    res.status(404).json({ success: false, error: "Department not found" });
-    return;
-  }
-  res.json({ success: true, department: dept });
-});
-
-app.delete("/api/departments/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  try {
-    await deptRepo.deleteDepartment(id);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-// 部门资源分配
-app.post("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { resourceIds } = req.body as { resourceIds: string[] };
-  if (!resourceIds || !Array.isArray(resourceIds)) {
-    res.status(400).json({ success: false, error: "resourceIds array is required" });
-    return;
-  }
-  await deptRepo.assignResources(id, resourceIds);
-  const resources = await deptRepo.getDepartmentResources(id);
-  res.json({ success: true, resources });
-});
-
-app.delete("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { resourceIds } = req.body as { resourceIds: string[] };
-  if (!resourceIds || !Array.isArray(resourceIds)) {
-    res.status(400).json({ success: false, error: "resourceIds array is required" });
-    return;
-  }
-  await deptRepo.removeResources(id, resourceIds);
-  const resources = await deptRepo.getDepartmentResources(id);
-  res.json({ success: true, resources });
-});
-
-app.get("/api/departments/:id/resources", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const effective = req.query.effective === "true";
-  const resources = effective
-    ? await deptRepo.getDepartmentEffectiveResources(id)
-    : await deptRepo.getDepartmentResources(id);
-  res.json({ success: true, resources });
-});
-
-// ===== 资源管理 API（需要 admin） =====
-
-app.get("/api/resources", requireAuth, requireAdmin, async (req, res) => {
-  const type = req.query.type as string | undefined;
-  const resources = await resRepo.listResources(type);
-  res.json({ success: true, resources });
-});
-
-app.post("/api/resources/sync", requireAuth, requireAdmin, async (_req, res) => {
-  await syncSkillsToResources();
-  const resources = await resRepo.listResources("skill");
-  res.json({ success: true, resources });
-});
-
-// ===== 角色权限管理 API（需要 admin） =====
-
-app.get("/api/roles", requireAuth, requireAdmin, async (_req, res) => {
-  const roles = await userRepo.listRoles();
-  res.json({ success: true, roles });
-});
-
-app.get("/api/roles/:id/permissions", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const permissions = await resRepo.getPermissionsByRole(id);
-  res.json({ success: true, permissions });
-});
-
-app.post("/api/roles/:id/permissions", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
-  if (!permissionIds || !action) {
-    res.status(400).json({ success: false, error: "permissionIds and action (assign/remove) are required" });
-    return;
-  }
-  if (action === "assign") {
-    await resRepo.assignPermissionsToRole(id, permissionIds);
-  } else {
-    await resRepo.removePermissionsFromRole(id, permissionIds);
-  }
-  const permissions = await resRepo.getPermissionsByRole(id);
-  res.json({ success: true, permissions });
-});
-
-app.get("/api/permissions", requireAuth, requireAdmin, async (_req, res) => {
-  const permissions = await resRepo.listPermissions();
-  res.json({ success: true, permissions });
-});
-
-app.post("/api/roles", requireAuth, requireAdmin, async (req, res) => {
-  const { name, description } = req.body as { name: string; description?: string };
-  if (!name) {
-    res.status(400).json({ success: false, error: "name is required" });
-    return;
-  }
-  try {
-    const role = await userRepo.createRole({ name, description });
-    res.json({ success: true, role });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-app.delete("/api/roles/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = req.params.id as string;
-  try {
-    const ok = await userRepo.deleteRole(id);
-    if (!ok) {
-      res.status(404).json({ success: false, error: "Role not found" });
-      return;
-    }
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
+// ===== 角色权限管理 API（已移至 routes/auth-routes.ts） =====
 
 // ===== Admin API 兼容路由 (/api/admin/*) =====
 
@@ -958,121 +748,6 @@ app.post("/api/admin/roles", requireAuth, requireAdmin, async (req, res) => {
 app.get("/api/admin/resources", requireAuth, requireAdmin, async (_req, res) => {
   const resources = await resRepo.listResources();
   res.json({ success: true, resources });
-});
-
-// ===== Skill Routes（带权限守卫） =====
-
-// 列出所有 Skills
-app.get("/api/skills", requireAuth, requirePermission("skills.read"), (_req, res) => {
-  const skills = registry.list().map((s) => ({
-    name: s.name,
-    visible: s.visible,
-    autonomy: s.autonomy,
-    dependencies: s.dependencies,
-    timeout: s.timeout,
-    retry: s.retry,
-    description: s.description,
-  }));
-  res.json(skills);
-});
-
-// 列出可见 Skills
-app.get("/api/skills/visible", requireAuth, requirePermission("skills.read"), (_req, res) => {
-  const skills = registry.listVisible().map((s) => ({
-    name: s.name,
-    autonomy: s.autonomy,
-    dependencies: s.dependencies,
-    description: s.description,
-  }));
-  res.json(skills);
-});
-
-// 执行 Skill
-app.post("/api/execute", requireAuth, requirePermission("skills.execute"), async (req, res) => {
-  const { skillName, params } = req.body as {
-    skillName: string;
-    params?: Record<string, unknown>;
-  };
-
-  try {
-    const result = await engine.execute(skillName, params ?? {});
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-      errorType: err instanceof Error ? err.constructor.name : "UnknownError",
-    });
-  }
-});
-
-// 动态注册 Skill
-app.post("/api/skills", requireAuth, requirePermission("skills.manage"), (req, res) => {
-  const { name, visible, autonomy, dependencies, timeout, description } =
-    req.body;
-
-  try {
-    registry.register(
-      defineSkill({
-        name,
-        visible: visible ?? true,
-        autonomy: autonomy ?? Autonomy.MANUAL,
-        dependencies: dependencies ?? [],
-        timeout: timeout ?? 30000,
-        description: description ?? "",
-        handler: async (params) => {
-          return { success: true, data: { echo: params } };
-        },
-      }),
-    );
-    // 同步新 Skill 到资源表
-    syncSkillsToResources();
-    res.json({ success: true, message: `Skill "${name}" registered` });
-  } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
-// 删除 Skill
-app.delete("/api/skills/:name", requireAuth, requirePermission("skills.manage"), (req, res) => {
-  try {
-    registry.unregister(req.params.name as string);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
-// 获取拓扑排序
-app.get("/api/topology", requireAuth, requirePermission("skills.read"), (_req, res) => {
-  try {
-    const order = registry.getTopologicalOrder();
-    res.json({ order });
-  } catch (err) {
-    res.status(400).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
-// 获取 WAL 状态
-app.get("/api/wal", requireAuth, requirePermission("skills.read"), (_req, res) => {
-  res.json({
-    all: wal.getAll(),
-    incomplete: wal.getIncomplete(),
-    recovery: wal.recover(),
-  });
-});
-
-// 执行历史
-app.get("/api/history", requireAuth, requirePermission("skills.read"), (_req, res) => {
-  res.json(engine.getHistory());
 });
 
 // ===== LLM Configuration APIs（带权限守卫） =====
@@ -1670,7 +1345,7 @@ app.post("/api/config/model-cards/:type/test", requireAuth, requirePermission("c
 // Agent 对话（LLM + Tool Use）
 app.post("/api/agent/chat", requireAuth, requirePermission("chat"), async (req, res) => {
   const userId = req.user!.id;
-  const { message, mode } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy" };
+  const { message, mode, conversationId } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy"; conversationId?: string };
   if (!message) {
     res.status(400).json({ success: false, error: "message is required" });
     return;
@@ -1684,7 +1359,7 @@ app.post("/api/agent/chat", requireAuth, requirePermission("chat"), async (req, 
       return;
     }
     try {
-      const result = await loop.run(message);
+      const result = await loop.run(message, { conversationId });
       res.json({ success: true, ...result });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -1700,7 +1375,8 @@ app.post("/api/agent/chat", requireAuth, requirePermission("chat"), async (req, 
   }
 
   try {
-    const result = await orchestrator.run({ message, userId });
+    const roleAgentConfig = await resolveRoleAgentConfig(req);
+    const result = await orchestrator.run({ message, userId, roleAgentConfig });
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -1734,11 +1410,12 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
 
   const write = (eventName: string, data: unknown) => {
     if (closed) return;
+    console.log(`[SSE write] ${eventName}`);
     res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
   // ===== 后端消息持久化 =====
-  const convId = conversationId || null;
+  const convId = conversationId || undefined;
 
   // Fire-and-forget: 不阻塞 SSE 流式输出
   function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
@@ -1909,14 +1586,17 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
     if (mode === "legacy" || mode === "react") {
       const loop = getAgentLoop(userId);
       if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
-      for await (const event of loop.runStream(enrichedMessage)) {
+      for await (const event of loop.runStream(enrichedMessage, { conversationId: convId })) {
         if (closed) break;
         processEvent(event.event, event.data);
       }
     } else {
       const orchestrator = getOrchestrator();
       if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
-      for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
+      const roleAgentConfig = await resolveRoleAgentConfig(req);
+      const runStreamInput: any = { message: enrichedMessage, userId, roleAgentConfig };
+      if (convId) runStreamInput.conversationId = convId;
+      for await (const event of orchestrator.runStream(runStreamInput)) {
         if (closed) break;
         // 从 tool_result 中收集 web 引用
         if (event.event === "tool_result") {
@@ -1925,7 +1605,7 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
         }
         // 在 done/agent_done 事件保存消息之前，收集并过滤 web 引用和 KB 引用
         if (event.event === "agent_done" || event.event === "done") {
-          const allWebRefs = orchestrator.getLastWebReferences();
+          const allWebRefs = orchestrator.getLastWebReferences(userId, convId);
           if (allWebRefs.length > 0) {
             // 只保留 AI 回复文本中实际引用了的 URL（出现了完整 URL 或域名）
             const text = currentAssistantText || "";
@@ -1945,7 +1625,7 @@ app.post("/api/agent/chat/stream", requireAuth, requirePermission("chat.stream")
           }
 
           // 过滤 KB 引用：只保留 AI 回复中实际引用了的（包含 [^1] 这样的引用标记）
-          const allKbRefs = orchestrator.getLastKbReferences();
+          const allKbRefs = orchestrator.getLastKbReferences(userId, convId);
           if (allKbRefs.length > 0) {
             const text = currentAssistantText || "";
             // 检查是否包含引用标记，如 [^1], [^2] 等
@@ -2256,72 +1936,6 @@ app.get("/api/metrics/skill/:name", requireAuth, requirePermission("skills.read"
     return;
   }
   res.json({ success: true, metrics });
-});
-
-// ===== Evolution Control APIs =====
-
-app.get("/api/evolution/config", requireAuth, requireAdmin, (_req, res) => {
-  res.json({ success: true, config: evolutionController.getConfig() });
-});
-
-app.post("/api/evolution/config", requireAuth, requireAdmin, (req, res) => {
-  evolutionController.updateConfig(req.body);
-  res.json({ success: true, config: evolutionController.getConfig() });
-});
-
-// PUT 兼容路由
-app.put("/api/evolution/config", requireAuth, requireAdmin, (req, res) => {
-  evolutionController.updateConfig(req.body);
-  res.json({ success: true, config: evolutionController.getConfig() });
-});
-
-app.get("/api/evolution/history", requireAuth, requireAdmin, (_req, res) => {
-  res.json({
-    success: true,
-    history: evolutionController.getGenerationHistory(),
-  });
-});
-
-app.get("/api/evolution/pending", requireAuth, requireAdmin, (_req, res) => {
-  res.json({
-    success: true,
-    pending: evolutionController.getPendingApprovals(),
-  });
-});
-
-app.post("/api/evolution/approve/:id", requireAuth, requireAdmin, (req, res) => {
-  const item = evolutionController.approve(req.params.id as string);
-  if (!item) {
-    res.status(404).json({ success: false, error: "Approval not found" });
-    return;
-  }
-  // Register the approved skill
-  try {
-    const handler = new Function("params", "context", item.code) as any;
-    const skill = defineSkill({
-      name: item.name,
-      description: `[AI生成] ${item.description}`,
-      capabilities: item.capabilities,
-      handler: async (p: Record<string, unknown>, ctx: any) => {
-        try { return await handler(p, ctx); }
-        catch (err: any) { return { success: false, error: err instanceof Error ? err : new Error(String(err)) }; }
-      },
-    });
-    registry.register(skill);
-    evolutionController.recordGeneration(item.name, item.generatedBy);
-    res.json({ success: true, name: item.name });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/evolution/reject/:id", requireAuth, requireAdmin, (req, res) => {
-  const success = evolutionController.reject(req.params.id as string, req.body.reason || "Rejected");
-  if (!success) {
-    res.status(404).json({ success: false, error: "Approval not found" });
-    return;
-  }
-  res.json({ success: true });
 });
 
 // ===== Skill Marketplace APIs =====
@@ -2795,85 +2409,6 @@ app.delete("/api/memory/:id", requireAuth, requirePermission("memory.write"), as
     }
   } catch (err) {
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
-  }
-});
-
-// ===== Evolution APIs =====
-
-app.get("/api/evolution/genealogy", requireAuth, requirePermission("config.read"), (req, res) => {
-  const action = (req.query.action as string) || "tree";
-  const name = req.query.name as string | undefined;
-
-  switch (action) {
-    case "ancestry":
-      if (!name) { res.status(400).json({ error: "name required" }); return; }
-      res.json({ success: true, ancestry: evolutionController.getAncestry(name) });
-      break;
-    case "descendants":
-      if (!name) { res.status(400).json({ error: "name required" }); return; }
-      res.json({ success: true, descendants: evolutionController.getDescendants(name) });
-      break;
-    case "siblings":
-      if (!name) { res.status(400).json({ error: "name required" }); return; }
-      res.json({ success: true, siblings: evolutionController.getSiblings(name) });
-      break;
-    case "stats":
-      res.json({ success: true, stats: evolutionController.getGenealogyStats() });
-      break;
-    default:
-      res.json({ success: true, tree: evolutionController.getGenealogyTree() });
-  }
-});
-
-app.get("/api/evolution/emergence", requireAuth, requirePermission("config.read"), (req, res) => {
-  const since = req.query.since ? Number(req.query.since) : undefined;
-  const severity = req.query.severity as string | undefined;
-  const type = req.query.type as string | undefined;
-
-  if (req.query.report === "true") {
-    res.json({ success: true, report: emergenceDetector.getReport() });
-  } else {
-    res.json({ success: true, patterns: emergenceDetector.getPatterns({ since, severity, type }) });
-  }
-});
-
-app.get("/api/evolution/red-lines", requireAuth, requirePermission("config.read"), (_req, res) => {
-  res.json({
-    success: true,
-    redLines: evolutionController.getRedLines().map((r) => ({
-      id: r.id,
-      description: r.description,
-      blocking: r.blocking,
-    })),
-    violations: evolutionController.getViolations(),
-  });
-});
-
-app.post("/api/evolution/red-lines", requireAuth, requirePermission("config.write"), (req, res) => {
-  const { action, id, description, blocking } = req.body as {
-    action: "add" | "remove";
-    id: string;
-    description?: string;
-    blocking?: boolean;
-  };
-
-  if (action === "remove") {
-    const removed = evolutionController.removeRedLine(id);
-    res.json({ success: true, removed });
-  } else if (action === "add") {
-    if (!id || !description) {
-      res.status(400).json({ success: false, error: "id and description required" });
-      return;
-    }
-    evolutionController.addRedLine({
-      id,
-      description,
-      blocking: blocking ?? true,
-      check: () => null, // Custom logic must be added programmatically
-    });
-    res.json({ success: true, added: id });
-  } else {
-    res.status(400).json({ success: false, error: "action must be 'add' or 'remove'" });
   }
 });
 
@@ -3553,6 +3088,13 @@ app.get("/api/files/tree", requireAuth, (req, res) => {
     ext?: string;
   }
 
+  const userId = req.user!.id;
+  const userBase = join(WS_BASE, "uploads", userId);
+  if (!existsSync(userBase)) {
+    res.json({ success: true, tree: [] });
+    return;
+  }
+
   // 排除中间/临时文件和目录
   const EXCLUDED_DIRS = new Set(["excel_content", "node_modules", "__MACOSX", "Excel解包文件"]);
   const EXCLUDED_EXTS = new Set([".db", ".db-shm", ".db-wal", ".tmp", ".lock"]);
@@ -3611,14 +3153,16 @@ app.get("/api/files/tree", requireAuth, (req, res) => {
     return result;
   }
 
-  res.json({ success: true, tree: buildTree(WS_BASE, "") });
+  res.json({ success: true, tree: buildTree(userBase, "") });
 });
 
 // 列出指定目录下的文件
 app.get("/api/files/list", requireAuth, (req, res) => {
+  const userId = req.user!.id;
+  const userBase = join(WS_BASE, "uploads", userId);
   const dirPath = (req.query.path as string) || "";
-  const absDir = join(WS_BASE, dirPath);
-  if (!absDir.startsWith(WS_BASE)) {
+  const absDir = join(userBase, dirPath);
+  if (!absDir.startsWith(userBase)) {
     res.status(403).json({ success: false, error: "access denied" });
     return;
   }

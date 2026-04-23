@@ -8,6 +8,7 @@ import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider, Message, ToolDefinition } from "../llm/types.js";
 import type { StreamEvent as BaseStreamEvent } from "../llm/agent-loop.js";
+export type { RoleAgentConfig } from "../permissions/types/role.js";
 
 // ===== 智能体级别 =====
 

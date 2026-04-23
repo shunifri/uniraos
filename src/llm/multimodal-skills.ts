@@ -3,7 +3,7 @@
  * 将多模态生成/理解能力包装为 RAOS Skill
  * 生成类 Skill 为异步（耗时），理解类 Skill 为同步
  */
-import { defineSkill, Autonomy, TaskStatus } from "../types/index.js";
+import { defineSystemSkill, Autonomy, TaskStatus } from "../types/index.js";
 import type { SkillDefinition, AsyncTaskOps } from "../types/index.js";
 import type { MultimodalProvider, MediaType } from "./types.js";
 import type { AsyncTaskManager } from "../engine/async-task-manager.js";
@@ -14,10 +14,9 @@ export function createMultimodalSkills(
 ): SkillDefinition[] {
   return [
     // ===== 生成类 Skills（异步） =====
-    defineSkill({
+    defineSystemSkill({
       name: "media_generate",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       async: true,
       timeout: 300000, // 5 分钟
       description:
@@ -70,13 +69,12 @@ export function createMultimodalSkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "image_generate",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       async: true,
       timeout: 120000,
-      description: "生成图像。参数: prompt(string), size?('256x256'|'512x512'|'1024x1024'), style?('natural'|'vivid')",
+      description: "生成图像。参数: prompt(string), size?(string, 如 '1920x1080'/'1024x1024'/'1792x1024' 等，具体支持尺寸取决于所用模型), style?('natural'|'vivid'), model?(string, 图像生成模型名称)",
       handler: async (params) => {
         const provider = getProvider();
         if (!provider) {
@@ -121,10 +119,9 @@ export function createMultimodalSkills(
     }),
 
     // ===== 理解类 Skills（同步） =====
-    defineSkill({
+    defineSystemSkill({
       name: "media_understand",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       timeout: 60000,
       description:
         "理解/分析多媒体内容。参数: type('image'|'audio'|'video'), media(string: url 或 base64), prompt(string)",
@@ -161,10 +158,9 @@ export function createMultimodalSkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "image_describe",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       timeout: 60000,
       description: "描述/理解一张图片。参数: image(string: url 或 base64), question?(string, 默认'描述这张图片')",
       handler: async (params) => {
@@ -192,10 +188,9 @@ export function createMultimodalSkills(
     }),
 
     // ===== 任务查询 Skill =====
-    defineSkill({
+    defineSystemSkill({
       name: "task_status",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "查询异步任务状态。参数: taskId(string)",
       handler: async (params) => {
         const { taskId } = params as { taskId: string };
@@ -210,10 +205,9 @@ export function createMultimodalSkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "task_wait",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       timeout: 300000,
       description: "等待异步任务完成并返回结果。参数: taskId(string), timeoutMs?(number, 默认30000)",
       handler: async (params) => {
@@ -230,10 +224,9 @@ export function createMultimodalSkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "task_list",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "列出所有异步任务。参数: status?('PENDING'|'RUNNING'|'COMPLETED'|'FAILED'|'CANCELLED')",
       handler: async (params) => {
         const { status } = params as { status?: string };

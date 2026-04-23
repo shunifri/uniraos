@@ -2,13 +2,12 @@
  * MediaGallery - 媒体画廊组件
  * 网格展示文档中的图片和表格
  */
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, Image, Typography, Space, Tag, Empty, Tabs } from "antd";
 import { PictureOutlined, TableOutlined } from "@ant-design/icons";
 import { MediaPreviewModal, type MediaItem } from "./MediaPreviewModal";
 
 const { Text } = Typography;
-const { TabPane } = Tabs;
 
 interface MediaGalleryProps {
   images: MediaItem[];
@@ -19,9 +18,9 @@ interface MediaGalleryProps {
 export function MediaGallery({ images, tables, title = "媒体列表" }: MediaGalleryProps) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState<'images' | 'tables'>('images');
+  const [activeTab, setActiveTab] = useState<'images' | 'tables'>(images.length > 0 ? 'images' : 'tables');
 
-  const allItems = [...images, ...tables];
+  const allItems = useMemo(() => [...images, ...tables], [images, tables]);
 
   const handleOpenPreview = (index: number, type: 'images' | 'tables') => {
     setActiveTab(type);
@@ -88,9 +87,11 @@ export function MediaGallery({ images, tables, title = "媒体列表" }: MediaGa
                 </Text>
               }
               description={
-                <Tag size="small" style={{ fontSize: 10 }}>
-                  第 {img.page} 页
-                </Tag>
+                img.page != null ? (
+                  <Tag style={{ fontSize: 10 }}>
+                    第 {img.page} 页
+                  </Tag>
+                ) : null
               }
             />
           </Card>
@@ -124,9 +125,11 @@ export function MediaGallery({ images, tables, title = "媒体列表" }: MediaGa
               <div>
                 <Text strong>{table.title || `表格 ${idx + 1}`}</Text>
                 <div>
-                  <Tag size="small" style={{ fontSize: 10 }}>
-                    第 {table.page} 页
-                  </Tag>
+                  {table.page != null && (
+                    <Tag style={{ fontSize: 10 }}>
+                      第 {table.page} 页
+                    </Tag>
+                  )}
                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
                     点击查看详情
                   </Text>
@@ -149,40 +152,37 @@ export function MediaGallery({ images, tables, title = "媒体列表" }: MediaGa
     );
   }
 
+  const tabItems = [
+    images.length > 0 && {
+      key: 'images',
+      label: (
+        <span>
+          <PictureOutlined />
+          图片 ({images.length})
+        </span>
+      ),
+      children: renderImageGallery(),
+    },
+    tables.length > 0 && {
+      key: 'tables',
+      label: (
+        <span>
+          <TableOutlined />
+          表格 ({tables.length})
+        </span>
+      ),
+      children: renderTableList(),
+    },
+  ].filter(Boolean) as { key: string; label: React.ReactNode; children: React.ReactNode }[];
+
   return (
     <>
       <Tabs
         activeKey={activeTab}
         onChange={(key) => setActiveTab(key as 'images' | 'tables')}
         style={{ padding: "0 16px" }}
-      >
-        {images.length > 0 && (
-          <TabPane
-            tab={
-              <span>
-                <PictureOutlined />
-                图片 ({images.length})
-              </span>
-            }
-            key="images"
-          >
-            {renderImageGallery()}
-          </TabPane>
-        )}
-        {tables.length > 0 && (
-          <TabPane
-            tab={
-              <span>
-                <TableOutlined />
-                表格 ({tables.length})
-              </span>
-            }
-            key="tables"
-          >
-            {renderTableList()}
-          </TabPane>
-        )}
-      </Tabs>
+        items={tabItems}
+      />
 
       {/* 预览弹窗 */}
       <MediaPreviewModal

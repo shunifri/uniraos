@@ -23,6 +23,7 @@ interface AuthState {
   isAdmin: boolean;
   isDeveloper: boolean;
   isAnonymous: boolean;
+  embeddedRole?: string;
 
   login: (username: string, password: string) => Promise<void>;
   loginAnonymous: (phone: string) => Promise<void>;
@@ -49,6 +50,7 @@ export const useAuthStore = create<AuthState>()(
       isAdmin: false,
       isDeveloper: false,
       isAnonymous: false,
+      embeddedRole: undefined,
 
       login: async (username: string, password: string) => {
         const res = await fetch('/api/auth/login', {

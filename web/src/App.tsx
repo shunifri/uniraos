@@ -18,6 +18,9 @@ import AdminPage from "@/pages/Admin";
 import FilesPage from "@/pages/Files";
 import EvolutionPage from "@/pages/Evolution";
 import FederationPage from "@/pages/Federation";
+import ConnectionsPage from "@/pages/Connections";
+import ApprovalCenter from "@/pages/ApprovalCenter";
+import EmbedChat from "@/pages/EmbedChat";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -79,7 +82,11 @@ export default function App() {
               <Route path="admin" element={<AdminPage />} />
               <Route path="evolution" element={<EvolutionPage />} />
               <Route path="federation" element={<FederationPage />} />
+              <Route path="connections" element={<ConnectionsPage />} />
+              <Route path="approvals" element={<ApprovalCenter />} />
+              <Route path="approvals" element={<ApprovalCenter />} />
             </Route>
+            <Route path="/embed" element={<EmbedChat />} />
           </Routes>
         </BrowserRouter>
       </AntApp>

@@ -708,6 +708,13 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       ext?: string;
     }
 
+    const userId = req.user!.id;
+    const userBase = join(WS_BASE, "uploads", userId);
+    if (!existsSync(userBase)) {
+      res.json({ success: true, tree: [] });
+      return;
+    }
+
     const EXCLUDED_DIRS = new Set(["excel_content", "node_modules", "__MACOSX", "Excel解包文件"]);
     const EXCLUDED_EXTS = new Set([".db", ".db-shm", ".db-wal", ".tmp", ".lock"]);
 
@@ -763,14 +770,16 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       return result;
     }
 
-    res.json({ success: true, tree: buildTree(WS_BASE, "") });
+    res.json({ success: true, tree: buildTree(userBase, "") });
   });
 
   // List directory files
   router.get("/files/list", requireAuth, requirePermission("files.read"), (req, res) => {
+    const userId = req.user!.id;
+    const userBase = join(WS_BASE, "uploads", userId);
     const dirPath = (req.query.path as string) || "";
-    const absDir = join(WS_BASE, dirPath);
-    if (!absDir.startsWith(WS_BASE)) {
+    const absDir = join(userBase, dirPath);
+    if (!absDir.startsWith(userBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
     }
@@ -829,11 +838,20 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       const docs = await kb.listDocuments();
       const kbNames = docs.map((d: any) => d.name);
       const kbDocs: Record<string, { docId: string; vectorized: number; vectorTotal: number; chunkCount: number; status: string }> = {};
+      const stripTs = (n: string) => n.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
       for (const d of docs) {
         let status = "done";
         if (d.chunkCount === 0) status = "parsing";
         else if (d.vectorized < d.vectorTotal) status = "vectorizing";
-        kbDocs[d.name] = { docId: d.docId, vectorized: d.vectorized, vectorTotal: d.vectorTotal, chunkCount: d.chunkCount, status };
+        const info = { docId: d.docId, vectorized: d.vectorized, vectorTotal: d.vectorTotal, chunkCount: d.chunkCount, status };
+        // 通过 name 索引
+        kbDocs[d.name] = info;
+        // 通过 source 路径（文件系统上的存储名）索引，解决命名不一致问题
+        if (d.source) {
+          const sourceBase = d.source.split('/').pop() || d.source;
+          kbDocs[sourceBase] = info;
+          kbDocs[stripTs(sourceBase)] = info;
+        }
       }
       res.json({ success: true, kbNames, kbDocs });
     } catch {

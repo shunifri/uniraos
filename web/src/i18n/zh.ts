@@ -5,11 +5,13 @@ const zh = {
   nav_memory: '记忆',
   nav_knowledge: '知识库',
   nav_knowledge_graph: '知识图谱',
+  knowledge_graph: '知识图谱',
   nav_files: '文件',
   nav_config: '配置',
   nav_admin: '管理',
   nav_evolution: '进化',
   nav_federation: '联邦',
+  nav_approvals: '审批中心',
 
   // Login
   login_title: '登录',
@@ -81,12 +83,14 @@ const zh = {
   approve: '批准',
   reject: '拒绝',
   pending: '待处理',
+  claimed: '已认领',
 
   // 按钮
   view_code: '查看代码',
   add_redline: '添加红线',
   add_peer: '添加对等节点',
   save_configuration: '保存配置',
+  filter: '筛选',
   apply_filter: '应用筛选',
   details: '详情',
   accept: '接受',
@@ -351,6 +355,10 @@ const zh = {
   pending_skills_count: '待处理技能',
   generation: '世代',
   creator: '创建者',
+  no_results_found: '未找到结果',
+  no_pending_skills: '没有待处理的技能',
+  apply: '应用',
+  view: '查看',
 
   // 红线
   redline_deleted: '红线已删除',
@@ -477,6 +485,20 @@ const zh = {
   mc_inherit_llm: '继承 LLM',
   mc_inherit_hint: '开启后自动使用 LLM 的 API Key 和 Base URL',
   mc_emb_mode: 'API 模式',
+
+  // Approval Center
+  approval_empty: '暂无待办任务',
+  approval_select_task: '请选择左侧任务',
+  approval_claimed: '已认领',
+  approval_pending: '待处理',
+  approval_task_id: '任务',
+  approval_comment: '审批意见',
+  approval_comment_placeholder: '请输入审批意见...',
+  approval_approve: '同意',
+  approval_reject: '驳回',
+  approval_transfer: '转办',
+  approval_return: '退回',
+  approval_task_info: '任务信息',
 } as const;
 
 export type Translations = Record<keyof typeof zh, string>;

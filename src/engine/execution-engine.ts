@@ -18,6 +18,8 @@ import { MetricsCollector } from "./metrics.js";
 import { CircuitBreakerManager } from "./circuit-breaker.js";
 import type { EmergenceDetector } from "./emergence-detector.js";
 import type { SkillLifecycleManager } from "./skill-lifecycle.js";
+import { requestContext } from "../user/request-context.js";
+import { permissions } from "../permissions/index.js";
 
 export interface EngineConfig {
   maxDepth: number;
@@ -70,11 +72,15 @@ export class ExecutionEngine {
     this.lifecycleManager = manager;
   }
 
-  /** 执行一个 Skill（顶层入口） */
+  /** 执行一个 Skill（顶层入口）
+   * @param silent - 静默模式：不记录子 Skill 的 trace（用于组合 Skill 内部调用）
+   */
   async execute(
     skillName: string,
     params: Record<string, unknown> = {},
+    silent?: boolean,
   ): Promise<ExecutionResult> {
+    const store = requestContext.getStore();
     const context: ExecutionContext = {
       traceId: crypto.randomUUID(),
       callStack: [],
@@ -82,6 +88,15 @@ export class ExecutionEngine {
       maxDepth: this.config.maxDepth,
       callBudget: { remaining: this.config.callBudget },
       trace: [],
+      silent,
+      user: store
+        ? {
+            id: store.userId,
+            name: store.userName,
+            displayName: store.userDisplayName,
+            departmentId: store.departmentId,
+          }
+        : undefined,
     };
 
     const completedSteps: CompletedStep[] = [];
@@ -132,6 +147,14 @@ export class ExecutionEngine {
     context.callBudget.remaining--;
 
     const skill = this.registry.get(skillName);
+
+    // 运行时权限检查
+    if (context.user?.id && context.user.id !== "default") {
+      const canAccess = await permissions.hasSkillPermission(context.user.id, skillName);
+      if (!canAccess) {
+        throw new Error(`权限拒绝: 用户无权执行 skill "${skillName}"`);
+      }
+    }
 
     // 参数校验（如果 Skill 定义了 paramSchema）
     if (skill.paramSchema) {

@@ -10,6 +10,7 @@ import {
   FileOutlined,
 } from "@ant-design/icons";
 import type React from "react";
+import { useState } from "react";
 import { pageImageUrl } from "@/api";
 
 export function getFileIcon(ext: string, size: number | string = 16): React.ReactNode {
@@ -48,7 +49,28 @@ export function HighlightedPageImage({ docId, page, bboxes }: {
   page: number;
   bboxes: Array<{ page: number; bbox: [number, number, number, number] }>;
 }) {
+  const [imgError, setImgError] = useState(false);
   const pageBboxes = bboxes.filter((b) => b.page === page);
+
+  if (imgError) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          padding: "40px 20px",
+          textAlign: "center",
+          background: "#f8fafc",
+          borderRadius: 6,
+          color: "#94a3b8",
+          fontSize: 13,
+        }}
+      >
+        <FileTextOutlined style={{ fontSize: 32, marginBottom: 8, display: "block" }} />
+        暂无第 {page} 页截图
+      </div>
+    );
+  }
+
   return (
     <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
       <img
@@ -56,6 +78,7 @@ export function HighlightedPageImage({ docId, page, bboxes }: {
         alt={`第 ${page} 页`}
         style={{ width: "100%", height: "auto", display: "block" }}
         loading="lazy"
+        onError={() => setImgError(true)}
       />
       {pageBboxes.map((b, i) => (
         <div

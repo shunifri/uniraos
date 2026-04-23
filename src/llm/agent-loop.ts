@@ -31,124 +31,51 @@ export interface AgentLoopConfig {
   autoMemory: boolean;
 }
 
-const MEMORY_AWARE_PROMPT = `你是 RAOS (Recursive Agent Operating System) 的智能体，一个友善、自然的 AI 助手。
+const MEMORY_AWARE_PROMPT = `你是 RAOS 的智能体，一个自然、友善的 AI 助手。
 
-## 对话风格（最重要！）
-像一个真实的朋友或助手一样说话，而不是机器人。
-
-### 打招呼规则
-- 如果"你对用户的了解"中有用户的名字，你**必须**用名字打招呼，例如"晚上好 Kavin！有什么需要帮忙的？"
-- 根据当前时间（系统会提供）选择问候语：早上好（6-11点）/下午好（12-17点）/晚上好（18点以后）
-- 如果记忆中没有名字，友好地问"你好呀，我可以怎么称呼你？"
-- **禁止**在问候时列举你记得的其他信息（年龄、健康状况、家庭等），只用名字就够了
-- 其他记忆是你的"内心知识"，只在用户聊到相关话题时才自然运用
-
-### 回复原则
-- 简洁自然，像真人聊天一样
-- 记忆中的信息在相关时自然融入对话，不相关时不要主动提起
-- 例如：用户说"帮我推荐个酒店"→ 你可以说"要不要找有游泳池的？你之前好像比较喜欢"（自然引用偏好）
-- 例如：用户说"你好"→ 只需要友好问候，不要提健康数据
+## 对话风格
+- 像真人朋友一样简洁自然地说话
+- 如果记忆中有用户名字，用名字打招呼（早上/下午/晚上根据时间选择）
+- 记忆信息只在相关话题时自然融入，不主动列举
 
 ## 记忆管理
-你拥有记忆能力，必须主动管理记忆：
+主动管理用户记忆：
+- 用户提到个人信息、偏好、重要事实时，调用 ltm_store 存储
+- 当前对话的临时上下文调用 stm_store
+- 示例："我叫张三" → ltm_store(key="user_name", value="张三", tags=["personal"])
 
-### 存储长期记忆 (ltm_store)
-当用户提到以下信息时，立即调用 ltm_store 存储：
-- 个人信息：名字、职业、所在城市等
-- 偏好和习惯：喜欢什么、不喜欢什么
-- 重要事实：项目、技术栈、业务规则
-- 用户要求记住的事情
+## 知识库
+- 知识库 = 用户上传的文档，必须通过 kb_search 检索才能引用
+- 检索优先级：kb_search → web_search
+- kb_search 返回空时，明确告知用户"知识库中没有相关内容"
+- 禁止编造知识库引用（没有调用 kb_search 就声称有知识库内容）
 
-存储时用有语义的 key 和 tags，例如：
-- "我叫张三" → ltm_store(key="user_name", value="张三", tags=["personal","identity"])
-- "我儿子11岁" → ltm_store(key="family_son_age", value="11岁", tags=["family","son","age"])
-- "我喜欢游泳" → ltm_store(key="hobby_swimming", value="喜欢游泳", tags=["preference","hobby","fitness"])
-- "我在用 React" → ltm_store(key="tech_react", value="使用React框架", tags=["technical","skill","programming"])
-- "我在开发一个管理系统" → ltm_store(key="project_current", value="管理系统开发", tags=["project","work"])
+## 用户交互
+需要用户选择/确认时，调用 user_confirm skill：
+- selection：选项卡片（单选/多选）
+- form：自由文本输入（姓名、地址等无法穷举的信息）
+- approval：确认/取消
+- 禁止在回复中直接输出选项列表（如"A. xxx / B. xxx"）
 
-### 存储短期记忆 (stm_store)
-- 当前对话的临时上下文、中间结果、待办
+### 重要约束
+- 数据查询类任务：先直接调用 db_query/mysql_query 获取数据，不要先弹 user_confirm 让用户选数据来源
+- 只有确实需要用户主观选择时才用 user_confirm（如"确认删除吗？"、"想看图表还是表格？"）
 
-### 原则
-1. 主动存储，不要等用户说"记住这个"
-2. 信息结构化存储，key 有语义
-3. tags 有分类意义，方便检索
+## 文档规范
+- 仅用户明确要求生成文件/文档/报告/PPT 时才调用 file_provide
+- 文档/PPT 使用 .md 格式，系统会自动提供 PDF/DOCX/PPTX 转换
+- 表格用 markdown 语法（| 列1 | 列2 |），禁止 HTML 标签
+- 图片用 ![描述](链接)，视频直接放 URL 链接
 
-## 知识库（极其重要！）
-你可以访问知识库（kb_search）来查找与用户问题相关的文档资料。
+## Skill 创建
+- 所有功能集中在一个 skill 中，禁止拆分
+- 优先用 skill_compose 组合现有 skill，避免 skill_from_description 代码生成
+- 创建后测试，成功即停止，不要继续创建其他 skill
 
-### 检索优先级（必须遵守）
-1. **首先**检查系统自动注入的"相关知识"（见下方），如果已经包含了回答所需的信息，直接引用
-2. **其次**，如果自动注入的知识不够充分，主动调用 kb_search 用不同关键词再检索
-3. **最后**，只有当知识库确实没有相关内容时，才使用 web_search 搜索互联网
-4. **绝对禁止**跳过知识库直接去 web_search — 知识库中的内容是用户上传的专属资料，优先级远高于网络信息
-
-### 引用方式
-- 回答时自然融合知识库内容，不要说"根据知识库"
-- 如果知识库有明确答案，自信地回答，不需要额外搜索验证
-
-## 用户交互确认（极其重要！必须遵守！）
-当你需要用户做**任何选择或确认**时，**必须**调用 user_confirm Skill，**绝对禁止**用纯文字提问。
-
-### 核心规则：回复末尾不能有问号的选择题
-- ❌ "需要我为你制定学习计划吗？" — 禁止！
-- ❌ "你想要A还是B？" — 禁止！
-- ❌ "还是想了解其他语言的更多信息？" — 禁止！
-- ✅ 任何需要用户回应的问题，都必须调用 user_confirm
-
-### selection 优先，逐步询问（极其重要！）
-- **每次只问一个问题**，用 selection 卡片，用户点击即选即回复
-- 需要收集多个信息时，**分多轮调用 user_confirm(type="selection")**，每轮一个问题
-- 例如了解用户背景：
-  - 第1轮: user_confirm(type="selection", title="你的编程经验？", options=[{id:"beginner",label:"完全零基础"}, {id:"some",label:"学过一点"}, ...])
-  - 用户选择后 → 第2轮: user_confirm(type="selection", title="学习目标？", options=[...])
-  - 用户选择后 → 第3轮: 根据收集到的信息给出推荐
-- **禁止用 form 来做多个 select/radio 字段** — 那种体验不如逐步选择卡片
-- form 仅限**需要自由文本输入**的场景（填写姓名、邮箱、地址等无法穷举的信息）
-
-### 回复结束前的自检（每次回复都必须执行！）
-在生成回复文本**之后、发送之前**，检查你的回复：
-- 如果回复末尾包含问号"？"或征求意见 → **停！不要发送！改为调用 user_confirm**
-- 如果回复末尾是"你想...吗？""需要我...吗？""要不要...？" → 必须改为 user_confirm(type="selection")
-- 正确做法：先输出陈述性内容（推荐理由等），然后调用 user_confirm 给出选项
-- 例如：输出"基于你的背景，我推荐 JavaScript。" → 然后调用 user_confirm(type="selection", title="接下来你想？", options=[{id:"plan",label:"制定学习计划"},{id:"resources",label:"推荐学习资源"},{id:"no",label:"暂时不需要了"}])
-
-## 任务执行
-根据用户需求选择合适的 Skill 完成任务。如果需要多步操作，依次调用多个 Skill。
-完成任务后，用自然语言总结结果回复用户。
-
-## 文档生成规范（必须遵守）
-当用户要求生成文档、报告、PPT 等文件时：
-- **必须**使用 .md 格式，**禁止**使用 .pptx/.docx/.pdf 等二进制格式
-- 系统会自动提供 PDF、DOCX、PPTX 格式转换下载按钮
-- 生成 PPT 时，使用 \`---\` 分隔每张幻灯片，开头用 frontmatter 指定主题：
-  \`\`\`
-  ---
-  theme: business-blue
-  ---
-  # 标题
-  > 副标题
-  ---
-  ## 第一页
-  - 要点
-  ---
-  ## 数据对比
-  | 指标 | 数值 | 说明 |
-  |------|------|------|
-  | 效率 | 95%  | 提升显著 |
-  \`\`\`
-- **禁止在 markdown 中使用 HTML 标签**（如 \`<table>\`、\`<div>\`、\`<br>\`、\`<style>\` 等），所有内容必须用纯 markdown 语法
-- 表格必须用 markdown 表格语法（\`| 列1 | 列2 |\`），禁止用 HTML \`<table>\` 标签
-- 可选主题: business-blue / tech-dark / minimal-white / vibrant-orange / academic-green
-- 可调用 pptx_list_themes 查看所有可用主题（包括用户自定义主题）
-
-## 回复格式（极其重要！）
-- **绝对禁止**在调用工具前写"让我xxx："或"我来xxx："这种以冒号结尾的预告。这会导致用户看到冒号后面一片空白。
-- 正确做法：直接调用工具，拿到结果后再用自然语言回复用户。
-- 如果需要连续调用多个工具，不要在每次调用前解说，直接调用即可。全部完成后统一回复结果。
-- 示例（错误）：❌ "让我搜索一下相关信息：" → 然后调用 web_search
-- 示例（正确）：✅ 直接调用 web_search，拿到结果后说"根据搜索结果，联鹏软件是..."
-- 如果某个工具调用失败，不要反复尝试同一操作超过2次。换一个方法或直接告诉用户。`;
+## 输出规范
+- 调用工具前不要写"让我xxx："等预告，直接调用
+- 多工具连续调用时不逐个解说，完成后统一回复
+- 工具失败不要重试超过 2 次，换一个方法或告诉用户`;
 
 const DEFAULT_AGENT_CONFIG: AgentLoopConfig = {
   maxIterations: 15,
@@ -202,12 +129,70 @@ export class AgentLoop {
   private userPermissions: string[] | null = null;
   /** Skill 访问服务（用于完整的权限检查） */
   private skillAccessService?: SkillAccessService;
-  /** 对话历史（跨 run 保持） */
-  private conversationHistory: Message[] = [];
+  /** 按 conversationId 隔离的对话历史 */
+  private conversationHistories = new Map<string, Message[]>();
+  /** 记录每个对话的 Skill 创建状态（强制规则：一个对话只能创建 1 个 Skill，可重试修改最多 3 次） */
+  private skillCreationState = new Map<string, { skillName: string; attempts: number }>();
+  /** 记录每个对话的 kb_search 是否有有效结果（防止编造知识库内容） */
+  private kbSearchHasResults = new Set<string>();
   /** 增强记忆模块（可选） */
   private factExtractor?: FactExtractor;
   private conflictDetector?: ConflictDetector;
   private ltmBackend?: LTMBackend;
+
+  /** 检测文本是否编造了知识库引用（没有有效 kb_search 结果却声称有知识库内容） */
+  private containsFakeKbReference(text: string, conversationId: string): boolean {
+    if (!text) return false;
+    // 如果 kb_search 返回了有效结果，不拦截
+    if (this.kbSearchHasResults.has(conversationId)) return false;
+    // 检测编造知识库的关键词
+    const fakePatterns = [
+      /根据知识库[中的信息]?/,
+      /根据系统自动注入/,
+      /从知识库中[找到|获取|检索]/,
+      /知识库显示/,
+      /知识库.*相关[内容|信息|资料]/,
+      /根据知识库.*我[看到|找到|了解]/,
+    ];
+    return fakePatterns.some((p) => p.test(text));
+  }
+
+  /** 检查是否为 Skill 创建类调用 */
+  private isSkillCreationCall(skillName: string): boolean {
+    return skillName === "skill_compose" || skillName === "skill_from_description" || skillName === "skill_from_template";
+  }
+
+  /** 检查当前对话是否已被禁止创建 Skill */
+  private isSkillCreationBlocked(skillName: string, conversationId: string, toolParams?: Record<string, unknown>): boolean {
+    if (!this.isSkillCreationCall(skillName)) return false;
+    const state = this.skillCreationState.get(conversationId);
+    if (!state) {
+      // 第一次创建，允许
+      return false;
+    }
+    // 已创建过，检查是否是同一个 Skill 的重试
+    const newSkillName = (toolParams?.name as string) || "";
+    if (newSkillName && state.skillName && newSkillName !== state.skillName) {
+      // 试图创建不同的 Skill，拦截
+      return true;
+    }
+    // 同一个 Skill 的重试，检查次数
+    if (state.attempts >= 3) {
+      return true;
+    }
+    return false;
+  }
+
+  /** 记录一次 Skill 创建尝试 */
+  private recordSkillCreationAttempt(conversationId: string, toolParams?: Record<string, unknown>): void {
+    const state = this.skillCreationState.get(conversationId);
+    const skillName = (toolParams?.name as string) || "unknown";
+    if (!state) {
+      this.skillCreationState.set(conversationId, { skillName, attempts: 1 });
+    } else {
+      state.attempts += 1;
+    }
+  }
 
   constructor(
     registry: SkillRegistry,
@@ -292,9 +277,24 @@ export class AgentLoop {
     this.ltmBackend = ltmBackend;
   }
 
+  /** 获取指定会话的历史记录 */
+  private getHistory(conversationId?: string): Message[] {
+    if (!conversationId) return [];
+    let history = this.conversationHistories.get(conversationId);
+    if (!history) {
+      history = [];
+      this.conversationHistories.set(conversationId, history);
+    }
+    return history;
+  }
+
   /** 清空对话历史 */
-  clearHistory(): void {
-    this.conversationHistory = [];
+  clearHistory(conversationId?: string): void {
+    if (conversationId) {
+      this.conversationHistories.delete(conversationId);
+    } else {
+      this.conversationHistories.clear();
+    }
   }
 
   /** 截断过大的工具结果，防止上下文窗口溢出 */
@@ -310,6 +310,33 @@ export class AgentLoop {
       json = json.slice(0, MAX_RESULT_LEN) + "\n...[truncated, total " + json.length + " chars]";
     }
     return json;
+  }
+
+  /** 检测文本中是否包含选项列表（需要拦截并用 user_confirm 替代） */
+  private containsOptionList(text: string): boolean {
+    if (!text || text.length < 20) return false;
+    // 检测 bullet points（• · - *）连续出现 2+ 次
+    const bulletPattern = /^[\s]*[•·\-*]\s+\S+/gm;
+    const bullets = text.match(bulletPattern);
+    if (bullets && bullets.length >= 2) {
+      // 进一步确认：文本末尾有询问语气
+      const lastPart = text.slice(-200).toLowerCase();
+      const askingPatterns = ["吗？", "吗?", "需要什么", "需要我", "怎么帮你", "有什么", "请选择", "你可以"];
+      if (askingPatterns.some((p) => lastPart.includes(p))) {
+        return true;
+      }
+    }
+    // 检测 "A. / B. / C." 或 "1. / 2. / 3." 选项模式
+    const optionPattern = /(?:^|\n)\s*(?:[A-Da-d][\.、]|\d+[\.、])\s*\S+/gm;
+    const options = text.match(optionPattern);
+    if (options && options.length >= 2) {
+      const lastPart = text.slice(-200).toLowerCase();
+      const askingPatterns = ["吗？", "吗?", "需要什么", "需要我", "怎么帮你", "有什么", "请选择", "你可以"];
+      if (askingPatterns.some((p) => lastPart.includes(p))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -380,13 +407,15 @@ export class AgentLoop {
     // 自动检索相关记忆，注入系统提示
     const memoryContext = await this.recallMemories(userMessage);
 
+    const conversationHistory = this.getHistory(chatOptions?.conversationId);
+
     const messages: Message[] = [
       { role: "system", content: this.config.systemPrompt + memoryContext },
-      ...this.conversationHistory,
+      ...conversationHistory,
       { role: "user", content: userMessage },
     ];
 
-    this.conversationHistory.push({ role: "user", content: userMessage });
+    conversationHistory.push({ role: "user", content: userMessage });
 
     const steps: AgentStep[] = [];
     let iterations = 0;
@@ -463,8 +492,37 @@ export class AgentLoop {
           steps.push({ type: "llm_response", content: textContent, timestamp: Date.now() });
         }
 
+        const convId = chatOptions?.conversationId || "default";
+
         // 没有 tool calls，推理结束
         if (toolCalls.length === 0) {
+          // 输出安全检查：禁止编造知识库引用
+          if (textContent && this.containsFakeKbReference(textContent, convId)) {
+            messages.push({ role: "assistant", content: textContent });
+            messages.push({
+              role: "system",
+              content: "【系统拦截】检测到您在回复中编造了知识库引用（如'根据知识库中的信息'），但您没有调用 kb_search。规则：没有调用 kb_search 就**没有任何**知识库内容可用。请删除编造的引用，如果确实需要知识库信息，请先调用 kb_search。",
+            });
+            continue; // 让 LLM 重新生成
+          }
+          // 输出安全检查：禁止包含选项列表
+          if (textContent && this.containsOptionList(textContent)) {
+            messages.push({ role: "assistant", content: textContent });
+            messages.push({
+              role: "system",
+              content: "【系统拦截】检测到您的回复中包含选项列表（如 • 查看xxx / • 生成xxx）。根据规则，禁止在回复中直接输出选项列表，必须使用 user_confirm(type='selection') skill 来呈现选择。请删除选项列表文本，直接调用 user_confirm skill 让用户点击选择。",
+            });
+            continue; // 让 LLM 重新生成
+          }
+          // 禁止空回复：如果 AI 没有生成任何内容，强制要求回复
+          if (!textContent || textContent.trim().length === 0) {
+            messages.push({ role: "assistant", content: "" });
+            messages.push({
+              role: "system",
+              content: "【系统拦截】检测到您没有生成任何回复内容。规则：每次交互必须给用户有意义的反馈，禁止空回复。如果知识库没有结果，请告诉用户'知识库中没有相关内容，让我尝试其他方式'，然后继续查询数据库或其他途径。",
+            });
+            continue;
+          }
           messages.push({ role: "assistant", content: textContent });
           break;
         }
@@ -481,7 +539,30 @@ export class AgentLoop {
             const params = toolCall.arguments.params
               ? (toolCall.arguments.params as Record<string, unknown>)
               : toolCall.arguments;
-            result = await this.engine.execute(toolCall.name, params);
+            // 硬性拦截：一个对话只能创建 1 个 Skill，同名可重试最多 3 次
+            if (this.isSkillCreationBlocked(toolCall.name, convId, params)) {
+              const state = this.skillCreationState.get(convId);
+              if (state && state.attempts >= 3) {
+                result = {
+                  success: false,
+                  error: "【系统拦截】当前对话已尝试 3 次 Skill 创建（含重试）均未成功，已放弃创建。规则：一个对话只能创建一个 Skill，最多尝试 3 次。",
+                };
+              } else {
+                result = {
+                  success: false,
+                  error: `【系统拦截】当前对话已创建 Skill "${state?.skillName}"，禁止再创建其他 Skill。规则：所有功能必须集中在一个 Skill 中。如需修改当前 Skill，请使用相同名称重试。`,
+                };
+              }
+            } else {
+              this.recordSkillCreationAttempt(convId, params);
+              result = await this.engine.execute(toolCall.name, params);
+              if (toolCall.name === "kb_search" && result.success) {
+                const data = (result as any).data;
+                if (Array.isArray(data) && data.length > 0) {
+                  this.kbSearchHasResults.add(convId);
+                }
+              }
+            }
           } catch (err) {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
           }
@@ -537,6 +618,7 @@ export class AgentLoop {
 
         messages.push({ role: "assistant", content: response.content ?? "", toolCalls: response.toolCalls });
 
+        const convId2 = chatOptions?.conversationId || "default";
         for (const toolCall of response.toolCalls) {
           steps.push({ type: "tool_call", toolCall, timestamp: Date.now() });
           yield { event: "tool_call", data: { toolCall } };
@@ -547,7 +629,15 @@ export class AgentLoop {
             const params = toolCall.arguments.params
               ? (toolCall.arguments.params as Record<string, unknown>)
               : toolCall.arguments;
-            result = await this.engine.execute(toolCall.name, params);
+            // 硬性拦截：一个对话只能创建一个 Skill
+            if (this.isSkillCreationBlocked(toolCall.name, convId2)) {
+              result = {
+                success: false,
+                error: "【系统拦截】当前对话已创建过 Skill，禁止继续创建。规则：一个对话只能创建一个 Skill，创建成功后停止并等待用户反馈。如需创建其他 Skill，请开启新对话。",
+              };
+            } else {
+              result = await this.engine.execute(toolCall.name, params);
+            }
           } catch (err) {
             result = { success: false, error: err instanceof Error ? err.message : String(err) };
           }
@@ -597,7 +687,7 @@ export class AgentLoop {
     const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant" && m.content);
     const finalResponse = lastAssistantMsg?.content ?? "[Agent reached max iterations without final response]";
 
-    this.conversationHistory.push({ role: "assistant", content: finalResponse });
+    conversationHistory.push({ role: "assistant", content: finalResponse });
 
     yield { event: "done", data: { finalResponse, iterations, hitMax: hitMaxIterations } };
 
@@ -619,15 +709,17 @@ export class AgentLoop {
     // 自动检索相关记忆，注入系统提示
     const memoryContext = await this.recallMemories(userMessage);
 
+    const conversationHistory = this.getHistory(chatOptions?.conversationId);
+
     // 构建消息列表：system + 历史 + 新消息
     const messages: Message[] = [
       { role: "system", content: this.config.systemPrompt + memoryContext },
-      ...this.conversationHistory,
+      ...conversationHistory,
       { role: "user", content: userMessage },
     ];
 
     // 记录这轮新增的用户消息
-    this.conversationHistory.push({ role: "user", content: userMessage });
+    conversationHistory.push({ role: "user", content: userMessage });
 
     const steps: AgentStep[] = [];
     let iterations = 0;
@@ -648,9 +740,29 @@ export class AgentLoop {
 
       // 没有 tool calls，推理结束
       if (response.finishReason !== "tool_calls" || response.toolCalls.length === 0) {
+        const content = response.content ?? "";
+        const convIdNs = chatOptions?.conversationId || "default";
+        // 输出安全检查：禁止编造知识库引用
+        if (content && this.containsFakeKbReference(content, convIdNs)) {
+          messages.push({ role: "assistant", content });
+          messages.push({
+            role: "system",
+            content: "【系统拦截】检测到您在回复中编造了知识库引用（如'根据知识库中的信息'），但您没有调用 kb_search。规则：没有调用 kb_search 就**没有任何**知识库内容可用。请删除编造的引用，如果确实需要知识库信息，请先调用 kb_search。",
+          });
+          continue; // 让 LLM 重新生成
+        }
+        // 输出安全检查：禁止包含选项列表
+        if (content && this.containsOptionList(content)) {
+          messages.push({ role: "assistant", content });
+          messages.push({
+            role: "system",
+            content: "【系统拦截】检测到您的回复中包含选项列表（如 • 查看xxx / • 生成xxx）。根据规则，禁止在回复中直接输出选项列表，必须使用 user_confirm(type='selection') skill 来呈现选择。请删除选项列表文本，直接调用 user_confirm skill 让用户点击选择。",
+          });
+          continue; // 让 LLM 重新生成
+        }
         messages.push({
           role: "assistant",
-          content: response.content ?? "",
+          content,
         });
         break;
       }
@@ -663,6 +775,7 @@ export class AgentLoop {
       });
 
       // 逐个执行 tool calls
+      const convId3 = chatOptions?.conversationId || "default";
       for (const toolCall of response.toolCalls) {
         steps.push({
           type: "tool_call",
@@ -675,7 +788,21 @@ export class AgentLoop {
           const params = toolCall.arguments.params
             ? (toolCall.arguments.params as Record<string, unknown>)
             : toolCall.arguments;
-          result = await this.engine.execute(toolCall.name, params);
+          // 硬性拦截：一个对话只能创建一个 Skill
+          if (this.isSkillCreationBlocked(toolCall.name, convId3)) {
+            result = {
+              success: false,
+              error: "【系统拦截】当前对话已创建过 Skill，禁止继续创建。规则：一个对话只能创建一个 Skill，创建成功后停止并等待用户反馈。如需创建其他 Skill，请开启新对话。",
+            };
+          } else {
+            result = await this.engine.execute(toolCall.name, params);
+            if (toolCall.name === "kb_search" && result.success) {
+              const data = (result as any).data;
+              if (Array.isArray(data) && data.length > 0) {
+                this.kbSearchHasResults.add(convId3);
+              }
+            }
+          }
         } catch (err) {
           result = {
             success: false,
@@ -720,7 +847,7 @@ export class AgentLoop {
       lastAssistantMsg?.content ?? "[Agent reached max iterations without final response]";
 
     // 记录 assistant 回复到对话历史
-    this.conversationHistory.push({
+    conversationHistory.push({
       role: "assistant",
       content: finalResponse,
     });
@@ -762,21 +889,15 @@ export class AgentLoop {
 
     try {
       // 用 LLM 分析对话内容，提取需要记忆的信息
-      const extractionPrompt = `分析以下对话，提取需要长期记忆的关键信息。
+      const extractionPrompt = `分析对话，提取需长期记忆的关键信息。
 
-用户消息: "${userMessage}"
-助手回复: "${assistantResponse}"
+用户: "${userMessage}"
+助手: "${assistantResponse}"
 
-如果对话中包含以下类型的信息，以 JSON 数组格式输出需要存储的记忆：
-- 用户的个人信息（名字、职业、位置等）
-- 用户的偏好和习惯
-- 重要的事实、决定、约定
-- 用户明确要求记住的内容
+输出 JSON 数组（仅 JSON，无其他文字）：
+[{"key":"语义化key","value":"内容","tags":["分类"],"summary":"摘要"}]
 
-输出格式（仅输出 JSON，无其他文字）：
-[{"key": "语义化的key", "value": "要记住的内容", "tags": ["分类标签"], "summary": "一句话摘要"}]
-
-如果没有需要记忆的信息，输出空数组: []`;
+类型：个人信息、偏好习惯、重要事实、用户要求记住的内容。无则输出 []`;
 
       const response = await this.provider.chat([
         { role: "user", content: extractionPrompt },

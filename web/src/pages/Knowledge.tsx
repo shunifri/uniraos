@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Flex, App } from "antd";
 import { useI18nStore } from "@/i18n";
 import { api, apiFetch } from "@/api";
@@ -7,6 +7,7 @@ import ImportSection from "@/components/knowledge/ImportSection";
 import SearchSection from "@/components/knowledge/SearchSection";
 import DocumentTable from "@/components/knowledge/DocumentTable";
 import DocumentViewerDrawer from "@/components/knowledge/DocumentViewerDrawer";
+import ShareDialog from "@/components/ShareDialog";
 import type { KBDocument, SearchResult } from "@/components/knowledge/types";
 
 export default function KnowledgePage() {
@@ -24,33 +25,48 @@ export default function KnowledgePage() {
   const [rebuilding, setRebuilding] = useState(false);
   const [viewDoc, setViewDoc] = useState<{ name: string; content: string; docId: string } | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
-  const [viewTab, setViewTab] = useState<"markdown" | "images" | "compare">("markdown");
+  const [viewTab, setViewTab] = useState<"markdown" | "images" | "compare" | "restored">("markdown");
   const [viewPageImages, setViewPageImages] = useState<number[]>([]);
+  const [viewLayouts, setViewLayouts] = useState<any[]>([]);
+  const [shareDoc, setShareDoc] = useState<KBDocument | null>(null);
 
   const handleViewDoc = async (docId: string, docName: string) => {
     setViewLoading(true);
     setViewPageImages([]);
+    setViewLayouts([]);
     setViewDoc({ name: docName, content: "", docId });
     try {
-      const [contentRes, pagesRes] = await Promise.all([
+      const [contentRes, pagesRes, layoutsRes] = await Promise.all([
         apiFetch(`/api/knowledge/documents/${docId}/content`),
         apiFetch(`/api/knowledge/documents/${docId}/pages`),
+        apiFetch(`/api/knowledge/documents/${docId}/layouts`),
       ]);
       const contentData = await contentRes.json();
       const pagesData = await pagesRes.json();
+      const layoutsData = await layoutsRes.json();
+
       if (contentData.success) {
         setViewDoc({ name: docName, content: contentData.content || "(无解析内容)", docId });
       } else {
         setViewDoc({ name: docName, content: `加载失败: ${contentData.error}`, docId });
       }
+
+      const hasLayouts = layoutsData.success && Array.isArray(layoutsData.layouts) && layoutsData.layouts.length > 0;
+      if (hasLayouts) {
+        setViewLayouts(layoutsData.layouts);
+      }
+
       if (pagesData.success && pagesData.pages?.length > 0) {
         setViewPageImages(pagesData.pages);
-        setViewTab("images");
+        setViewTab(hasLayouts ? "restored" : "images");
+      } else if (hasLayouts) {
+        setViewTab("restored");
       } else {
         setViewTab("markdown");
       }
     } catch (e: any) {
       setViewDoc({ name: docName, content: `加载失败: ${e.message}`, docId });
+      setViewTab("markdown");
     }
     setViewLoading(false);
   };
@@ -97,6 +113,7 @@ export default function KnowledgePage() {
   }, [documents, loadDocuments, loadStats]);
 
   // SSE for realtime parsing progress
+  const completedSSE = useRef<Set<string>>(new Set());
   useEffect(() => {
     const processingDocs = documents.filter(d => d.parsingStatus === 'processing');
     if (processingDocs.length === 0) return;
@@ -104,6 +121,9 @@ export default function KnowledgePage() {
     const eventSources: EventSource[] = [];
     
     for (const doc of processingDocs) {
+      // 跳过已经收到完成状态的文档，避免重连噪音
+      if (completedSSE.current.has(doc.id)) continue;
+
       const es = new EventSource(`/api/knowledge/documents/${doc.id}/stream`);
       
       es.onmessage = (event) => {
@@ -121,6 +141,8 @@ export default function KnowledgePage() {
           }));
           
           if (data.status === 'success' || data.status === 'failed') {
+            completedSSE.current.add(doc.id);
+            es.close();
             loadDocuments();
             loadStats();
           }
@@ -130,8 +152,11 @@ export default function KnowledgePage() {
       };
       
       es.onerror = () => {
-        console.error(`SSE error for doc ${doc.id}`);
+        // 如果已完成则忽略关闭导致的 error
+        if (completedSSE.current.has(doc.id)) return;
         es.close();
+        // 静默处理连接错误，改为轮询刷新状态
+        loadDocuments();
       };
       
       eventSources.push(es);
@@ -162,7 +187,7 @@ export default function KnowledgePage() {
     setSearching(false);
   };
 
-  const handleUpload = async (options: { file: File; onSuccess?: () => void; onError?: (error: Error) => void }) => {
+  const handleUpload = async (options: any) => {
     const { file, onSuccess, onError } = options;
     setImporting(true);
     try {
@@ -177,8 +202,12 @@ export default function KnowledgePage() {
       if (!fileInfo?.path) throw new Error("No file path returned");
       const filePath = fileInfo.path;
 
+      // 使用与文件页面一致的命名规则（stripTimestamp 后的存储名）
+      const storedName = filePath.split('/').pop() || file.name;
+      const kbName = storedName.replace(/_\d{10,15}(\.[^.]+)$/, "$1").replace(/_\d{10,15}$/, "");
+
       const data = await api.post<any>("/api/knowledge/ingest", {
-        name: file.name,
+        name: kbName,
         path: filePath,
         tags: importTags ? importTags.split(",").map((t: string) => t.trim()).filter(Boolean) : [],
       });
@@ -213,11 +242,8 @@ export default function KnowledgePage() {
     } catch (e: any) { message.error(e.message); }
   };
 
-  const handleShare = async (docId: string, shared: boolean) => {
-    try {
-      await api.post<any>("/api/knowledge/share", { docId, shared });
-      loadDocuments();
-    } catch (e: any) { message.error(e.message); }
+  const handleOpenShare = (doc: KBDocument) => {
+    setShareDoc(doc);
   };
 
   const handleRebuild = async () => {
@@ -237,7 +263,7 @@ export default function KnowledgePage() {
         importing={importing}
         importTags={importTags}
         onImportTagsChange={setImportTags}
-        beforeUpload={handleUpload}
+        customRequest={handleUpload}
       />
       <SearchSection
         searchQuery={searchQuery}
@@ -254,8 +280,15 @@ export default function KnowledgePage() {
         onRebuild={handleRebuild}
         rebuilding={rebuilding}
         onDelete={handleDelete}
-        onShare={handleShare}
+        onOpenShare={handleOpenShare}
         onViewDoc={handleViewDoc}
+      />
+      <ShareDialog
+        open={!!shareDoc}
+        onClose={() => setShareDoc(null)}
+        resourceType="kb_document"
+        resourceId={shareDoc?.id || ""}
+        resourceName={shareDoc?.name || ""}
       />
       <DocumentViewerDrawer
         open={!!viewDoc}
@@ -263,7 +296,8 @@ export default function KnowledgePage() {
         loading={viewLoading}
         viewTab={viewTab}
         pageImages={viewPageImages}
-        onClose={() => { setViewDoc(null); setViewPageImages([]); }}
+        layouts={viewLayouts}
+        onClose={() => { setViewDoc(null); setViewPageImages([]); setViewLayouts([]); }}
         onTabChange={setViewTab}
       />
     </Flex>

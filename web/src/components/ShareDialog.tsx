@@ -78,7 +78,7 @@ export default function ShareDialog({
     setLoading(true);
     try {
       const data = await api.get<any>("/api/share/my");
-      const allShares: ShareRule[] = data.shares || [];
+      const allShares: ShareRule[] = data.data || [];
       // Filter by resourceType and resourceId
       const filtered = allShares.filter(
         (s: any) => s.resourceType === resourceType && s.resourceId === resourceId,

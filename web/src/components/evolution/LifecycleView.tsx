@@ -21,7 +21,7 @@ import {
   ZoomInOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
-import { useI18nStore } from "@/i18n";
+import { useI18nStore, type TranslationKey } from "@/i18n";
 
 const { Text } = Typography;
 
@@ -55,9 +55,8 @@ export default function LifecycleView() {
   const loadLifecycle = async () => {
     try {
       setLoading(true);
-      const data = await api.get<any>("/api/lifecycle", {
-        params: statusFilter !== "all" ? { status: statusFilter } : {},
-      });
+      const url = "/api/lifecycle" + (statusFilter !== "all" ? `?status=${encodeURIComponent(statusFilter)}` : "");
+      const data = await api.get<any>(url);
       setSkills(data.skills || []);
     } catch (e: any) {
       message.error(e.message);
@@ -93,7 +92,7 @@ export default function LifecycleView() {
     modal.confirm({
       title: t("deprecate"),
       content: t("mark_deprecated_confirm"),
-      okType: "warning",
+      okType: "danger",
       onOk: async () => {
         try {
           setActionLoading(true);
@@ -186,7 +185,7 @@ export default function LifecycleView() {
       render: (status: string) => (
         <Badge
           status={statusConfig[status]?.badge}
-          text={t(status)}
+          text={t(status as TranslationKey)}
         />
       ),
     },
@@ -209,7 +208,7 @@ export default function LifecycleView() {
       title: t("actions"),
       key: "actions",
       width: 250,
-      render: (_, record: SkillLifecycle) => (
+      render: (_: unknown, record: SkillLifecycle) => (
         <Space size="small" wrap>
           {record.status === "active" && (
             <Button

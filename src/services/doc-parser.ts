@@ -15,6 +15,7 @@ import { readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmdirSync
 import { resolve, extname, basename, join } from "path";
 import { tmpdir } from "os";
 import { execSync } from "child_process";
+import { extractDocumentImages, describeImages, type ImageWithDescription } from "../utils/image-extractor.js";
 
 /**
  * 清理 PDF 解析后的文本空格
@@ -98,6 +99,7 @@ export interface DocParseResult {
   format: string;
   content: string;
   pages?: PageResult[];
+  images?: DocImage[];     // 文档内嵌图片（流程图、架构图、操作说明截图等）
   metadata?: Record<string, unknown>;
   tags?: string[];          // 自动提取的标签
   error?: string;
@@ -108,6 +110,17 @@ export interface PageResult {
   content: string;
   imageBase64?: string;  // 原始页面图片（base64 PNG），用于双视图展示
   blocks?: OCRBlock[];   // OCR 结构化块（含 bbox 坐标）
+}
+
+/** 文档内嵌图片 */
+export interface DocImage {
+  id: string;
+  name: string;
+  ext: string;
+  page?: number;
+  mimeType: string;
+  description: string;   // LLM 生成的图片描述
+  base64: string;        // base64 编码数据
 }
 
 // ===== 视觉模型调用 =====
@@ -1183,6 +1196,31 @@ export async function parseDocument(
     } catch {
       // 标签提取失败不影响主流程
       result.tags = [];
+    }
+  }
+
+  // 对可解析文本的含图文档（Word/PPT/PDF），提取内嵌图片并生成描述
+  const IMAGE_DOC_EXTS = new Set([".pdf", ".docx", ".doc", ".pptx", ".ppt"]);
+  if (result.success && IMAGE_DOC_EXTS.has(ext) && visionConfig) {
+    try {
+      console.log(`[doc-parser] 开始提取文档内嵌图片: ${filePath}`);
+      const extracted = await extractDocumentImages(filePath);
+      if (extracted.length > 0) {
+        console.log(`[doc-parser] 提取到 ${extracted.length} 张图片，开始生成描述...`);
+        const described = await describeImages(extracted, visionConfig);
+        result.images = described.map((img: ImageWithDescription) => ({
+          id: img.id,
+          name: img.name,
+          ext: img.ext,
+          page: img.page,
+          mimeType: img.mimeType,
+          description: img.description,
+          base64: img.base64,
+        }));
+        console.log(`[doc-parser] 图片处理完成: ${described.length} 张`);
+      }
+    } catch (err: any) {
+      console.error(`[doc-parser] 图片提取失败（不影响主流程）:`, err.message);
     }
   }
 

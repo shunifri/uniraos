@@ -56,8 +56,8 @@ export default function AttachmentArea({ open, onClose }: AttachmentAreaProps) {
     pollTimers.current.set(uid, timer);
   };
 
-  const handleAttachmentChange = (info: any) => {
-    const list: Attachment[] = Array.isArray(info) ? info : info?.fileList ?? info;
+  const handleAttachmentChange = (info: { fileList: Attachment[] }) => {
+    const list: Attachment[] = info.fileList;
     // 过滤掉被删除的附件，清理相关资源
     const removedUids = new Set(attachments.map((a) => a.uid).filter((uid) => !list.some((b) => b.uid === uid)));
     removedUids.forEach((uid) => {
@@ -69,7 +69,7 @@ export default function AttachmentArea({ open, onClose }: AttachmentAreaProps) {
   };
 
   const handleAttachmentUpload = async (options: any) => {
-    const { file, onSuccess, onError } = options;
+    const { file, onSuccess, onError } = options as { file: any; onSuccess?: any; onError?: any };
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -102,9 +102,9 @@ export default function AttachmentArea({ open, onClose }: AttachmentAreaProps) {
     >
       <Attachments
         ref={attachmentsRef}
-        fileList={attachments}
+        items={attachments}
         onChange={handleAttachmentChange}
-        beforeUpload={handleAttachmentUpload}
+        customRequest={handleAttachmentUpload}
         accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.zip,.rar"
       />
     </Drawer>

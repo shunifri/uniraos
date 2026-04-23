@@ -96,6 +96,7 @@ export default function AdminPage() {
         { key: "federation", label: <><CloudServerOutlined /> {t("federation")}</>, children: <FederationPanel /> },
         { key: "plugins", label: <><CodeOutlined /> {t("plugins")}</>, children: <PluginsPanel /> },
         { key: "tasks", label: <>{t("tasks")}</>, children: <TasksPanel /> },
+        { key: "agent-config", label: <>Agent 配置</>, children: <AgentConfigPanel /> },
       ]}
     />
   );
@@ -265,7 +266,7 @@ function UsersPanel() {
             <Select
               allowClear
               options={depts.map((d) => ({
-                label: "\u00A0".repeat(d.level * 2) + d.name,
+                label: "\u00A0".repeat((d.level ?? 0) * 2) + d.name,
                 value: d.id,
               }))}
             />
@@ -306,7 +307,7 @@ function UsersPanel() {
             <Select
               allowClear
               options={depts.map((d) => ({
-                label: "\u00A0".repeat(d.level * 2) + d.name,
+                label: "\u00A0".repeat((d.level ?? 0) * 2) + d.name,
                 value: d.id,
               }))}
             />
@@ -331,6 +332,107 @@ function UsersPanel() {
           </Form.Item>
         </Form>
       </Modal>
+    </Card>
+  );
+}
+
+// ===== Agent Config Panel =====
+function AgentConfigPanel() {
+  const { message } = App.useApp();
+  const [roles, setRoles] = useState<any[]>([]);
+  const [agentConfigRole, setAgentConfigRole] = useState<any>(null);
+  const [agentConfigForm, setAgentConfigForm] = useState<any>({});
+  const [agentConfigLoading, setAgentConfigLoading] = useState(false);
+
+  const loadRoles = async () => {
+    const d = await api.get<any>("/api/roles");
+    setRoles(d.roles || []);
+  };
+
+  useEffect(() => { loadRoles(); }, []);
+
+  const loadRoleAgentConfig = async (role: any) => {
+    setAgentConfigLoading(true);
+    try {
+      const res = await api.get<any>(`/api/roles/${role.id}/agent-config`);
+      setAgentConfigForm(res.config || {});
+      setAgentConfigRole(role);
+    } catch (err) {
+      message.error("加载配置失败");
+    } finally {
+      setAgentConfigLoading(false);
+    }
+  };
+
+  const saveRoleAgentConfig = async () => {
+    if (!agentConfigRole) return;
+    setAgentConfigLoading(true);
+    try {
+      await api.post(`/api/roles/${agentConfigRole.id}/agent-config`, agentConfigForm);
+      message.success("配置已保存");
+    } catch (err: any) {
+      console.error("[AgentConfig] save failed:", err);
+      message.error(`保存失败: ${err?.message || String(err)}`);
+    } finally {
+      setAgentConfigLoading(false);
+    }
+  };
+
+  return (
+    <Card title="角色 Agent 配置" size="small">
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Select
+          placeholder="选择角色"
+          style={{ width: 300 }}
+          value={agentConfigRole?.id}
+          onChange={(id) => {
+            const role = roles.find((r) => r.id === id);
+            if (role) loadRoleAgentConfig(role);
+          }}
+          options={roles.map((r) => ({ label: r.name, value: r.id }))}
+        />
+        {agentConfigRole && (
+          <>
+            <Input.TextArea
+              placeholder="系统提示词（完全替代全局配置）"
+              value={agentConfigForm.systemPrompt || ""}
+              onChange={(e) => setAgentConfigForm({ ...agentConfigForm, systemPrompt: e.target.value })}
+              rows={6}
+            />
+            <Input
+              type="number"
+              placeholder="最大迭代次数"
+              value={agentConfigForm.maxIterations || ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setAgentConfigForm({ ...agentConfigForm, maxIterations: isNaN(v) ? undefined : v });
+              }}
+            />
+            <Input.TextArea
+              placeholder="人格描述（可选）"
+              value={agentConfigForm.personality || ""}
+              onChange={(e) => setAgentConfigForm({ ...agentConfigForm, personality: e.target.value })}
+              rows={2}
+            />
+            <Select
+              mode="tags"
+              placeholder="拒绝回答的话题关键词"
+              value={agentConfigForm.restrictedTopics || []}
+              onChange={(v) => setAgentConfigForm({ ...agentConfigForm, restrictedTopics: v })}
+              style={{ width: "100%" }}
+            />
+            <Input.TextArea
+              placeholder="欢迎语（首次打开时显示）"
+              value={agentConfigForm.welcomeMessage || ""}
+              onChange={(e) => setAgentConfigForm({ ...agentConfigForm, welcomeMessage: e.target.value })}
+              rows={2}
+            />
+            <Button type="primary" onClick={saveRoleAgentConfig} loading={agentConfigLoading}>
+              保存配置
+            </Button>
+          </>
+        )}
+      </Space>
     </Card>
   );
 }
@@ -408,7 +510,7 @@ function DepartmentsPanel() {
   };
 
   const parentOptions = depts.map((d) => ({
-    label: "\u00A0".repeat(d.level * 2) + d.name,
+    label: "\u00A0".repeat((d.level ?? 0) * 2) + d.name,
     value: d.id,
   }));
 
@@ -633,6 +735,9 @@ function RolesPanel() {
         permissions: rolePermissions,
       });
       message.success("权限已保存");
+      // 重新加载权限
+      const d = await api.get<any>("/api/roles/" + selectedRole.id + "/permissions");
+      setRolePermissions((d.permissions || []).map((p: any) => p.id || p));
     } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setSavePermLoading(false); }
   };

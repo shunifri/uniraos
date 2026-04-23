@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAOS 嵌入聊天窗口 — 第三方网站测试</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+    }
+    .demo-header {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff;
+      padding: 80px 20px 60px;
+      text-align: center;
+    }
+    .demo-header h1 { font-size: 40px; margin-bottom: 16px; letter-spacing: -0.5px; }
+    .demo-header p { font-size: 17px; opacity: 0.92; max-width: 560px; margin: 0 auto; line-height: 1.6; }
+    .demo-nav {
+      background: #fff;
+      border-bottom: 1px solid #e8e8e8;
+      padding: 0 20px;
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .demo-nav a {
+      color: #333;
+      text-decoration: none;
+      padding: 16px 4px;
+      font-size: 15px;
+      border-bottom: 2px solid transparent;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .demo-nav a:hover { color: #667eea; border-bottom-color: #667eea; }
+    .demo-content {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+    .demo-card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 24px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+      transition: box-shadow 0.2s;
+    }
+    .demo-card:hover { box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .demo-card h2 { color: #1a1a2e; margin-bottom: 14px; font-size: 22px; }
+    .demo-card p { color: #555; line-height: 1.8; margin-bottom: 12px; font-size: 15px; }
+    .demo-card ul { margin: 12px 0 12px 24px; color: #555; line-height: 1.9; }
+    .demo-card li { margin-bottom: 6px; }
+    .demo-badge {
+      display: inline-block;
+      background: rgba(102, 126, 234, 0.1);
+      color: #667eea;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+    .demo-footer {
+      text-align: center;
+      padding: 50px 20px;
+      color: #999;
+      font-size: 14px;
+      border-top: 1px solid #e8e8e8;
+      margin-top: 20px;
+    }
+    .demo-highlight {
+      background: linear-gradient(135deg, rgba(102,126,234,0.08), rgba(118,75,162,0.08));
+      border-left: 3px solid #667eea;
+      padding: 16px 20px;
+      border-radius: 0 10px 10px 0;
+      margin: 16px 0;
+    }
+    .demo-highlight p { margin: 0; color: #444; }
+    @media (max-width: 640px) {
+      .demo-header h1 { font-size: 28px; }
+      .demo-nav { gap: 20px; overflow-x: auto; }
+      .demo-nav a { font-size: 14px; white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="demo-header">
+    <h1>🚀 第三方网站演示</h1>
+    <p>模拟真实第三方页面嵌入 RAOS 智能助手的测试环境。点击页面右下角的图标打开对话窗口，图标支持拖拽调整位置。</p>
+  </header>
+
+  <nav class="demo-nav">
+    <a href="#about">关于我们</a>
+    <a href="#features">产品功能</a>
+    <a href="#contact">联系我们</a>
+  </nav>
+
+  <main class="demo-content">
+
+    <section id="about" class="demo-card">
+      <span class="demo-badge">关于我们</span>
+      <h2>企业级智能对话平台</h2>
+      <p>这是一段模拟的第三方网站内容。您可以在页面任意位置看到 RAOS 智能助手图标，点击即可打开对话窗口。</p>
+      <p>无论您是在浏览产品文档、查看服务介绍还是阅读新闻资讯，都可以随时通过悬浮图标发起对话，获取即时智能回复。</p>
+      <div class="demo-highlight">
+        <p>💡 <strong>提示：</strong>尝试拖拽右下角的图标到其他位置，关闭后刷新页面，位置会被记住。</p>
+      </div>
+    </section>
+
+    <section id="features" class="demo-card">
+      <span class="demo-badge">产品功能</span>
+      <h2>核心能力一览</h2>
+      <ul>
+        <li><strong>知识库检索</strong> — 基于语义搜索快速定位文档内容</li>
+        <li><strong>多模态交互</strong> — 支持文本、图片、表格等多种媒体格式</li>
+        <li><strong>团队协作</strong> — 多智能体协同处理复杂任务</li>
+        <li><strong>权限管控</strong> — 细粒度的角色与权限管理体系</li>
+        <li><strong>实时流式</strong> — 逐字输出的沉浸式对话体验</li>
+      </ul>
+    </section>
+
+    <section id="contact" class="demo-card">
+      <span class="demo-badge">联系我们</span>
+      <h2>获取帮助</h2>
+      <p>如有任何产品问题、技术咨询或商务合作需求，欢迎通过右下角的智能助手与我们取得联系。</p>
+      <p>我们的 AI 助手 7×24 小时在线，可以为您解答产品使用、技术架构、部署方案等各类问题。</p>
+    </section>
+
+  </main>
+
+  <footer class="demo-footer">
+    <p>© 2026 第三方演示网站 · Powered by <strong>RAOS</strong></p>
+  </footer>
+
+  <!--
+    ============================================
+    RAOS 嵌入聊天窗口配置示例
+    ============================================
+
+    请先启动前端开发服务器：
+      cd web && npm run dev
+
+    然后可以通过以下方式访问本页面：
+      1. 直接双击用浏览器打开（file:// 协议）
+      2. 或用任意本地服务器 serve 本目录
+
+    配置说明：
+      data-base-url  — RAOS 前端服务地址（默认从脚本地址推断）
+      data-token     — JWT 认证令牌（跨域时必须提供）
+      data-title     — 弹窗标题
+      data-width     — 弹窗宽度
+      data-height    — 弹窗高度
+
+    位置配置（二选一）：
+      A) 快速方位：data-position="bottom-right|bottom-left|top-right|top-left"
+      B) 精确距离：data-left / data-right / data-top / data-bottom
+  -->
+
+  <!-- 示例 1：右下角（默认） -->
+  <script
+    src="http://localhost:9002/widget.js"
+    data-position="bottom-right"
+    data-right="30"
+    data-bottom="30"
+    data-title="RAOS 智能助手"
+    data-width="420"
+    data-height="640"
+  ></script>
+
+  <!--
+  示例 2：左下角
+  <script
+    src="http://localhost:9002/widget.js"
+    data-left="30"
+    data-bottom="30"
+    data-title="智能客服"
+    data-width="400"
+    data-height="600"
+  ></script>
+  -->
+
+  <!--
+  示例 3：右上角（小窗口）
+  <script
+    src="http://localhost:9002/widget.js"
+    data-right="20"
+    data-top="20"
+    data-title="AI 助手"
+    data-width="380"
+    data-height="560"
+  ></script>
+  -->
+
+  <!--
+  示例 4：带 token 的跨域场景
+  <script
+    src="https://your-raos-domain.com/widget.js"
+    data-base-url="https://your-raos-domain.com"
+    data-token="eyJhbGciOiJIUzI1NiIs..."
+    data-right="30"
+    data-bottom="30"
+  ></script>
+  -->
+
+</body>
+</html>

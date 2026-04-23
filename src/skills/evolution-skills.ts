@@ -25,7 +25,6 @@ Params:
   action('ancestry'|'descendants'|'tree'|'siblings'|'stats'): The genealogy query to perform
   name?(string): Skill name (required for ancestry/descendants/siblings)`,
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const action = params.action as string;
         const name = params.name as string | undefined;
@@ -92,7 +91,6 @@ Params:
   severity?('info'|'warning'|'critical'): Filter by severity level
   type?(string): Filter by pattern type (unexpected_chain, self_reference_loop, capability_escalation, resource_spike)`,
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const since = params.since as number | undefined;
         const severity = params.severity as string | undefined;
@@ -126,7 +124,6 @@ Params:
   description?(string): Constraint description (required for add)
   blocking?(boolean): Whether violation blocks generation (default true, for add)`,
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const action = params.action as string;
         const id = params.id as string | undefined;
@@ -213,7 +210,6 @@ Params:
   generatedBy(string): Name of the parent skill that would generate it
   capabilities?(string[]): Capabilities the new skill would request`,
       visible: true,
-      autonomy: Autonomy.MANUAL,
       handler: async (params) => {
         const name = params.name as string;
         const generatedBy = params.generatedBy as string;

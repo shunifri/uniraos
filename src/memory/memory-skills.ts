@@ -13,7 +13,7 @@
  *
  * handler 通过 UserSessionManager + AsyncLocalStorage 动态获取当前用户的 STM/LTM 实例
  */
-import { defineSkill, Autonomy } from "../types/index.js";
+import { defineSkill, defineSystemSkill, Autonomy } from "../types/index.js";
 import type { SkillDefinition, ExecutionContext } from "../types/index.js";
 import type { UserSessionManager } from "../user/user-session.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -74,10 +74,9 @@ export function createMemorySkills(
 
   return [
     // ===== 短期记忆 Skills（对模型部分可见） =====
-    defineSkill({
+    defineSystemSkill({
       name: "stm_store",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "存储到短期记忆。参数: key(string), value(any)",
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
@@ -88,10 +87,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "stm_retrieve",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "从短期记忆检索。参数: key(string) 或 query(string)搜索",
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
@@ -109,10 +107,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "stm_forget",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "从短期记忆中删除。参数: key(string)",
       handler: async (params) => {
         const { stm } = getSession(sessionManager);
@@ -124,10 +121,9 @@ export function createMemorySkills(
     }),
 
     // ===== 长期记忆 Skills（对模型可见） =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_store",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "存储到长期记忆（持久化）。参数: key(string), value(any), tags?(string[]), summary?(string), relation?(string), expiresInSec?(number)",
       handler: async (params, context) => {
         const session = getSession(sessionManager);
@@ -180,10 +176,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_search",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "搜索长期记忆。参数: query(string), tags?(string[]), limit?(number), semantic?(boolean), rerank?(boolean), filters?(object), includeForgotten?(boolean)",
       handler: async (params, context) => {
         const { ltm } = getSession(sessionManager);
@@ -245,10 +240,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_delete",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "删除长期记忆（支持软删除和硬删除）。参数: key(string) 或 id(string), reason?(string), hard?(boolean)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -294,10 +288,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_list",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "列出长期记忆。参数: limit?(number), offset?(number)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -323,10 +316,9 @@ export function createMemorySkills(
     }),
 
     // ===== 短期→长期 迁移 =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_consolidate",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "将短期记忆中的指定条目迁移到长期记忆。参数: key(string), tags?(string[])",
       handler: async (params, context) => {
         const { stm, ltm } = getSession(sessionManager);
@@ -366,7 +358,7 @@ export function createMemorySkills(
     }),
 
     // ===== 元记忆 Skills（对模型不可见，自动执行） =====
-    defineSkill({
+    defineSystemSkill({
       name: "recall_context",
       visible: false,
       autonomy: Autonomy.AUTO_PRE,
@@ -418,10 +410,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "memory_stats",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "获取记忆系统统计信息，包括活跃记忆数、归档数、标签分布、版本链数、遗忘数等",
       handler: async () => {
         const { stm, ltm } = getSession(sessionManager);
@@ -466,10 +457,9 @@ export function createMemorySkills(
     }),
 
     // ===== 归档管理 Skills =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_archive",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "手动触发记忆归档：将冷记忆移到归档存储。参数: reason?(string)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -492,10 +482,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_archives_list",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "列出所有记忆归档",
       handler: async () => {
         const { ltm } = getSession(sessionManager);
@@ -517,10 +506,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_restore",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "从归档恢复记忆到活跃区。参数: archiveId(string), keys?(string[])",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -534,10 +522,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_schedule_archive",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description:
         "管理定时归档。参数: action('start'|'stop'|'status'), intervalMinutes?(number, 默认60)",
       handler: async (params) => {
@@ -573,10 +560,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_search_archive",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "搜索归档中的记忆（不恢复到活跃区）。参数: query(string), limit?(number)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -603,10 +589,9 @@ export function createMemorySkills(
     }),
 
     // ===== ltm_summarize（通用，两种后端均可用） =====
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_summarize",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "生成记忆摘要。参数: query?(string), keys?(string[]), limit?(number=20), persist?(boolean)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -684,10 +669,9 @@ export function createMemorySkills(
 
     // ===== 增强 LTM Skills（Enhanced 后端专属） =====
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_version_history",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "获取指定 key 的完整版本历史链。参数: key(string), includeForgotten?(boolean)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -724,10 +708,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_check_conflicts",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "检测新值与现有记忆的矛盾。参数: key(string), value(unknown), topN?(number)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -772,10 +755,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_forgotten_log",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "查询遗忘记录的审计日志。参数: since?(number), limit?(number=50), reason?(string)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -813,10 +795,9 @@ export function createMemorySkills(
 
     // ===== Supermemory 专属 Skills（仅 supermemory 后端时可用） =====
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_profile",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "获取用户画像（静态事实+动态上下文）。参数: userId?(string), refresh?(boolean)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -842,10 +823,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_extract_facts",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "从文本中提取结构化事实并存储到 LTM。参数: text(string), entityContext?(string), tags?(string[])。需要 LLM。",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -935,10 +915,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_forget_reason",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "带原因的遗忘（追踪为什么忘记）。参数: key(string)或id(string), reason(string)",
       handler: async (params) => {
         const { ltm } = getSession(sessionManager);
@@ -989,10 +968,9 @@ export function createMemorySkills(
       },
     }),
 
-    defineSkill({
+    defineSystemSkill({
       name: "ltm_set_expiration",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "设置记忆过期时间。参数: key?(string), id?(string), expiresInSec(number)",
       handler: async (params) => {
         const { ltm, stm } = getSession(sessionManager);

@@ -238,3 +238,53 @@ export const getTasks = () => api.get('/api/tasks');
 export const getPlugins = () => api.get('/api/plugins');
 
 export const reloadPlugins = () => api.post('/api/plugins/reload');
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+export async function apiCreateConversation(title: string): Promise<string | null> {
+  try {
+    const res = await apiFetch("/api/conversations", {
+      method: "POST",
+      body: JSON.stringify({ title })
+    });
+    const data = await res.json();
+    return data.success ? data.id : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Connections
+// ---------------------------------------------------------------------------
+
+export interface ConnectionItem {
+  id: number;
+  name: string;
+  type: string;
+  config: Record<string, unknown>;
+  isActive: boolean;
+  createdBy?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const listConnections = (type?: string) =>
+  api.get<{ success: boolean; data: ConnectionItem[] }>(`/api/connections${type ? `?type=${type}` : ''}`);
+
+export const getConnection = (id: number) =>
+  api.get<{ success: boolean; data: ConnectionItem }>(`/api/connections/${id}`);
+
+export const createConnection = (body: Partial<ConnectionItem>) =>
+  api.post<{ success: boolean; data: ConnectionItem }>('/api/connections', body);
+
+export const updateConnection = (id: number, body: Partial<ConnectionItem>) =>
+  api.put<{ success: boolean; data: { id: number } }>(`/api/connections/${id}`, body);
+
+export const deleteConnection = (id: number) =>
+  api.del<{ success: boolean }>(`/api/connections/${id}`);
+
+export const testConnection = (id: number) =>
+  api.post<{ success: boolean; data: { success: boolean; message: string } }>(`/api/connections/${id}/test`);

@@ -47,6 +47,41 @@ function toRelativePath(absPath: string): string {
   return absPath.slice(SAFE_BASE.length + 1); // strip SAFE_BASE + "/"
 }
 
+/** 检查文件是否为敏感文件（禁止读取） */
+function isSensitiveFile(filePath: string): boolean {
+  const basename = filePath.split("/").pop()?.toLowerCase() || "";
+  // 禁止读取 .env 及环境配置文件
+  if (basename === ".env" || basename.startsWith(".env.")) return true;
+  // 禁止读取包含敏感关键词的文件
+  const sensitivePatterns = [
+    "secret", "password", "token", "credential", "private_key", "api_key", "apikey",
+    "passphrase", "auth", "key.pem", "cert.pem", ".pfx", ".p12",
+  ];
+  for (const pattern of sensitivePatterns) {
+    if (basename.includes(pattern)) return true;
+  }
+  return false;
+}
+
+/** 扫描文件内容是否包含敏感信息模式 */
+function containsSensitivePatterns(content: string): boolean {
+  const patterns = [
+    /password\s*[:=]\s*\S+/i,
+    /host\s*[:=]\s*[\w.]+/i,
+    /database\s*[:=]\s*\S+/i,
+    /connection\s*[:=]\s*\{/i,
+    /api[_-]?key\s*[:=]\s*\S+/i,
+    /secret\s*[:=]\s*\S+/i,
+    /private[_-]?key\s*[:=]\s*\S+/i,
+  ];
+  let matchCount = 0;
+  for (const p of patterns) {
+    if (p.test(content)) matchCount++;
+  }
+  // 至少匹配 2 个模式才判定为敏感（降低误报）
+  return matchCount >= 2;
+}
+
 // ===== 文档格式强制转换 =====
 const BINARY_DOC_EXTS = [".pptx", ".ppt", ".docx", ".doc", ".pdf"];
 
@@ -89,8 +124,16 @@ function createFileSkills(registry: SkillRegistry): void {
         if (!existsSync(path)) {
           return { success: false, error: new Error(`文件不存在: ${params.path}`) };
         }
+        // 安全检查：禁止读取敏感文件
+        if (isSensitiveFile(path)) {
+          return { success: false, error: new Error(`安全限制: 该文件包含敏感信息，禁止读取`) };
+        }
         const encoding = (params.encoding as BufferEncoding) ?? "utf-8";
         const content = readFileSync(path, encoding);
+        // 内容安全检查：扫描敏感信息模式
+        if (containsSensitivePatterns(content)) {
+          return { success: false, error: new Error(`安全限制: 文件内容可能包含敏感信息（如数据库连接密码等），禁止读取`) };
+        }
         const stat = statSync(path);
         return {
           success: true,
@@ -223,24 +266,9 @@ function createFileProvideSkills(registry: SkillRegistry): void {
     defineSystemSkill({
       name: "file_provide",
       description:
-        `向用户提供文件下载。先检查 workspace 中是否存在该文件，存在则返回下载信息；不存在则创建文件后返回下载信息。系统会自动渲染可视化下载卡片，你在回复文本中不要再重复输出下载链接或文件名链接。参数: path(string, 相对于 workspace 的文件路径), content?(string, 如果文件不存在则用此内容创建), filename?(string, 下载时显示的文件名)。
-【重要-文档规范】生成任何文档/报告/PPT时，必须使用 .md 格式，系统自动提供 PDF/DOCX/PPTX 转换下载。
-【PPT格式规范】生成 PPT 时使用以下 markdown 格式：
----
-theme: business-blue
----
-# 演示标题
-> 副标题或描述
----
-## 第一页标题
-- 要点一
-- 要点二
----
-## 第二页标题
-- 内容项
-可选主题: business-blue(商务蓝)、tech-dark(科技深色)、minimal-white(简约白)、vibrant-orange(活力橙)、academic-green(学术绿)，也可调用 pptx_list_themes 查看自定义主题。
-禁止使用 HTML 标签（如 <table>、<div>、<br>、<style>），表格必须用 markdown 语法（| 列1 | 列2 |）。
-文件扩展名必须为 .md，禁止使用 .pptx/.docx/.pdf 等二进制格式。`,
+        `向用户提供文件下载。先检查 workspace 中是否存在该文件，存在则返回下载信息；不存在则创建文件后返回。系统会自动渲染下载卡片，回复中不要再重复输出下载链接。
+参数: path(string, 相对于 workspace 的路径), content?(string, 文件不存在时创建), filename?(string, 下载时显示的文件名)。
+生成 PPT 时使用 markdown 格式：\`---\` 分隔幻灯片，开头可加 frontmatter 指定主题（如 theme: business-blue）。可选主题: business-blue / tech-dark / minimal-white / vibrant-orange / academic-green，也可调用 pptx_list_themes 查看自定义主题。`,
       handler: async (params) => {
         let relPath = params.path as string;
         if (!relPath) {
@@ -845,12 +873,72 @@ function guessMimeType(ext: string): string {
 
 // ===== HTTP 客户端 Skill =====
 
+/** 检查是否为内网地址 */
+function isIntranetHost(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host.startsWith("192.168.") ||
+    host.startsWith("10.") ||
+    host.startsWith("172.16.") ||
+    host.startsWith("172.17.") ||
+    host.startsWith("172.18.") ||
+    host.startsWith("172.19.") ||
+    host.startsWith("172.2") ||
+    host.startsWith("172.30.") ||
+    host.startsWith("172.31.") ||
+    host.startsWith("169.254.") ||
+    host === "::1"
+  );
+}
+
+/** 检查是否在白名单中（支持精确匹配和 CIDR） */
+function isWhitelisted(host: string): boolean {
+  const whitelist = process.env.HTTP_INTRANET_WHITELIST ?? "";
+  if (!whitelist) return false;
+
+  const entries = whitelist.split(",").map((s) => s.trim()).filter(Boolean);
+  for (const entry of entries) {
+    // 精确匹配（域名或 IP）
+    if (entry === host) return true;
+    // CIDR 匹配（如 10.0.0.0/8）
+    if (entry.includes("/") && matchCIDR(host, entry)) return true;
+    // 通配符域名（如 *.company.com）
+    if (entry.startsWith("*.") && host.endsWith(entry.slice(1))) return true;
+  }
+  return false;
+}
+
+/** CIDR 匹配 */
+function matchCIDR(ip: string, cidr: string): boolean {
+  try {
+    const [range, bitsStr] = cidr.split("/");
+    const bits = parseInt(bitsStr, 10);
+    const ipParts = ip.split(".").map((n) => parseInt(n, 10));
+    const rangeParts = range.split(".").map((n) => parseInt(n, 10));
+    if (ipParts.length !== 4 || rangeParts.length !== 4) return false;
+
+    let mask = 0;
+    for (let i = 0; i < bits; i++) {
+      mask |= 1 << (31 - i);
+    }
+
+    const ipNum = (ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3];
+    const rangeNum = (rangeParts[0] << 24) | (rangeParts[1] << 16) | (rangeParts[2] << 8) | rangeParts[3];
+
+    return (ipNum & mask) === (rangeNum & mask);
+  } catch {
+    return false;
+  }
+}
+
 function createHttpSkills(registry: SkillRegistry): void {
   registry.register(
     defineSystemSkill({
       name: "http_call",
       description:
-        "发起 HTTP 请求。参数: url(string), method?(string, 默认 GET), headers?(object), body?(string|object), timeout?(number, ms, 默认 30000)",
+        "发起 HTTP 请求。参数: url(string), method?(string, 默认 GET), headers?(object), body?(string|object), timeout?(number, ms, 默认 30000)。注意：禁止访问内网地址和本地服务。",
       timeout: 60000,
       paramSchema: {
         properties: {
@@ -868,18 +956,11 @@ function createHttpSkills(registry: SkillRegistry): void {
           return { success: false, error: new Error("url 参数必填") };
         }
 
-        // 安全检查：禁止访问内网地址
+        // 安全检查：默认禁止内网地址，但支持白名单
         const parsedUrl = new URL(url);
         const host = parsedUrl.hostname;
-        if (
-          host === "localhost" ||
-          host === "127.0.0.1" ||
-          host === "0.0.0.0" ||
-          host.startsWith("192.168.") ||
-          host.startsWith("10.") ||
-          host.startsWith("172.16.")
-        ) {
-          return { success: false, error: new Error("安全限制: 禁止访问内网地址") };
+        if (isIntranetHost(host) && !isWhitelisted(host)) {
+          return { success: false, error: new Error(`安全限制: 禁止访问内网地址 ${host}。如需访问，请联系管理员添加到 HTTP_INTRANET_WHITELIST 白名单。`) };
         }
 
         const method = ((params.method as string) ?? "GET").toUpperCase();
@@ -985,11 +1066,21 @@ function createShellSkills(registry: SkillRegistry): void {
           return { success: false, error: new Error("command 参数必填") };
         }
 
-        // 安全检查：禁止危险命令
-        const dangerous = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:", "fork bomb", "> /dev/", "chmod 777", "curl.*|.*sh", "wget.*|.*sh"];
-        for (const pattern of dangerous) {
-          if (command.includes(pattern) || new RegExp(pattern).test(command)) {
-            return { success: false, error: new Error(`安全限制: 禁止执行危险命令`) };
+        // 安全检查：命令白名单（只允许安全命令）
+        const allowedCommands = [
+          "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq",
+          "echo", "pwd", "date", "whoami", "mkdir", "touch", "cp", "mv",
+          "npm", "node", "npx", "git", "python", "python3", "pip",
+        ];
+        const cmdBase = command.trim().split(/\s+/)[0];
+        if (!allowedCommands.includes(cmdBase)) {
+          return { success: false, error: new Error(`安全限制: 命令 "${cmdBase}" 不在白名单中。只允许: ${allowedCommands.join(", ")}`) };
+        }
+        // 额外黑名单检查（防止管道组合绕过）
+        const dangerousPatterns = ["rm -rf /", "mkfs", "dd if=/dev/zero", ":(){ :|:&};:", "> /dev/sda", "curl.*\\|.*sh", "wget.*\\|.*sh"];
+        for (const pattern of dangerousPatterns) {
+          if (new RegExp(pattern, "i").test(command)) {
+            return { success: false, error: new Error(`安全限制: 禁止执行危险命令组合`) };
           }
         }
 

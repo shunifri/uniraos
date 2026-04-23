@@ -13,6 +13,7 @@ import {
   Typography,
   Spin,
   Empty,
+  Segmented,
 } from "antd";
 import {
   NodeIndexOutlined,
@@ -20,6 +21,9 @@ import {
   SearchOutlined,
   ClusterOutlined,
   ReloadOutlined,
+  AimOutlined,
+  ApartmentOutlined,
+  ShareAltOutlined,
 } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { api } from "@/api";
@@ -33,9 +37,10 @@ interface GraphNode {
   type: string;
   communityId?: number;
   degree?: number;
+  isGodNode?: boolean;
   weight?: number;
   createdAt?: number;
-  tags?: string[];
+  tags?: string | string[];
 }
 
 interface GraphEdge {
@@ -67,6 +72,12 @@ const COMMUNITY_COLORS = [
   "#3ba272", "#fc8452", "#9a60b4", "#ea7ccc", "#67e0e3",
 ];
 
+// 中心节点（god nodes）专用色板 — 每个中心节点不同颜色，高区分度
+const GOD_NODE_COLORS = [
+  "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#F7DC6F",
+  "#DDA0DD", "#FF8C42", "#6C5CE7", "#A8E6CF", "#FD79A8",
+];
+
 const NODE_TYPE_COLOR: Record<string, string> = {
   ltm: "#5470c6",
   kb_document: "#91cc75",
@@ -85,6 +96,7 @@ export default function KnowledgeGraphPage() {
   const [syncing, setSyncing] = useState(false);
   const [querying, setQuerying] = useState(false);
   const [queryText, setQueryText] = useState("");
+  const [layoutMode, setLayoutMode] = useState<"force" | "circular" | "radial">("force");
 
   const loadStats = useCallback(async () => {
     try {
@@ -166,19 +178,81 @@ export default function KnowledgeGraphPage() {
   };
 
   // Build ECharts option from graph data
-  const buildChartOption = (nodes: GraphNode[], edges: GraphEdge[]) => {
+  const buildChartOption = (nodes: GraphNode[], edges: GraphEdge[], mode: "force" | "circular" | "radial") => {
     if (nodes.length === 0) return null;
 
     const nodeIdSet = new Set(nodes.map((n) => n.id));
 
+    // 中心节点由后端 /api/graph/data 计算并标记 isGodNode
+    const godNodeList = nodes.filter((n) => n.isGodNode).map((n) => n.id);
+
+    // 预计算环形/径向布局的坐标（所有模式都用 layout: 'none' 除力导向外，才能支持拖动）
+    const computeCircularPositions = () => {
+      const centerX = 400;
+      const centerY = 300;
+      const radius = Math.min(300, Math.max(120, nodes.length * 7));
+      const positions = new Map<string, { x: number; y: number }>();
+      nodes.forEach((node, i) => {
+        const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2 - Math.PI / 2;
+        positions.set(node.id, {
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle),
+        });
+      });
+      return positions;
+    };
+
+    const computeRadialPositions = () => {
+      const groups = new Map<string | number, GraphNode[]>();
+      nodes.forEach((n) => {
+        const key = n.communityId !== undefined ? n.communityId : n.type;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(n);
+      });
+      const groupEntries = [...groups.entries()];
+      const maxRadius = 260;
+      const positions = new Map<string, { x: number; y: number }>();
+      groupEntries.forEach(([_, groupNodes], groupIndex) => {
+        const radius = maxRadius * ((groupIndex + 1) / groupEntries.length);
+        groupNodes.forEach((node, i) => {
+          const angle = (i / Math.max(1, groupNodes.length)) * Math.PI * 2;
+          positions.set(node.id, {
+            x: 400 + radius * Math.cos(angle),
+            y: 300 + radius * Math.sin(angle),
+          });
+        });
+      });
+      return positions;
+    };
+
+    const presetPositions = mode === "circular"
+      ? computeCircularPositions()
+      : mode === "radial"
+      ? computeRadialPositions()
+      : null;
+
+    // 构建中心节点 ID → 索引映射，确保每个中心节点颜色不同
+    const godNodeIdSet = new Set(godNodeList);
+    const godNodeIndexMap = new Map(godNodeList.map((id, idx) => [id, idx]));
+
     const echartsNodes = nodes.map((node) => {
-      const communityColor = node.communityId !== undefined
+      const degree = node.degree ?? 1;
+      const isGodNode = node.isGodNode ?? false;
+      const godIndex = godNodeIndexMap.get(node.id) ?? 0;
+
+      // 颜色：中心节点用独立色板，其他按社区/类型
+      const nodeColor = isGodNode
+        ? GOD_NODE_COLORS[godIndex % GOD_NODE_COLORS.length]
+        : node.communityId !== undefined
         ? COMMUNITY_COLORS[node.communityId % COMMUNITY_COLORS.length]
         : NODE_TYPE_COLOR[node.type] ?? "#888";
-      const degree = node.degree ?? 1;
-      const size = Math.max(10, Math.min(40, 10 + degree * 3));
 
-      // 友好的显示名称：去掉 fact:/recall: 等前缀，下划线转空格
+      // 大小：中心节点更大
+      const size = isGodNode
+        ? Math.max(18, Math.min(55, 18 + degree * 3))
+        : Math.max(8, Math.min(35, 8 + degree * 2.5));
+
+      // 友好的显示名称
       const rawName = node.label || node.id;
       const friendlyName = rawName
         .replace(/^(fact:|recall:|recall:graph:)/, "")
@@ -192,23 +266,46 @@ export default function KnowledgeGraphPage() {
         : "";
       const valuePreview = valueStr.length > 100 ? valueStr.slice(0, 100) + "..." : valueStr;
 
-      return {
+      const base: any = {
         id: node.id,
         name: friendlyName,
         symbolSize: size,
-        itemStyle: { color: communityColor },
+        itemStyle: {
+          color: nodeColor,
+          borderColor: isGodNode ? "#ffffff" : undefined,
+          borderWidth: isGodNode ? 3 : 1,
+          shadowBlur: isGodNode ? 12 : 0,
+          shadowColor: isGodNode ? nodeColor : undefined,
+        },
         label: {
           show: true,
-          fontSize: 10,
+          fontSize: isGodNode ? 12 : 10,
+          fontWeight: isGodNode ? 700 : 400,
           formatter: () => truncatedName,
         },
         tooltip: {
-          formatter: `<b style="font-size:14px">${friendlyName}</b>`
-            + (valuePreview ? `<br/><span style="color:#475569">${valuePreview}</span>` : "")
-            + `<br/><span style="color:#94A3B8;font-size:11px">类型: ${node.type} · 关联: ${degree}${node.tags?.length ? " · 标签: " + node.tags.join(", ") : ""}</span>`,
+          formatter:
+            `<div style="max-width:320px;word-break:break-word;line-height:1.6;font-size:11px">`
+            + `<b style="font-size:13px">${friendlyName}</b>`
+            + (isGodNode ? `<br/><span style="color:#FFD700;font-weight:bold">★ 中心节点 (关联度: ${degree})</span>` : "")
+            + (valuePreview ? `<br/><span style="color:#475569;white-space:pre-wrap">${valuePreview}</span>` : "")
+            + `<br/><span style="color:#94A3B8;font-size:9px">类型: ${node.type} · 关联: ${degree}${node.tags ? " · 标签: " + (Array.isArray(node.tags) ? node.tags.join(", ") : node.tags) : ""}</span>`
+            + `</div>`,
         },
         value: degree,
       };
+
+      // 环形/径向布局：预设初始坐标，但不 fixed，允许拖动
+      if (presetPositions) {
+        const pos = presetPositions.get(node.id);
+        if (pos) {
+          base.x = pos.x;
+          base.y = pos.y;
+          // 注意：不设置 fixed，这样 ECharts 允许拖动
+        }
+      }
+
+      return base;
     });
 
     const echartsEdges = edges
@@ -221,49 +318,57 @@ export default function KnowledgeGraphPage() {
             ? { type: "dotted" as const, opacity: 0.4 }
             : { type: "solid" as const, opacity: 0.8 };
 
-        // 边的关系标签：去掉 shared_tags: 前缀，显示更友好
         const edgeLabel = (edge.label ?? edge.type).replace("shared_tags:", "共同标签: ");
         return {
           source: edge.source,
           target: edge.target,
           lineStyle,
           label: { show: false },
-          tooltip: { formatter: `<b>${edgeLabel}</b><br/><span style="color:#94A3B8">${edge.type}</span>` },
+          tooltip: { formatter: `<div style="max-width:280px;word-break:break-word;line-height:1.6;font-size:11px"><b>${edgeLabel}</b><br/><span style="color:#94A3B8;font-size:9px">${edge.type}</span></div>` },
         };
       });
+
+    const seriesBase: any = {
+      type: "graph",
+      data: echartsNodes,
+      edges: echartsEdges,
+      roam: true,
+      draggable: true, // 三种布局全部支持拖动
+      lineStyle: { color: "source", curveness: 0.2 },
+      emphasis: {
+        focus: "adjacency",
+        lineStyle: { width: 3 },
+      },
+    };
+
+    if (mode === "force") {
+      seriesBase.layout = "force";
+      seriesBase.force = {
+        repulsion: 120,
+        gravity: 0.1,
+        edgeLength: [80, 200],
+        layoutAnimation: true,
+      };
+    } else {
+      // circular / radial 都使用 layout: 'none' + 预设坐标，这样才能拖动
+      seriesBase.layout = "none";
+    }
 
     return {
       tooltip: {
         trigger: "item",
+        confine: true,
+        enterable: true,
+        extraCssText: "max-width:360px;",
         formatter: (params: any) => params.data?.tooltip?.formatter ?? params.name,
       },
-      series: [
-        {
-          type: "graph",
-          layout: "force",
-          data: echartsNodes,
-          edges: echartsEdges,
-          roam: true,
-          draggable: true,
-          force: {
-            repulsion: 120,
-            gravity: 0.1,
-            edgeLength: [80, 200],
-            layoutAnimation: true,
-          },
-          lineStyle: { color: "source", curveness: 0.2 },
-          emphasis: {
-            focus: "adjacency",
-            lineStyle: { width: 3 },
-          },
-        },
-      ],
+      series: [seriesBase],
     };
   };
 
   const displayNodes = queryResults?.nodes ?? graphData.nodes;
   const displayEdges = queryResults?.edges ?? graphData.edges;
-  const chartOption = buildChartOption(displayNodes, displayEdges);
+  const chartOption = buildChartOption(displayNodes, displayEdges, layoutMode);
 
   const nodeColumns = [
     {
@@ -402,6 +507,16 @@ export default function KnowledgeGraphPage() {
         style={{ marginBottom: 16 }}
         extra={
           <Space>
+            <Segmented
+              size="small"
+              value={layoutMode}
+              onChange={(v) => setLayoutMode(v as any)}
+              options={[
+                { label: <Space size={4}><ShareAltOutlined />力导向</Space>, value: "force" },
+                { label: <Space size={4}><AimOutlined />环形</Space>, value: "circular" },
+                { label: <Space size={4}><ApartmentOutlined />径向</Space>, value: "radial" },
+              ]}
+            />
             <Tag color="blue">{t("solid_extracted")}</Tag>
             <Tag color="orange">{t("dashed_inferred")}</Tag>
             <Tag color="gray">{t("dotted_temporal")}</Tag>

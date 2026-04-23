@@ -27,6 +27,8 @@ import {
   ReconciliationOutlined,
   TeamOutlined,
   ApartmentOutlined,
+  LinkOutlined,
+  AuditOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -47,12 +49,30 @@ const Layout: React.FC = () => {
   const isAdmin = useAuthStore((s) => s.isAdmin);
   const isDeveloper = useAuthStore((s) => s.isDeveloper);
   const logout = useAuthStore((s) => s.logout);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const { token: antToken } = theme.useToken();
 
   const isDark = themeMode === 'dark';
   const selectedKey = location.pathname.split('/')[1] || 'chat';
 
-  const menuItems = [
+  // 菜单权限映射：路由key -> 菜单权限名称
+  const menuPermissionMap: Record<string, string> = {
+    skills: 'menu:skills.read',
+    chat: 'menu:chat.read',
+    memory: 'menu:memory.read',
+    knowledge: 'menu:knowledge.read',
+    'knowledge-graph': 'menu:graph.read',
+    files: 'menu:files.read',
+    config: 'menu:config.read',
+    evolution: 'menu:evolution.read',
+    federation: 'menu:federation.read',
+    connections: 'connection.read',
+    approvals: 'menu:approvals.read',
+    admin: 'menu:admin.read',
+  };
+
+  // 所有可能的菜单项（包含权限信息）
+  const allMenuItems = [
     {
       key: 'skills',
       icon: <ThunderboltOutlined />,
@@ -63,29 +83,21 @@ const Layout: React.FC = () => {
       icon: <MessageOutlined />,
       label: t('nav_chat'),
     },
-    ...(isAdmin || isDeveloper
-      ? [
-          {
-            key: 'memory',
-            icon: <DatabaseOutlined />,
-            label: t('nav_memory'),
-          },
-        ]
-      : []),
+    {
+      key: 'memory',
+      icon: <DatabaseOutlined />,
+      label: t('nav_memory'),
+    },
     {
       key: 'knowledge',
       icon: <BookOutlined />,
       label: t('nav_knowledge'),
     },
-    ...(isAdmin || isDeveloper
-      ? [
-          {
-            key: 'knowledge-graph',
-            icon: <ApartmentOutlined />,
-            label: t('nav_knowledge_graph') || 'Knowledge Graph',
-          },
-        ]
-      : []),
+    {
+      key: 'knowledge-graph',
+      icon: <ApartmentOutlined />,
+      label: t('nav_knowledge_graph') || 'Knowledge Graph',
+    },
     {
       key: 'files',
       icon: <FolderOutlined />,
@@ -96,30 +108,45 @@ const Layout: React.FC = () => {
       icon: <SettingOutlined />,
       label: t('nav_config'),
     },
-    ...(isAdmin || isDeveloper
-      ? [
-          {
-            key: 'evolution',
-            icon: <ReconciliationOutlined />,
-            label: t('nav_evolution') || 'Evolution',
-          },
-          {
-            key: 'federation',
-            icon: <TeamOutlined />,
-            label: t('nav_federation') || 'Federation',
-          },
-        ]
-      : []),
-    ...(isAdmin
-      ? [
-          {
-            key: 'admin',
-            icon: <CrownOutlined />,
-            label: t('nav_admin'),
-          },
-        ]
-      : []),
+    {
+      key: 'evolution',
+      icon: <ReconciliationOutlined />,
+      label: t('nav_evolution') || 'Evolution',
+    },
+    {
+      key: 'federation',
+      icon: <TeamOutlined />,
+      label: t('nav_federation') || 'Federation',
+    },
+    {
+      key: 'connections',
+      icon: <LinkOutlined />,
+      label: '连接配置',
+    },
+    {
+      key: 'approvals',
+      icon: <AuditOutlined />,
+      label: t('nav_approvals'),
+    },
+    {
+      key: 'admin',
+      icon: <CrownOutlined />,
+      label: t('nav_admin'),
+    },
   ];
+
+  // 根据用户权限过滤菜单项
+  const menuItems = allMenuItems.filter(item => {
+    // 获取菜单项对应的权限
+    const requiredPermission = menuPermissionMap[item.key];
+    if (!requiredPermission) {
+      console.warn(`Menu item ${item.key} has no corresponding permission defined`);
+      return true; // 默认显示没有定义权限的菜单项
+    }
+
+    // 检查用户是否有该菜单权限
+    return hasPermission(requiredPermission);
+  });
 
   const handleMenuClick = ({ key }: { key: string }) => {
     navigate(`/${key}`);
@@ -170,7 +197,7 @@ const Layout: React.FC = () => {
           background: antToken.colorBgContainer,
           borderBottom: `1px solid ${antToken.colorBorderSecondary}`,
           height: 'auto',
-          lineHeight: '1.5',
+          lineHeight: '2.5',
         }}
       >
         <div

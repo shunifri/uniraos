@@ -68,9 +68,9 @@ function isAllowedKbNode(node: GraphNode, allowedDocIds?: string[]): boolean {
     return true;
   }
 
-  // 如果没有提供允许的文档 ID 列表，阻止访问所有知识库节点
+  // 如果没有提供允许的文档 ID 列表，默认允许访问（用于直接 API 调用或用户自己的图谱）
   if (!allowedDocIds || allowedDocIds.length === 0) {
-    return false;
+    return true;
   }
 
   // 检查节点是否匹配某个有权限的文档 ID

@@ -63,9 +63,22 @@ export class KnowledgeGraphManager {
 
   /** Called after ltm_store — auto-creates graph node and edges */
   async onFactStored(entry: {
-    id: string; key: string; value: unknown; tags: string[]; relation?: string;
+    id: string; key: string; value: unknown; tags: string[]; relation?: string; type?: NodeType;
   }): Promise<void> {
     const store = await this.ensureStore();
+
+    // 自动推断节点类型（未显式传入时根据 tags 推断）
+    const inferNodeType = (): NodeType => {
+      const t = entry.type;
+      if (t) return t;
+      const tags = entry.tags.map(tag => tag.toLowerCase());
+      if (tags.some(tag => tag.includes("kb_document"))) return "kb_document";
+      if (tags.some(tag => tag.includes("kb_layout") || tag.includes("kb_segment") || tag.includes("kb_content"))) return "entity";
+      if (tags.some(tag => tag.includes("entity") || tag.includes("kb_relation"))) return "entity";
+      if (tags.some(tag => tag.includes("concept"))) return "concept";
+      return "ltm";
+    };
+    const nodeType = inferNodeType();
 
     // 1. 处理个人信息节点关联（优化核心逻辑）
     let corePersonNode: any = null;
@@ -93,7 +106,7 @@ export class KnowledgeGraphManager {
       node = await store.addNode({
         id: entry.id,
         label: entry.key,
-        type: "ltm" as NodeType,
+        type: nodeType,
         tags: entry.tags,
         properties: { value: entry.value },
         createdAt: Date.now(),
@@ -186,25 +199,42 @@ export class KnowledgeGraphManager {
   /** Graph statistics */
   async getStats(): Promise<{
     nodeCount: number; edgeCount: number;
+    communityCount: number;
+    godNodeCount: number;
     godNodes: GraphNode[];
     nodeTypeDistribution: Record<string, number>;
     edgeTypeDistribution: Record<string, number>;
   }> {
     const store = await this.ensureStore();
-    const nodes = await store.getAllNodes();
+    let nodes = await store.getAllNodes();
     const edges = await store.getAllEdges();
+
+    // Ensure communities are computed so stats reflect reality
+    let communityCount = 0;
+    if (nodes.length > 0 && !nodes.some((n: any) => n.communityId !== undefined)) {
+      const communities = await this.getCommunities();
+      communityCount = communities.stats.count;
+      nodes = await Promise.all(nodes.map((n: any) => store.getNode(n.id))).then((arr: any[]) => arr.filter(Boolean));
+    } else {
+      const communities = await this.getCommunities();
+      communityCount = communities.stats.count;
+    }
+
     const nodeTypeDist: Record<string, number> = {};
     const edgeTypeDist: Record<string, number> = {};
     for (const n of nodes) nodeTypeDist[n.type] = (nodeTypeDist[n.type] ?? 0) + 1;
     for (const e of edges) edgeTypeDist[e.type] = (edgeTypeDist[e.type] ?? 0) + 1;
 
-    const nodeCount = store.countNodes ? await store.countNodes() : await store.nodeCount;
-    const edgeCount = store.countEdges ? await store.countEdges() : await store.edgeCount;
+    const nodeCount = store.countNodes ? await store.countNodes() : nodes.length;
+    const edgeCount = store.countEdges ? await store.countEdges() : edges.length;
+    const godNodes = await identifyGodNodes(store, 5);
 
     return {
       nodeCount,
       edgeCount,
-      godNodes: await identifyGodNodes(store, 5),
+      communityCount,
+      godNodeCount: godNodes.length,
+      godNodes,
       nodeTypeDistribution: nodeTypeDist,
       edgeTypeDistribution: edgeTypeDist,
     };

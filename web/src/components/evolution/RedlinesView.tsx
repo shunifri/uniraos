@@ -158,7 +158,7 @@ export default function RedlinesView() {
       title: "Actions",
       key: "actions",
       width: 100,
-      render: (_, record: Redline) => (
+      render: (_: unknown, record: Redline) => (
         <Space size="small">
           <Button
             size="small"

@@ -82,6 +82,8 @@ export interface LLMStreamChunk {
 export interface ChatOptions {
   /** 启用深度思考/推理模式 */
   deepThink?: boolean;
+  /** 会话 ID，用于隔离对话历史 */
+  conversationId?: string;
 }
 
 /** LLM Provider 接口 */

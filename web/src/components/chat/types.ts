@@ -25,6 +25,7 @@ export interface KbReference {
   score: number;
   pageNumber: number | null;
   bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null;
+  docMindTaskId?: string | null; // Document Mind 解析的文档标记
 }
 
 export interface WebReference {
@@ -41,7 +42,7 @@ export interface ChatMsg {
   content: string;
   skillName?: string;
   isError?: boolean;
-  status?: "running" | "done" | "error";
+  status?: "running" | "done" | "error" | "streaming";
   chartOptions?: Record<string, unknown>[];
   fileDownload?: FileDownloadData;
   kbReferences?: KbReference[];

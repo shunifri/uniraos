@@ -1,5 +1,7 @@
 import { Router } from "express";
-import { createReadStream } from "fs";
+import { createReadStream, existsSync } from "fs";
+import { resolve, join } from "path";
+import { cwd } from "process";
 import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
@@ -7,12 +9,12 @@ import type { RouteDependencies } from "./index.js";
 import type { ParsingUpdate } from "../services/parsing-queue.js";
 import { getParsingQueue } from "../services/parsing-queue.js";
 
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
-
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
   const router = Router();
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   router.get("/knowledge/documents", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
@@ -234,7 +236,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   router.post("/knowledge/share", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
     try {
       const { docId, shared } = req.body;
-      const result = await engine.execute("kb_share", { docId, shared: !!shared, owner: req.user!.id });
+      const scope = shared ? "all" : "none";
+      const result = await engine.execute("kb_share", { docId, scope, owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
@@ -242,7 +245,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   });
 
   // SSE: 文档解析进度流
-  router.get("/knowledge/documents/:docId/stream", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
+  router.get("/knowledge/documents/:docId/stream", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
 
@@ -263,6 +266,33 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     // 获取当前任务状态
     const task = queue.getTask(docId);
     if (!task || task.owner !== owner) {
+      // 内存队列中无任务（可能因服务器重启丢失），查询数据库 fallback
+      try {
+        const kb = getKnowledgeBase(owner);
+        const dbStatus = await kb.getParsingStatus(docId);
+        if (dbStatus) {
+          const isDone = dbStatus.parsingStatus === 'success' || dbStatus.parsingStatus === 'failed';
+          // 如果任务仍在 processing 但队列已丢失（服务重启后无法恢复），标记为失败
+          const fallbackStatus = isDone ? dbStatus.parsingStatus : 'failed';
+          const fallbackError = isDone
+            ? (dbStatus.parsingStatus === 'failed' ? '解析失败' : undefined)
+            : '解析任务已丢失（可能因服务重启），请刷新页面查看最新状态';
+          res.write(`data: ${JSON.stringify({
+            docId,
+            status: fallbackStatus,
+            progress: dbStatus.parsingProgress,
+            processedSegments: 0,
+            totalSegments: 0,
+            canPreview: isDone,
+            canSearch: isDone,
+            error: fallbackError,
+          })}\n\n`);
+          res.end();
+          return;
+        }
+      } catch (e: any) {
+        console.warn(`[SSE] Failed to fetch parsing status fallback for ${docId}:`, e.message);
+      }
       res.write(`data: ${JSON.stringify({ status: 'failed', error: '任务不存在' })}\n\n`);
       res.end();
       return;
@@ -294,6 +324,50 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       canPreview: task.processedSegments > 0,
       canSearch: task.processedSegments > 0,
     })}\n\n`);
+  });
+
+  // 获取文档内嵌图片
+  router.get("/knowledge/documents/:docId/images/:imageId", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
+    try {
+      const owner = req.user!.id;
+      const docId = req.params.docId as string;
+      const imageId = req.params.imageId as string;
+      const kb = getKnowledgeBase(owner);
+
+      // 验证文档存在且属于当前用户
+      const docs = await kb.listDocuments({ limit: 1000 });
+      const doc = docs.find((d) => d.docId === docId);
+      if (!doc) {
+        res.status(404).json({ success: false, error: "文档不存在或无权访问" });
+        return;
+      }
+
+      // 查找图片文件（支持多种扩展名）
+      const imageDir = resolve(cwd(), ".raos", "knowledge", owner, "doc-images", docId);
+      const exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+      let imagePath: string | null = null;
+      let mimeType = "image/png";
+
+      for (const ext of exts) {
+        const candidate = join(imageDir, `${imageId}.${ext}`);
+        if (existsSync(candidate)) {
+          imagePath = candidate;
+          mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+          break;
+        }
+      }
+
+      if (!imagePath) {
+        res.status(404).json({ success: false, error: "图片不存在" });
+        return;
+      }
+
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      createReadStream(imagePath).pipe(res);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
   });
 
   return router;

@@ -32,6 +32,7 @@ export async function syncKBToUserGraph(
       value: `Shared document from ${sharedByUserId}`,
       tags: ['kb_document', 'shared', (docName.split('.').pop() || 'doc')],
       relation: `shared_by:${sharedByUserId}`,
+      type: "kb_document",
     });
 
     log('info', 'kb_synced_to_user_graph', { docId, docName, targetUserId, sharedByUserId });

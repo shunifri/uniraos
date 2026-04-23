@@ -11,14 +11,14 @@ interface ImportSectionProps {
   importing: boolean;
   importTags: string;
   onImportTagsChange: (tags: string) => void;
-  beforeUpload: UploadProps["beforeUpload"];
+  customRequest: UploadProps["customRequest"];
 }
 
 export default function ImportSection({
   importing,
   importTags,
   onImportTagsChange,
-  beforeUpload,
+  customRequest,
 }: ImportSectionProps) {
   const t = useI18nStore((s) => s.t);
 
@@ -29,7 +29,7 @@ export default function ImportSection({
           <Dragger
             accept=".pdf,.xlsx,.xls,.docx,.doc,.pptx,.ppt,.txt,.md,.csv,.tsv,.json,.png,.jpg,.jpeg"
             multiple
-            customRequest={beforeUpload}
+            customRequest={customRequest}
             showUploadList={false}
             disabled={importing}
             style={{ padding: "16px 0" }}

@@ -21,7 +21,7 @@ import {
   EyeOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
-import { useI18nStore } from "@/i18n";
+import { useI18nStore, type TranslationKey } from "@/i18n";
 
 interface Peer {
   instanceId: string;
@@ -164,11 +164,11 @@ export default function PeersView() {
       dataIndex: "status",
       key: "status",
       render: (status: string) => {
-        let color = "default";
+        let color: "success" | "error" | "default" | "warning" | "processing" = "default";
         if (status === "online") color = "success";
         else if (status === "offline") color = "error";
         else if (status === "unreachable") color = "warning";
-        return <Badge status={color} text={t(status)} />;
+        return <Badge status={color} text={t(status as TranslationKey)} />;
       },
     },
     {

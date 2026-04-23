@@ -7,12 +7,12 @@ import * as deptRepo from "../db/department-repository.js";
 import * as resRepo from "../db/resource-repository.js";
 import type { RouteDependencies } from "./index.js";
 
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
-
 export function createAuthRoutes(deps: RouteDependencies): Router {
   const { sessionManager, syncSkillsToResources } = deps;
   const router = Router();
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   // ===== Auth Routes =====
 
@@ -224,29 +224,29 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Department management API (admin) =====
 
-  router.get("/departments", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
-    const departments = deptRepo.getDepartmentTree();
+  router.get("/departments", pm.requireAuth, pm.requireAdmin(), async (_req, res) => {
+    const departments = await deptRepo.getDepartmentTree();
     res.json({ success: true, departments });
   });
 
-  router.post("/departments", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.post("/departments", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const { name, parentId, description } = req.body;
     if (!name) {
       res.status(400).json({ success: false, error: "name is required" });
       return;
     }
     try {
-      const dept = deptRepo.createDepartment({ name, parentId, description });
+      const dept = await deptRepo.createDepartment({ name, parentId, description });
       res.json({ success: true, department: dept });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  router.put("/departments/:id", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.put("/departments/:id", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { name, description } = req.body;
-    const dept = deptRepo.updateDepartment(id, { name, description });
+    const dept = await deptRepo.updateDepartment(id, { name, description });
     if (!dept) {
       res.status(404).json({ success: false, error: "Department not found" });
       return;
@@ -254,60 +254,60 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, department: dept });
   });
 
-  router.delete("/departments/:id", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.delete("/departments/:id", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     try {
-      deptRepo.deleteDepartment(id);
+      await deptRepo.deleteDepartment(id);
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  router.post("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.post("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
       res.status(400).json({ success: false, error: "resourceIds array is required" });
       return;
     }
-    deptRepo.assignResources(id, resourceIds);
-    const resources = deptRepo.getDepartmentResources(id);
+    await deptRepo.assignResources(id, resourceIds);
+    const resources = await deptRepo.getDepartmentResources(id);
     res.json({ success: true, resources });
   });
 
-  router.delete("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.delete("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
       res.status(400).json({ success: false, error: "resourceIds array is required" });
       return;
     }
-    deptRepo.removeResources(id, resourceIds);
-    const resources = deptRepo.getDepartmentResources(id);
+    await deptRepo.removeResources(id, resourceIds);
+    const resources = await deptRepo.getDepartmentResources(id);
     res.json({ success: true, resources });
   });
 
-  router.get("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.get("/departments/:id/resources", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const effective = req.query.effective === "true";
     const resources = effective
-      ? deptRepo.getDepartmentEffectiveResources(id)
-      : deptRepo.getDepartmentResources(id);
+      ? await deptRepo.getDepartmentEffectiveResources(id)
+      : await deptRepo.getDepartmentResources(id);
     res.json({ success: true, resources });
   });
 
   // ===== Resource management API (admin) =====
 
-  router.get("/resources", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.get("/resources", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const type = req.query.type as string | undefined;
-    const resources = resRepo.listResources(type);
+    const resources = await resRepo.listResources(type);
     res.json({ success: true, resources });
   });
 
-  router.post("/resources/sync", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
-    syncSkillsToResources();
-    const resources = resRepo.listResources("skill");
+  router.post("/resources/sync", pm.requireAuth, pm.requireAdmin(), async (_req, res) => {
+    await syncSkillsToResources();
+    const resources = await resRepo.listResources("skill");
     res.json({ success: true, resources });
   });
 
@@ -318,30 +318,75 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, roles });
   });
 
-  router.get("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.get("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
-    const permissions = resRepo.getPermissionsByRole(id);
+    const permissions = await resRepo.getPermissionsByRole(id);
     res.json({ success: true, permissions });
   });
 
-  router.post("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), (req, res) => {
+  router.post("/roles/:id/permissions", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
-    const { permissionIds, action } = req.body as { permissionIds: string[]; action: "assign" | "remove" };
-    if (!permissionIds || !action) {
-      res.status(400).json({ success: false, error: "permissionIds and action (assign/remove) are required" });
+    const body = req.body as any;
+
+    // 支持三种格式：
+    // 1. permissions: 完全替换角色权限
+    // 2. permissionIds + action: 追加/移除权限
+    // 3. 兼容旧格式
+
+    // 检查是否是新格式（permissions）
+    if (body.permissions && Array.isArray(body.permissions)) {
+      console.log(`替换角色 ${id} 的权限，新权限数: ${body.permissions.length}`);
+      await resRepo.replacePermissionsForRole(id, body.permissions);
+    }
+    // 检查是否是旧格式（permissionIds + action）
+    else if (body.permissionIds && Array.isArray(body.permissionIds) && body.action) {
+      if (body.action === "assign") {
+        console.log(`为角色 ${id} 分配权限，权限数: ${body.permissionIds.length}`);
+        await resRepo.assignPermissionsToRole(id, body.permissionIds);
+      } else if (body.action === "remove") {
+        console.log(`从角色 ${id} 移除权限，权限数: ${body.permissionIds.length}`);
+        await resRepo.removePermissionsFromRole(id, body.permissionIds);
+      } else {
+        res.status(400).json({ success: false, error: "action must be 'assign' or 'remove'" });
+        return;
+      }
+    }
+    // 无效格式
+    else {
+      res.status(400).json({ success: false, error: "permissions (or permissionIds + action) are required" });
       return;
     }
-    if (action === "assign") {
-      resRepo.assignPermissionsToRole(id, permissionIds);
-    } else {
-      resRepo.removePermissionsFromRole(id, permissionIds);
-    }
-    const permissions = resRepo.getPermissionsByRole(id);
-    res.json({ success: true, permissions });
+
+    const result = await resRepo.getPermissionsByRole(id);
+    res.json({ success: true, permissions: result });
   });
 
-  router.get("/permissions", pm.requireAuth, pm.requireAdmin(), (_req, res) => {
-    const permissions = resRepo.listPermissions();
+  router.get("/roles/:id/agent-config", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
+    const { id } = req.params;
+    try {
+      const config = await userRepo.getRoleAgentConfig(id as string);
+      res.json({ success: true, config });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post("/roles/:id/agent-config", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
+    const { id } = req.params;
+    const config = req.body as import("../permissions/types/role.js").RoleAgentConfig | null;
+    console.log(`[POST /roles/${id}/agent-config] body=`, JSON.stringify(config));
+    try {
+      await userRepo.updateRoleAgentConfig(id as string, config);
+      console.log(`[POST /roles/${id}/agent-config] saved ok`);
+      res.json({ success: true });
+    } catch (err) {
+      console.error(`[POST /roles/${id}/agent-config] error:`, err);
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.get("/permissions", pm.requireAuth, pm.requireAdmin(), async (_req, res) => {
+    const permissions = await resRepo.listPermissions();
     res.json({ success: true, permissions });
   });
 

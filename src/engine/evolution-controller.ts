@@ -84,10 +84,15 @@ export interface RedLineViolation {
 // ===== Genealogy Types =====
 
 export interface GenealogyNode {
-  name: string;
-  depth: number;
-  generatedBy: string | null;
-  timestamp: number;
+  key: string;
+  title: string;
+  name?: string;
+  generation: number;
+  depth?: number;
+  creator: string | null;
+  generatedBy?: string | null;
+  createdAt?: string;
+  timestamp?: number;
   children: GenealogyNode[];
 }
 
@@ -462,17 +467,18 @@ export class EvolutionController {
     // Root skills are generators that are not themselves generated
     const rootNames = [...generatorNames].filter((name) => !generatedNames.has(name));
 
-    const buildNode = (name: string): GenealogyNode => {
+    const buildNode = (name: string): any => {
       const record = this.generations.find((g) => g.name === name);
       const children = this.generations
         .filter((g) => g.generatedBy === name)
         .map((g) => buildNode(g.name));
 
       return {
-        name,
-        depth: record?.depth ?? 0,
-        generatedBy: record?.generatedBy ?? null,
-        timestamp: record?.timestamp ?? 0,
+        key: name,
+        title: name,
+        generation: record?.depth ?? 0,
+        creator: record?.generatedBy ?? null,
+        createdAt: record?.timestamp ? new Date(record.timestamp).toISOString() : undefined,
         children,
       };
     };
@@ -483,10 +489,11 @@ export class EvolutionController {
         .map((g) => buildNode(g.name));
 
       return {
-        name: rootName,
-        depth: 0,
-        generatedBy: null,
-        timestamp: 0,
+        key: rootName,
+        title: rootName,
+        generation: 0,
+        creator: null,
+        createdAt: undefined,
         children,
       };
     });
@@ -673,6 +680,17 @@ export class EvolutionController {
     const idx = this.pendingApprovals.findIndex((p) => p.id === id);
     if (idx < 0) return null;
     const item = this.pendingApprovals.splice(idx, 1)[0];
+    // 更新数据库状态
+    if (this.db) {
+      try {
+        this.db.prepare("UPDATE evolution_approvals SET status = ?, statusUpdatedAt = ? WHERE id = ?")
+          .run("approved", Date.now(), id);
+      } catch (err) {
+        log("warn", "evolution.approval_db_update_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     log("info", "skill.approved", { id, name: item.name });
     return item;
   }
@@ -682,6 +700,17 @@ export class EvolutionController {
     const idx = this.pendingApprovals.findIndex((p) => p.id === id);
     if (idx < 0) return false;
     const item = this.pendingApprovals.splice(idx, 1)[0];
+    // 更新数据库状态
+    if (this.db) {
+      try {
+        this.db.prepare("UPDATE evolution_approvals SET status = ?, statusUpdatedAt = ? WHERE id = ?")
+          .run("rejected", Date.now(), id);
+      } catch (err) {
+        log("warn", "evolution.approval_db_update_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     log("info", "skill.rejected", { id, name: item.name, reason });
     return true;
   }

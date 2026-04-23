@@ -2,12 +2,16 @@
  * KBReferenceCard - AI 回复中的知识库引用卡片
  * 显示文本内容和关联的图片/表格缩略图
  */
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, Typography, Space, Tag, Image, Tooltip, Divider } from "antd";
 import { FileTextOutlined, FileImageOutlined, TableOutlined, EyeOutlined } from "@ant-design/icons";
 import { MediaPreviewModal, type MediaItem } from "./MediaPreviewModal";
 
 const { Text, Paragraph } = Typography;
+
+const MAX_THUMBNAILS = 4;
+const THUMBNAIL_SIZE = 80;
+const CONTENT_TRUNCATE_LENGTH = 200;
 
 export interface KBReferenceData {
   docId: string;
@@ -29,9 +33,16 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
 
   const { docId, docName, pageNumber, content, score, mediaItems } = data;
 
+  // 预计算 ID -> 全局索引映射，避免 O(n×m) 查找
+  const indexMap = useMemo(() => {
+    const map = new Map<string, number>();
+    mediaItems.forEach((m, i) => map.set(m.id, i));
+    return map;
+  }, [mediaItems]);
+
   // 分类媒体项
-  const imageItems = mediaItems.filter(item => item.type === 'image');
-  const tableItems = mediaItems.filter(item => item.type === 'table');
+  const imageItems = useMemo(() => mediaItems.filter(item => item.type === 'image'), [mediaItems]);
+  const tableItems = useMemo(() => mediaItems.filter(item => item.type === 'table'), [mediaItems]);
 
   const handleOpenPreview = (index: number) => {
     setPreviewIndex(index);
@@ -44,10 +55,11 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
     }
   };
 
-  // 截取内容显示
-  const truncatedContent = content.length > 200 
-    ? content.slice(0, 200) + "..." 
-    : content;
+  // 截取内容显示（防御性处理）
+  const safeContent = content ?? "";
+  const truncatedContent = safeContent.length > CONTENT_TRUNCATE_LENGTH
+    ? safeContent.slice(0, CONTENT_TRUNCATE_LENGTH) + "..."
+    : safeContent;
 
   return (
     <>
@@ -63,13 +75,13 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
           <Space>
             <FileTextOutlined style={{ color: "#1890ff" }} />
             <Text strong style={{ fontSize: 14 }}>{docName}</Text>
-            {pageNumber && (
-              <Tag size="small" icon={<EyeOutlined />}>
+            {pageNumber != null && (
+              <Tag icon={<EyeOutlined />}>
                 第 {pageNumber} 页
               </Tag>
             )}
             {score !== undefined && (
-              <Tag size="small" color="blue">
+              <Tag color="blue">
                 相关度: {(score * 100).toFixed(1)}%
               </Tag>
             )}
@@ -77,9 +89,13 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
         }
         extra={
           onViewDocument && (
-            <a onClick={handleViewDoc} style={{ fontSize: 12 }}>
+            <button
+              type="button"
+              onClick={handleViewDoc}
+              style={{ fontSize: 12, background: "none", border: "none", padding: 0, cursor: "pointer", color: "#1890ff" }}
+            >
               查看文档 →
-            </a>
+            </button>
           )
         }
       >
@@ -107,15 +123,20 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
                   <FileImageOutlined /> 相关图片 ({imageItems.length})
                 </Text>
                 <Space wrap>
-                  {imageItems.slice(0, 4).map((item, idx) => {
-                    const globalIndex = mediaItems.findIndex(m => m.id === item.id);
+                  {imageItems.slice(0, MAX_THUMBNAILS).map((item, idx) => {
+                    const globalIndex = indexMap.get(item.id) ?? 0;
                     return (
                       <Tooltip key={item.id} title={item.title || `图片 ${idx + 1}`}>
                         <div
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`预览图片 ${item.title || idx + 1}`}
                           onClick={() => handleOpenPreview(globalIndex)}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenPreview(globalIndex); } }}
+                          className="kb-thumb"
                           style={{
-                            width: 80,
-                            height: 80,
+                            width: THUMBNAIL_SIZE,
+                            height: THUMBNAIL_SIZE,
                             borderRadius: 4,
                             overflow: "hidden",
                             cursor: "pointer",
@@ -131,9 +152,10 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
                               width: "100%",
                               height: "100%",
                               objectFit: "cover",
+                              transition: "transform 0.3s ease",
                             }}
                           />
-                          {item.page && (
+                          {item.page != null && (
                             <div
                               style={{
                                 position: "absolute",
@@ -153,12 +175,16 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
                       </Tooltip>
                     );
                   })}
-                  {imageItems.length > 4 && (
+                  {imageItems.length > MAX_THUMBNAILS && (
                     <div
+                      role="button"
+                      tabIndex={0}
+                      aria-label="查看更多图片"
                       onClick={() => handleOpenPreview(0)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleOpenPreview(0); }}
                       style={{
-                        width: 80,
-                        height: 80,
+                        width: THUMBNAIL_SIZE,
+                        height: THUMBNAIL_SIZE,
                         borderRadius: 4,
                         background: "#f0f0f0",
                         display: "flex",
@@ -168,7 +194,7 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
                         border: "1px solid #d9d9d9",
                       }}
                     >
-                      <Text type="secondary">+{imageItems.length - 4}</Text>
+                      <Text type="secondary">+{imageItems.length - MAX_THUMBNAILS}</Text>
                     </div>
                   )}
                 </Space>
@@ -183,17 +209,21 @@ export function KBReferenceCard({ data, onViewDocument }: KBReferenceCardProps) 
                 </Text>
                 <Space wrap>
                   {tableItems.map((item, idx) => {
-                    const globalIndex = mediaItems.findIndex(m => m.id === item.id);
+                    const globalIndex = indexMap.get(item.id) ?? 0;
                     return (
                       <Tag
                         key={item.id}
                         icon={<TableOutlined />}
                         color="processing"
                         style={{ cursor: "pointer" }}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`预览表格 ${item.title || idx + 1}`}
                         onClick={() => handleOpenPreview(globalIndex)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleOpenPreview(globalIndex); }}
                       >
                         {item.title || `表格 ${idx + 1}`}
-                        {item.page && ` (p${item.page})`}
+                        {item.page != null && ` (p${item.page})`}
                       </Tag>
                     );
                   })}

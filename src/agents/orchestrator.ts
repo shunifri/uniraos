@@ -26,101 +26,26 @@ import type {
   StrategyConfig,
 } from "./types.js";
 import { Protocol } from "./types.js";
+import type { RoleAgentConfig } from "./types.js";
 import { SimpleAgent } from "./simple-agent.js";
 import { ReactAgent } from "./react-agent.js";
 import { TeamAgent } from "./team-agent.js";
 import { PlanAgent } from "./plan-agent.js";
 import { requestContext } from "../user/request-context.js";
 
-/** 单用户的对话历史（精简版，只保留 user/assistant） */
-interface UserConversation {
+/** 单会话的对话历史（按 conversationId 隔离） */
+interface Conversation {
   history: Message[];
   lastActive: number;
 }
 
+/** 用户会话管理：userId -> conversationId -> Conversation */
+interface UserConversations {
+  [conversationId: string]: Conversation;
+}
+
 const MAX_HISTORY_TURNS = 20; // 最多保留最近 20 轮（40 条消息）
 const MAX_HISTORY_CHARS = 16000; // 历史总字符数上限
-
-/** 工具使用规范（注入到所有 Agent 的 system prompt 末尾） */
-const TOOL_USAGE_GUIDELINES = `
-
-## 工具使用规范
-
-### 信息检索优先级（必须严格遵守！）
-1. **首先**检查系统自动注入的"相关知识"（上方），如果内容与用户问题**确实相关**，优先基于这些知识来回答
-2. **其次**，如果自动注入的知识不够充分或**与问题不相关**，主动调用 kb_search 用不同关键词检索知识库
-3. **最后**，当知识库确实没有相关内容时，使用 web_search 搜索互联网
-- 知识库是用户上传的专属资料，**但只有在内容与问题相关时才引用**
-- **严禁强行引用不相关的知识库结果**——如果检索到的内容与用户提问主题不匹配，应忽略这些结果
-- **回答必须忠于原文内容，禁止编造知识库中不存在的信息**
-- 如果知识库中没有相关信息，坦诚告知用户，然后通过网络搜索等其他方式回答
-
-### 用户交互（极其重要！）
-以下场景**必须**使用 user_confirm 技能，**绝对不能直接回答**：
-
-1. **当用户需要填报个人信息时**
-   - 例如："我要填报下个人信息"
-   - **必须**调用 user_confirm 收集表单信息（姓名、邮箱、电话、地址等）
-
-2. **需要用户提供信息/确认时**
-   - 用户请求需要多个选项的问题（如"我想学习编程，给我些建议"）
-   - 需要确认用户偏好、目标、时间安排、预算等个性化信息
-   - 问题描述不够清晰，需要用户补充细节
-
-3. **推荐/选择类问题**
-   - 提供推荐时，应先询问用户的偏好（如学习方向、风格、优先级等）
-   - 有多个方案可供选择时，使用 selection 模式展示选项供用户选择
-
-4. **制定计划/方案时**
-   - 制定学习计划、工作计划、旅行计划等
-   - 确认用户的时间安排、目标、预算等关键参数
-
-**user_confirm 使用示例（必须严格遵守！）**：
-- 场景："我要填报下个人信息" → 使用 type="form" 收集姓名、邮箱、电话
-- 场景："我想学习编程" → 使用 type="selection" 提供选项（前端开发、后端开发、数据分析等）
-- 场景："帮我制定学习计划" → 使用 type="form" 收集学习时间、目标、预算
-
-**使用规范**：
-- type: "selection" — 用于提供选项供用户选择（单选或多选）
-- type: "form" — 用于收集表单信息（用户输入）
-- type: "approval" — 用于简单的确认/取消操作
-- title: 卡片标题，清晰说明交互目的
-- description: 补充说明，解释为什么需要这些信息
-
-### 降低幻觉（极其重要！）
-- 如果知识库或上下文中有**相关**内容，**必须基于原文回答**，不要凭空生成
-- 如果没有找到相关信息，明确告知用户"知识库中未找到相关信息"，不要编造
-- 回答时尽量引用来源（如文档名称），让用户知道信息出处
-- 不确定的信息要标注"根据知识库信息"或"以下仅供参考"
-- **不要把不相关的知识库结果与用户提问强行关联，这是一种幻觉行为**
-
-### 网络搜索引用规范
-- 使用 web_search / web_fetch 获取信息后，**必须在回答中标注来源 URL**
-- 格式：在引用的信息后标注 [来源](URL)，例如 [来源](https://example.com/article)
-- 如果从多个网页获取信息，每条信息都应标注各自的来源
-- 让用户能够验证信息的真实性
-
-### 数据可视化
-当你获取到结构化数据（统计数据、趋势数据、分布数据、对比数据等）时，**必须**使用 chart 相关 skill 生成可视化图表来呈现：
-- chart_recommend: 根据数据推荐合适的图表类型
-- chart_generate: 生成单个图表（支持 bar/line/pie/scatter/area/radar/heatmap/treemap 等）
-- chart_multi: 生成多图表组合看板
-
-使用 chart_generate 时传入 data 数组和适当的 chartType。例如查询到日志统计数据后，应生成柱状图或折线图展示趋势。
-
-### 数据库查询
-- 查询 MySQL 数据库时使用 mysql_query（需要传 connection 参数）
-- 查询 SQLite 时使用 db_query
-- 执行写操作分别使用 mysql_execute / db_execute
-
-### 记忆管理
-- 重要的对话结论、用户偏好，应主动存入短期记忆（stm_store）
-- 需要长期保存的知识使用 ltm_store
-
-### 输出格式
-- 回复使用 Markdown 格式
-- 代码块标注语言类型
-- 表格数据优先用图表展示，其次用 Markdown 表格`;
 
 
 /** 默认 Profile 模板 */
@@ -183,8 +108,13 @@ const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
 export class Orchestrator {
   private deps: AgentDeps;
   private config: OrchestratorConfig;
-  /** 每用户对话历史 */
-  private userConversations = new Map<string, UserConversation>();
+  /** 每会话对话历史：userId -> conversationId -> Conversation */
+  private conversations = new Map<string, Map<string, Conversation>>();
+  /** 每会话引用数据：userId -> conversationId -> { kbReferences, webReferences } */
+  private conversationReferences = new Map<string, Map<string, {
+    kbReferences: Array<{ index: number; docId: string; docName: string; chunkIndex: number; content: string; score: number; pageNumber: number | null; bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null; docMindTaskId?: string | null }>;
+    webReferences: Array<{ index: number; title: string; url: string; snippet?: string }>;
+  }>>();
   /** 记忆分析防抖：用户 → 上次分析时间 */
   private lastAnalysisTime = new Map<string, number>();
 
@@ -200,34 +130,77 @@ export class Orchestrator {
     if (deps.provider) this.deps.provider = deps.provider;
   }
 
-  /** 清空指定用户的对话历史 */
-  clearHistory(userId?: string): void {
+  /** 清空指定用户或会话的对话历史 */
+  clearHistory(userId?: string, conversationId?: string): void {
     if (userId) {
-      this.userConversations.delete(userId);
+      if (conversationId) {
+        // 清除指定会话的历史
+        this.conversations.get(userId)?.delete(conversationId);
+        this.conversationReferences.get(userId)?.delete(conversationId);
+      } else {
+        // 清除用户的所有会话历史
+        this.conversations.delete(userId);
+        this.conversationReferences.delete(userId);
+      }
     } else {
-      this.userConversations.clear();
+      // 清除所有历史
+      this.conversations.clear();
+      this.conversationReferences.clear();
     }
   }
 
-  /** 获取用户对话历史（精简版） */
-  private getUserHistory(userId: string): Message[] {
-    return this.userConversations.get(userId)?.history ?? [];
+  /** 获取会话引用数据 */
+  private getConversationReferences(userId: string, conversationId: string): { kbReferences: any[]; webReferences: any[] } {
+    let userRefs = this.conversationReferences.get(userId);
+    if (!userRefs) {
+      userRefs = new Map();
+      this.conversationReferences.set(userId, userRefs);
+    }
+    let convRefs = userRefs.get(conversationId);
+    if (!convRefs) {
+      convRefs = { kbReferences: [], webReferences: [] };
+      userRefs.set(conversationId, convRefs);
+    }
+    return convRefs;
+  }
+
+  /** 获取用户会话历史（精简版，按 conversationId 隔离） */
+  private getConversationHistory(userId: string, conversationId?: string): Message[] {
+    if (!conversationId) {
+      // 如果没有 conversationId，返回空历史（防止跨会话污染）
+      return [];
+    }
+    const userConvs = this.conversations.get(userId);
+    return userConvs?.get(conversationId)?.history ?? [];
   }
 
   /** 截断历史到最近 N 条消息（话题变化时使用） */
-  private truncateHistory(userId: string, keepCount: number): void {
-    const conv = this.userConversations.get(userId);
+  private truncateHistory(userId: string, conversationId: string | undefined, keepCount: number): void {
+    if (!conversationId) return;
+    const conv = this.conversations.get(userId)?.get(conversationId);
     if (!conv || conv.history.length <= keepCount) return;
     conv.history = conv.history.slice(-keepCount);
   }
 
-  /** 追加消息到历史（支持 user/assistant/tool 摘要） */
-  private appendHistory(userId: string, role: "user" | "assistant", content: string): void {
-    let conv = this.userConversations.get(userId);
+  /** 获取或创建会话 */
+  private getOrCreateConversation(userId: string, conversationId: string): Conversation {
+    let userConvs = this.conversations.get(userId);
+    if (!userConvs) {
+      userConvs = new Map();
+      this.conversations.set(userId, userConvs);
+    }
+    let conv = userConvs.get(conversationId);
     if (!conv) {
       conv = { history: [], lastActive: Date.now() };
-      this.userConversations.set(userId, conv);
+      userConvs.set(conversationId, conv);
     }
+    return conv;
+  }
+
+  /** 追加消息到历史（支持 user/assistant/tool 摘要，按 conversationId 隔离） */
+  private appendHistory(userId: string, conversationId: string | undefined, role: "user" | "assistant", content: string): void {
+    if (!conversationId) return;
+    const conv = this.getOrCreateConversation(userId, conversationId);
     conv.history.push({ role, content });
     conv.lastActive = Date.now();
 
@@ -245,9 +218,9 @@ export class Orchestrator {
   }
 
   /** 记录本轮 tool 调用摘要到历史（在 assistant 回复之前追加） */
-  private recordToolSummary(userId: string, toolSummaries: string[]): void {
-    if (toolSummaries.length === 0) return;
-    const conv = this.userConversations.get(userId);
+  private recordToolSummary(userId: string, conversationId: string | undefined, toolSummaries: string[]): void {
+    if (!conversationId || toolSummaries.length === 0) return;
+    const conv = this.conversations.get(userId)?.get(conversationId);
     if (!conv) return;
     // 把 tool 调用摘要作为 assistant 消息的前缀追加
     const summary = `[本轮使用工具: ${toolSummaries.join("; ")}]`;
@@ -255,8 +228,8 @@ export class Orchestrator {
   }
 
   /** 生成最近对话历史的摘要（用于策略分析） */
-  private getRecentHistorySummary(userId: string, maxTurns = 6): string {
-    const history = this.getUserHistory(userId);
+  private getRecentHistorySummary(userId: string, conversationId?: string, maxTurns = 6): string {
+    const history = this.getConversationHistory(userId, conversationId);
     if (history.length === 0) return "";
 
     const recent = history.slice(-maxTurns);
@@ -269,39 +242,40 @@ export class Orchestrator {
     return lines.join("\n");
   }
 
-  /** KB 引用数据（每次对话后重置） */
-  private lastKbReferences: Array<{
-    index: number; docId: string; docName: string;
-    chunkIndex: number; content: string; score: number;
-    pageNumber: number | null;
-    bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null;
-  }> = [];
+  /** 当前正在处理的 userId 和 conversationId（用于 collectWebReferences） */
+  private currentUserId: string = "__default__";
+  private currentConversationId: string | undefined = undefined;
 
-  /** Web 引用数据（每次对话后重置，从 tool_result 中收集） */
-  private lastWebReferences: Array<{
-    index: number; title: string; url: string; snippet?: string;
-  }> = [];
+  /** 设置当前处理的会话上下文 */
+  private setCurrentConversation(userId: string, conversationId: string | undefined): void {
+    this.currentUserId = userId;
+    this.currentConversationId = conversationId;
+  }
 
   /** 获取最近一次对话的 KB 引用 */
-  getLastKbReferences() {
-    return this.lastKbReferences;
+  getLastKbReferences(userId?: string, conversationId?: string) {
+    if (!userId || !conversationId) return [];
+    return this.getConversationReferences(userId, conversationId).kbReferences;
   }
 
   /** 获取最近一次对话的 Web 引用 */
-  getLastWebReferences() {
-    return this.lastWebReferences;
+  getLastWebReferences(userId?: string, conversationId?: string) {
+    if (!userId || !conversationId) return [];
+    return this.getConversationReferences(userId, conversationId).webReferences;
   }
 
   /** 从 tool_result 事件中收集 web 引用 */
   collectWebReferences(skillName: string, result: any): void {
+    if (!this.currentConversationId) return;
     if (!result?.success || !result?.data) return;
     const data = result.data;
+    const refs = this.getConversationReferences(this.currentUserId, this.currentConversationId);
 
     if (skillName === "web_search" && Array.isArray(data.results)) {
       for (const r of data.results) {
-        if (r.url && !this.lastWebReferences.some((w) => w.url === r.url)) {
-          this.lastWebReferences.push({
-            index: this.lastWebReferences.length + 1,
+        if (r.url && !refs.webReferences.some((w) => w.url === r.url)) {
+          refs.webReferences.push({
+            index: refs.webReferences.length + 1,
             title: r.title || r.url,
             url: r.url,
             snippet: r.snippet,
@@ -309,9 +283,9 @@ export class Orchestrator {
         }
       }
     } else if (skillName === "web_fetch" && data.url) {
-      if (!this.lastWebReferences.some((w) => w.url === data.url)) {
-        this.lastWebReferences.push({
-          index: this.lastWebReferences.length + 1,
+      if (!refs.webReferences.some((w) => w.url === data.url)) {
+        refs.webReferences.push({
+          index: refs.webReferences.length + 1,
           title: data.title || data.url,
           url: data.url,
         });
@@ -321,8 +295,12 @@ export class Orchestrator {
 
   /** 检索 LTM 记忆，返回上下文字符串 */
   private async recallMemories(userMessage: string): Promise<string> {
-    this.lastKbReferences = [];
-    this.lastWebReferences = [];
+    // 重置当前对话的引用数据
+    if (this.currentConversationId) {
+      const refs = this.getConversationReferences(this.currentUserId, this.currentConversationId);
+      refs.kbReferences = [];
+      refs.webReferences = [];
+    }
     const now = new Date();
     const hour = now.getHours();
     const timeGreeting = hour < 12 ? "早上" : hour < 18 ? "下午" : "晚上";
@@ -452,11 +430,12 @@ export class Orchestrator {
           }
         }
 
-        if (res.type === "kb") {
+        if (res.type === "kb" && this.currentConversationId) {
           // kb_search 现在返回的是直接在 data 字段中的数组
           if (res.data && Array.isArray(res.data) && res.data.length > 0) {
             // 编号引用，存储引用列表
-            this.lastKbReferences = res.data.map((r: any, i: number) => ({
+            const refs = this.getConversationReferences(this.currentUserId, this.currentConversationId);
+            refs.kbReferences = res.data.map((r: any, i: number) => ({
               index: i + 1,
               docId: r.docId,
               docName: r.docName,
@@ -465,9 +444,10 @@ export class Orchestrator {
               score: r.score,
               pageNumber: r.pageNumber ?? null,
               bboxes: r.bboxes ?? null,
+              docMindTaskId: r.docMindTaskId ?? null,
             }));
 
-            const kbLines = this.lastKbReferences.map(
+            const kbLines = refs.kbReferences.map(
               (r) => `[^${r.index}] 来源:《${r.docName}》第${r.chunkIndex + 1}段 — ${r.content.slice(0, 400)}${r.content.length > 400 ? "..." : ""}`
             );
             context += `\n\n## 相关知识（来自用户知识库）\n${kbLines.join("\n\n")}\n\n⚠️ 引用规则（必须严格遵守）：
@@ -487,50 +467,61 @@ export class Orchestrator {
   }
 
   /** 构建带历史和记忆的 AgentInput */
-  private async buildEnrichedInput(input: AgentInput & { userId?: string }): Promise<AgentInput> {
+  private async buildEnrichedInput(input: AgentInput & { userId?: string; conversationId?: string }): Promise<AgentInput> {
     const userId = input.userId ?? "__default__";
+    const conversationId = (input as any).conversationId;
+
+    // 设置当前会话上下文
+    this.setCurrentConversation(userId, conversationId);
 
     // 检索记忆
     const memoryContext = await this.recallMemories(input.message);
 
-    // 获取对话历史
-    const history = this.getUserHistory(userId);
+    // 获取对话历史（按 conversationId 隔离）
+    const history = this.getConversationHistory(userId, conversationId);
 
-    // 记录用户消息
-    this.appendHistory(userId, "user", input.message);
+    // 记录用户消息（按 conversationId 隔离）
+    this.appendHistory(userId, conversationId, "user", input.message);
 
     return {
       ...input,
       history,
       context: {
         ...input.context,
-        memoryContext: memoryContext + TOOL_USAGE_GUIDELINES,
+        memoryContext,
       },
     };
   }
 
-  /** 记录助手回复到历史 */
-  private recordAssistantReply(userId: string, response: string): void {
-    this.appendHistory(userId, "assistant", response);
+  /** 记录助手回复到历史（按 conversationId 隔离） */
+  private recordAssistantReply(userId: string, conversationId: string | undefined, response: string): void {
+    this.appendHistory(userId, conversationId, "assistant", response);
   }
 
   /** 执行任务，自动选择策略 */
-  async run(input: AgentInput & { userId?: string }): Promise<AgentOutput> {
+  async run(input: AgentInput & { userId?: string; conversationId?: string; roleAgentConfig?: RoleAgentConfig }): Promise<AgentOutput> {
     const userId = input.userId ?? "__default__";
+    const conversationId = (input as any).conversationId;
+
+    // 设置当前会话上下文
+    this.setCurrentConversation(userId, conversationId);
 
     // 在对话开始时重置引用，确保不显示上一次对话的残留引用
-    this.lastKbReferences = [];
-    this.lastWebReferences = [];
+    if (conversationId) {
+      const refs = this.getConversationReferences(userId, conversationId);
+      refs.kbReferences = [];
+      refs.webReferences = [];
+    }
 
     let result: AgentOutput;
     if (!this.config.autoStrategy) {
       const enrichedInput = await this.buildEnrichedInput(input);
       result = await this.runReact(enrichedInput);
     } else {
-      const decision = await this.analyzeStrategy(input.message, userId);
+      const decision = await this.analyzeStrategy(input.message, userId, conversationId);
       // 话题变化时截断历史，只保留最近 1 轮
       if (decision.topicChange) {
-        this.truncateHistory(userId, 2);
+        this.truncateHistory(userId, conversationId, 2);
       }
       const enrichedInput = await this.buildEnrichedInput(input);
       switch (decision.level) {
@@ -553,24 +544,31 @@ export class Orchestrator {
       ?.filter((s) => s.type === "tool_call")
       .map((s) => (s.data as any)?.name ?? "unknown") ?? [];
     if (toolNames.length > 0) {
-      this.recordToolSummary(userId, toolNames);
+      this.recordToolSummary(userId, conversationId, toolNames);
     }
 
-    this.recordAssistantReply(userId, result.response);
+    this.recordAssistantReply(userId, conversationId, result.response);
     // 异步分析对话记忆（fire-and-forget）
     this.analyzeConversationMemory(userId, input.message, result.response);
     return result;
   }
 
   /** 流式执行 */
-  async *runStream(input: AgentInput & { userId?: string }): AsyncGenerator<AgentStreamEvent> {
+  async *runStream(input: AgentInput & { userId?: string; conversationId?: string; roleAgentConfig?: RoleAgentConfig }): AsyncGenerator<AgentStreamEvent> {
     const userId = input.userId ?? "__default__";
+    const conversationId = (input as any).conversationId;
     let finalResponse = "";
     const toolNames: string[] = [];
 
+    // 设置当前会话上下文
+    this.setCurrentConversation(userId, conversationId);
+
     // 在对话开始时重置引用，确保不显示上一次对话的残留引用
-    this.lastKbReferences = [];
-    this.lastWebReferences = [];
+    if (conversationId) {
+      const refs = this.getConversationReferences(userId, conversationId);
+      refs.kbReferences = [];
+      refs.webReferences = [];
+    }
 
     if (!this.config.autoStrategy) {
       const enrichedInput = await this.buildEnrichedInput(input);
@@ -583,17 +581,17 @@ export class Orchestrator {
         }
         yield event;
       }
-      if (toolNames.length > 0) this.recordToolSummary(userId, toolNames);
-      this.recordAssistantReply(userId, finalResponse);
+      if (toolNames.length > 0) this.recordToolSummary(userId, conversationId, toolNames);
+      this.recordAssistantReply(userId, conversationId, finalResponse);
       this.analyzeConversationMemory(userId, input.message, finalResponse);
       return;
     }
 
-    const decision = await this.analyzeStrategy(input.message, userId);
+    const decision = await this.analyzeStrategy(input.message, userId, conversationId);
 
     // 话题变化时截断历史，只保留最近 1 轮
     if (decision.topicChange) {
-      this.truncateHistory(userId, 2);
+      this.truncateHistory(userId, conversationId, 2);
     }
 
     const enrichedInput = await this.buildEnrichedInput(input);
@@ -627,13 +625,13 @@ export class Orchestrator {
       yield event;
     }
 
-    if (toolNames.length > 0) this.recordToolSummary(userId, toolNames);
-    this.recordAssistantReply(userId, finalResponse);
+    if (toolNames.length > 0) this.recordToolSummary(userId, conversationId, toolNames);
+    this.recordAssistantReply(userId, conversationId, finalResponse);
     this.analyzeConversationMemory(userId, input.message, finalResponse);
   }
 
   /** 分析任务并决策 */
-  async analyzeStrategy(message: string, userId?: string): Promise<StrategyDecision> {
+  async analyzeStrategy(message: string, userId?: string, conversationId?: string): Promise<StrategyDecision> {
     // 首先使用关键词快速判断，实现智能策略选择
     const strategy = this.quickAnalyzeStrategy(message);
     if (strategy) {
@@ -645,88 +643,54 @@ export class Orchestrator {
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
 
-    // 获取最近对话历史摘要
-    const historySummary = userId ? this.getRecentHistorySummary(userId) : "";
+    // 获取最近对话历史摘要（按 conversationId 隔离）
+    const historySummary = userId ? this.getRecentHistorySummary(userId, conversationId) : "";
     const historySection = historySummary
       ? `\n## 最近对话上下文\n${historySummary}\n`
       : "";
 
-    const prompt = `分析以下用户任务，选择最合适的执行策略。
+    const prompt = `分析用户任务，选择执行策略。
 ${historySection}
-## 当前用户消息
+## 用户消息
 ${message}
 
-## 可用工具/技能
+## 可用工具
 ${skillListText || "（无）"}
 
-## 策略选项
+## 策略级别
+- simple：闲聊、简单问答、翻译（不需要工具）
+- react：需要工具的任务（搜索、查询、图表等）——绝大多数任务
+- plan：需要多步规划的复杂任务
+- team：需要多智能体协作的任务
 
-### 级别
-- simple: 简单问答、闲聊、翻译、知识查询 — 不需要工具调用
-- react: 需要使用工具的单人任务 — 搜索、计算、数据库查询、记忆、图表生成等（绝大多数任务应使用此级别）
-- plan: 多步规划任务 — 需要先制定计划再执行（如：复杂数据分析流程、项目管理）
-- team: 多智能体协作任务 — 需要多个专家分工合作、并行分析、或复杂的协调流程
+## Team 协议（level=team 时选择）
+- HIERARCHICAL：层次结构任务
+- SEQUENTIAL：顺序依赖任务
+- SWARM：并行独立子任务
+- CONTRACT_NET：竞争评估
+- A2A：点对点移交
+- BLACKBOARD：共享工作区协作
+- MARKET_BASED：资源分配博弈
 
-### Team 协议选择指南
-当选择 team 级别时，根据任务特点选择协议：
-- HIERARCHICAL: 任务有明确的层次结构或管理关系（如：代码审查需要架构师→前端专家→后端专家）
-- SEQUENTIAL: 任务需要按顺序执行，后续任务依赖前面的结果（如：数据处理流水线：清洗→验证→分析→生成报告）
-- SWARM: 多个独立子任务可并行执行，最后汇聚结果（如：从多个来源搜索信息然后合成）
-- CONTRACT_NET: 任务分配时需要多个智能体竞争投标（如：多个专家评估同一个方案）
-- A2A: 点对点移交，智能体间需要协议协商（如：前端设计→后端实现→测试）
-- BLACKBOARD: 需要共享工作区协调多个智能体的异步工作（如：复杂系统设计，多个专家在黑板上更新进度）
-- MARKET_BASED: 基于资源和能力的经济博弈（如：任务分配时根据成本和能力分配资源）
-
-### Plan 策略指南
-当任务具有以下特点时，选择 plan 级别：
-- 需要明确步骤的复杂任务（如："我需要分析一份财务报告"）
-- 涉及多个相关操作的任务（如："帮我搜索公司产品信息，然后生成对比分析"）
-- 需要规划和执行的任务（如："帮我制定学习计划并准备相关资源"）
-
-## 输出格式（仅 JSON，无 markdown）
+## 输出格式（仅 JSON）
 {
   "level": "simple|react|plan|team",
-  "reasoning": "一句话说明选择原因",
+  "reasoning": "选择原因",
   "topicChange": false,
-  "protocol": "HIERARCHICAL|SEQUENTIAL|SWARM|CONTRACT_NET|A2A|BLACKBOARD|MARKET_BASED（仅当 level=team 时必需）",
+  "protocol": "HIERARCHICAL|...（team时必需）",
   "team": {
-    "members": [{"role":"角色名","expertise":["领域1"],"personality":"人格描述"}],
-    "manager": {"role":"经理角色","expertise":["领域"],"personality":"人格描述"},
-    "pipelineSteps": ["步骤1","步骤2"]
+    "members": [{"role":"角色","expertise":["领域"],"personality":"描述"}],
+    "manager": {"role":"经理","expertise":["领域"],"personality":"描述"},
+    "pipelineSteps": ["步骤1"]
   }
 }
 
-## Team 触发条件
-选择 team 级别仅当：
-- 任务包含多个独立子目标（如：分析文档同时生成摘要和数据可视化）
-- 明确涉及多角色协作（如：评审代码需要多个专家视角）
-- 需要并行分析或竞争选择（如：多个方案需要同时评估）
-- LLM 识别需要特定协议的情况
-
-## Plan 触发条件
-选择 plan 级别仅当：
-- 任务需要明确的步骤规划（如："帮我分析这份财务报告，然后生成分析图表"）
-- 涉及多个连续操作（如："先搜索相关信息，然后整理成报告"）
-- 复杂的多步骤任务（如："制定学习计划，准备相关资源，然后进行学习"）
-
-## 优先级顺序
-1. simple：纯粹的闲聊、简单问答、翻译（不需要工具）
-2. react：需要工具调用的单人任务（搜索、查询、图表等）- **绝大多数任务**
-3. plan：需要规划和执行的复杂任务
-4. team：多智能体协作任务
-
-## 重要规则
-- 如果对话上下文中已经在进行某项任务（如数据库查询、数据分析），用户的后续追问（如"继续"、"详细分析"、"再查一下"等）**必须**选 react，延续已有任务
-- 需要工具的单步任务（查数据库、搜索、生成图表、文件操作等）一律选 react
-- 只有纯粹的闲聊、问答、翻译才选 simple
-- Plan 应谨慎使用，仅当任务确实需要多步规划时才使用
-- Team 应谨慎使用，仅当任务确实需要多智能体协作时才使用
-
-## 话题变化检测（topicChange）
-- 如果用户的新消息与最近对话上下文的话题**明显不同**，设置 topicChange=true
-- 例如：之前在讨论数据库查询，突然问"今天天气怎样" → topicChange=true
-- 如果是对之前话题的追问、深入、补充 → topicChange=false
-- 没有历史对话时 → topicChange=false`;
+## 规则
+- 追问/继续/深入分析 → react
+- 单步工具任务 → react
+- 只有纯闲聊才选 simple
+- plan/team 谨慎使用
+- topicChange=true：话题明显切换（如从数据库查询突然问天气）`;
 
 
     try {
@@ -759,27 +723,26 @@ ${skillListText || "（无）"}
     if (now - last < 10000) return;
     this.lastAnalysisTime.set(userId, now);
 
-    const historySummary = this.getRecentHistorySummary(userId, 4);
+    const historySummary = this.getRecentHistorySummary(userId, undefined, 4);
 
     // 在正确的用户上下文中执行异步分析
     requestContext.run({ userId }, async () => {
       try {
-        const prompt = `分析以下对话，提取值得记忆的用户个人信息。
+        const prompt = `分析对话，提取值得记忆的用户信息。
 
 用户: ${userMessage}
 助手: ${assistantReply}
 ${historySummary ? `近期上下文: ${historySummary}` : ""}
 
-输出 JSON（仅 JSON，无 markdown）:
-{ "skip": bool, "shortTerm": [{"key":"描述性命名","value":"具体值"}], "longTerm": [{"key":"描述性命名","value":"具体值","tags":["标签"],"summary":"一句话摘要"}] }
+输出 JSON（仅 JSON）：
+{"skip":bool,"shortTerm":[{"key":"命名","value":"值"}],"longTerm":[{"key":"命名","value":"值","tags":["标签"],"summary":"摘要"}]}
 
 规则：
-- 闲聊/通用/无信息量的对话 skip=true
-- shortTerm: 当前任务状态、临时偏好
-- longTerm: 姓名、职业、爱好、技术栈、持久偏好
-- key 用描述性命名如 user_name, user_job, user_hobby
-- 只提取事实，不存对话原文
-- 没有有价值的信息时 skip=true`;
+- 闲聊/无信息量 → skip=true
+- shortTerm: 任务状态、临时偏好
+- longTerm: 姓名、职业、爱好、技术栈等持久信息
+- key 用描述性命名如 user_name, user_job
+- 只提取事实，不存原文`
 
         const response = await this.deps.provider.chat([
           { role: "user", content: prompt },
@@ -999,30 +962,43 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
     return decision;
   }
 
-  private runSimple(input: AgentInput): Promise<AgentOutput> {
+  private resolvePersonality(roleConfig?: RoleAgentConfig): string {
+    return roleConfig?.systemPrompt ?? this.config.defaultSystemPrompt ?? DEFAULT_PROFILES.general.personality;
+  }
+
+  private resolveMaxIterations(roleConfig?: RoleAgentConfig): number {
+    return roleConfig?.maxIterations ?? this.config.maxIterations;
+  }
+
+  private runSimple(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): Promise<AgentOutput> {
+    const roleConfig = input.roleAgentConfig;
     const profile = { ...DEFAULT_PROFILES.general };
-    if (this.config.defaultSystemPrompt) {
-      profile.personality = this.config.defaultSystemPrompt;
+    profile.personality = this.resolvePersonality(roleConfig);
+    if (roleConfig?.allowedSkills?.length) {
+      profile.allowedSkills = roleConfig.allowedSkills;
     }
     const agent = new SimpleAgent(profile, this.deps);
     return agent.run(input);
   }
 
-  private async *runSimpleStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
+  private async *runSimpleStream(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): AsyncGenerator<AgentStreamEvent> {
+    const roleConfig = input.roleAgentConfig;
     const profile = { ...DEFAULT_PROFILES.general };
-    if (this.config.defaultSystemPrompt) {
-      profile.personality = this.config.defaultSystemPrompt;
+    profile.personality = this.resolvePersonality(roleConfig);
+    if (roleConfig?.allowedSkills?.length) {
+      profile.allowedSkills = roleConfig.allowedSkills;
     }
     const agent = new SimpleAgent(profile, this.deps);
     yield* agent.runStream(input);
   }
 
-  private runPlan(input: AgentInput): Promise<AgentOutput> {
+  private runPlan(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): Promise<AgentOutput> {
+    const roleConfig = input.roleAgentConfig;
     const profile: AgentProfile = {
       role: "规划助手",
-      personality: this.config.defaultSystemPrompt ?? DEFAULT_PROFILES.general.personality,
+      personality: this.resolvePersonality(roleConfig),
       expertise: ["规划", "任务分析", "执行"],
-      allowedSkills: [], // 全部可用
+      allowedSkills: roleConfig?.allowedSkills ?? [],
     };
     const agent = new PlanAgent(profile, this.deps, {
       maxSteps: this.config.strategyConfig?.planStepLimit ?? 10,
@@ -1031,12 +1007,13 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
     return agent.run(input);
   }
 
-  private async *runPlanStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
+  private async *runPlanStream(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): AsyncGenerator<AgentStreamEvent> {
+    const roleConfig = input.roleAgentConfig;
     const profile: AgentProfile = {
       role: "规划助手",
-      personality: this.config.defaultSystemPrompt ?? DEFAULT_PROFILES.general.personality,
+      personality: this.resolvePersonality(roleConfig),
       expertise: ["规划", "任务分析", "执行"],
-      allowedSkills: [], // 全部可用
+      allowedSkills: roleConfig?.allowedSkills ?? [],
     };
     const agent = new PlanAgent(profile, this.deps, {
       maxSteps: this.config.strategyConfig?.planStepLimit ?? 10,
@@ -1045,28 +1022,30 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
     yield* agent.runStream(input);
   }
 
-  private runReact(input: AgentInput): Promise<AgentOutput> {
+  private runReact(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): Promise<AgentOutput> {
+    const roleConfig = input.roleAgentConfig;
     const profile: AgentProfile = {
-      role: "ReAct 助手",
-      personality: this.config.defaultSystemPrompt ?? DEFAULT_PROFILES.general.personality,
+      role: roleConfig?.personality ? `${roleConfig.personality.slice(0, 20)}助手` : "ReAct 助手",
+      personality: this.resolvePersonality(roleConfig),
       expertise: ["通用"],
-      allowedSkills: [], // 全部可用
+      allowedSkills: roleConfig?.allowedSkills ?? [],
     };
     const agent = new ReactAgent(profile, this.deps, {
-      maxIterations: this.config.maxIterations,
+      maxIterations: this.resolveMaxIterations(roleConfig),
     });
     return agent.run(input);
   }
 
-  private async *runReactStream(input: AgentInput): AsyncGenerator<AgentStreamEvent> {
+  private async *runReactStream(input: AgentInput & { roleAgentConfig?: RoleAgentConfig }): AsyncGenerator<AgentStreamEvent> {
+    const roleConfig = input.roleAgentConfig;
     const profile: AgentProfile = {
-      role: "ReAct 助手",
-      personality: this.config.defaultSystemPrompt ?? DEFAULT_PROFILES.general.personality,
+      role: roleConfig?.personality ? `${roleConfig.personality.slice(0, 20)}助手` : "ReAct 助手",
+      personality: this.resolvePersonality(roleConfig),
       expertise: ["通用"],
-      allowedSkills: [],
+      allowedSkills: roleConfig?.allowedSkills ?? [],
     };
     const agent = new ReactAgent(profile, this.deps, {
-      maxIterations: this.config.maxIterations,
+      maxIterations: this.resolveMaxIterations(roleConfig),
     });
     yield* agent.runStream(input);
   }

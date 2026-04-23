@@ -162,6 +162,15 @@ export interface ExecutionContext {
   trace: TraceEntry[];
   /** 异步任务操作（仅 async Skill 使用） */
   tasks?: AsyncTaskOps;
+  /** 当前用户信息（系统自动注入） */
+  user?: {
+    id: string;
+    name?: string;
+    displayName?: string;
+    departmentId?: string;
+  };
+  /** 静默模式：组合 Skill 内部调用时不记录 trace */
+  silent?: boolean;
 }
 
 /** 执行结果（包含追踪信息） */

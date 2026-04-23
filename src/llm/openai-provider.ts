@@ -85,6 +85,11 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     const data = (await res.json()) as OpenAIChatResponse;
+    const choice = data.choices?.[0];
+    if (choice) {
+      const rawContent = choice.message.content;
+      console.log(`[OpenAIProvider] rawContent type: ${typeof rawContent}, isArray: ${Array.isArray(rawContent)}, preview: ${typeof rawContent === "string" ? rawContent.slice(0, 100) : JSON.stringify(rawContent).slice(0, 100)}`);
+    }
     return this.parseResponse(data);
   }
 
@@ -283,8 +288,40 @@ export class OpenAIProvider implements LLMProvider {
             ? "tool_calls"
             : "stop";
 
+    // 规范化 content：某些兼容 API 可能返回对象/数组而不是字符串
+    let content: string | null = null;
+    const rawContent = choice.message.content;
+    if (typeof rawContent === "string") {
+      content = rawContent;
+    } else if (Array.isArray(rawContent)) {
+      // OpenAI 多模态格式：content = [{type: "text", text: "..."}, ...]
+      // 防御性处理：text 字段可能是对象（某些兼容 API）
+      content = rawContent
+        .filter((item: unknown) => typeof item === "object" && item !== null && (item as Record<string, unknown>).type === "text")
+        .map((item: unknown) => {
+          const text = (item as Record<string, unknown>).text;
+          if (typeof text === "string") return text;
+          if (text !== null && text !== undefined) {
+            try {
+              return JSON.stringify(text);
+            } catch {
+              return String(text);
+            }
+          }
+          return "";
+        })
+        .join("");
+    } else if (rawContent !== null && rawContent !== undefined) {
+      // 兜底：对象格式直接 JSON.stringify
+      try {
+        content = JSON.stringify(rawContent);
+      } catch {
+        content = String(rawContent);
+      }
+    }
+
     return {
-      content: choice.message.content,
+      content,
       toolCalls,
       finishReason,
       usage: data.usage
@@ -328,11 +365,12 @@ interface OpenAIStreamDelta {
 }
 
 // OpenAI API response types
+// content 可能是 string、null，也可能是数组（OpenAI 多模态新格式）或对象（某些兼容 API）
 interface OpenAIChatResponse {
   choices: {
     message: {
       role: string;
-      content: string | null;
+      content: string | null | unknown[] | Record<string, unknown>;
       tool_calls?: {
         id: string;
         type: string;

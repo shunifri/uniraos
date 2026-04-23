@@ -2,14 +2,15 @@ import { Router } from "express";
 import { permissions } from "../permissions/index.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
+import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
 import type { RouteDependencies } from "./index.js";
-
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
   const { registry, engine, wal, taskManager, pluginLoader, syncSkillsToResources } = deps;
   const router = Router();
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   // List all Skills (filtered by user permissions for non-admin)
   router.get("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), async (req, res) => {
@@ -26,7 +27,13 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       paramSchema: s.paramSchema ?? null,
       owner: s.owner,
       isSystem: s.isSystem ?? false,
-      source: result.sourceMap.get(s.name) || (s.isSystem || !s.owner ? "system" : "role"),
+      source: s.isSystem
+        ? "system"
+        : (result.sourceMap.get(s.name) === "shared"
+            ? "shared"
+            : (s.owner === userId
+                ? "own"
+                : (result.sourceMap.get(s.name) || "role"))),
     }));
     res.json(skills);
   });
@@ -72,24 +79,29 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Dynamic Skill registration
-  router.post("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), (req, res) => {
+  router.post("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), async (req, res) => {
     const { name, visible, autonomy, dependencies, timeout, description } =
       req.body;
 
     try {
-      registry.register(
-        defineSkill({
-          name,
-          visible: visible ?? true,
-          autonomy: autonomy ?? Autonomy.MANUAL,
-          dependencies: dependencies ?? [],
-          timeout: timeout ?? 30000,
-          description: description ?? "",
-          handler: async (params) => {
-            return { success: true, data: { echo: params } };
-          },
-        }),
-      );
+      const skill = defineSkill({
+        name,
+        visible: visible ?? true,
+        autonomy: autonomy ?? Autonomy.MANUAL,
+        dependencies: dependencies ?? [],
+        timeout: timeout ?? 30000,
+        description: description ?? "",
+        owner: req.user!.id,
+        handler: async (params) => {
+          return { success: true, data: { echo: params } };
+        },
+      });
+      registry.register(skill);
+
+      // 持久化到数据库
+      const repo = getCustomSkillRepository();
+      await repo.create(skill, req.user!.id);
+
       syncSkillsToResources();
       res.json({ success: true, message: `Skill "${name}" registered` });
     } catch (err) {
@@ -158,9 +170,11 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, metrics });
   });
 
-  // LLM Tools
-  router.get("/llm/tools", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), (_req, res) => {
-    const tools = skillsToTools(registry.list());
+  // LLM Tools（按用户权限过滤）
+  router.get("/llm/tools", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_READ), async (req, res) => {
+    const userId = req.user!.id;
+    const accessible = await permissions.getAccessibleSkills(userId);
+    const tools = skillsToTools(accessible.skills);
     res.json(tools);
   });
 

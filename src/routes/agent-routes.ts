@@ -2,6 +2,8 @@ import { Router } from "express";
 import { join } from "path";
 import { requireAuth, requirePermission } from "../db/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
+import { getRoleAgentConfig, getUserRoles } from "../db/user-repository.js";
+import type { RoleAgentConfig } from "../permissions/types/role.js";
 import { parseDocument } from "../services/doc-parser.js";
 import type { RouteDependencies } from "./index.js";
 import { confirmQueue } from "../skills/user-confirm-skill.js";
@@ -21,10 +23,24 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   } = deps;
   const router = Router();
 
+  async function resolveRoleAgentConfig(req: any): Promise<RoleAgentConfig | undefined> {
+    const explicitRole = req.body?.role;
+    if (explicitRole) {
+      return await getRoleAgentConfig(explicitRole) ?? undefined;
+    }
+    if (req.user?.id) {
+      const roles = await getUserRoles(req.user.id);
+      if (roles.length > 0) {
+        return await getRoleAgentConfig(roles[0].id) ?? undefined;
+      }
+    }
+    return undefined;
+  }
+
   // Agent chat (LLM + Tool Use)
   router.post("/agent/chat", requireAuth, requirePermission("chat"), async (req, res) => {
     const userId = req.user!.id;
-    const { message, mode } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy" };
+    const { message, mode, conversationId } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy"; conversationId?: string };
     if (!message) {
       res.status(400).json({ success: false, error: "message is required" });
       return;
@@ -37,7 +53,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         return;
       }
       try {
-        const result = await loop.run(message);
+        const result = await loop.run(message, { conversationId });
         res.json({ success: true, ...result });
       } catch (err) {
         res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -52,7 +68,8 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await orchestrator.run({ message, userId });
+      const roleAgentConfig = await resolveRoleAgentConfig(req);
+      const result = await orchestrator.run({ message, userId, roleAgentConfig });
       res.json({ success: true, ...result });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -96,7 +113,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     };
 
     // ===== Backend message persistence =====
-    const convId = conversationId || null;
+    const convId = conversationId || undefined;
     
     async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
       if (!convId) return;
@@ -282,6 +299,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
               score: item.score,
               pageNumber: item.pageNumber ?? null,
               bboxes: item.bboxes ?? null,
+              docMindTaskId: item.docMindTaskId ?? null,
             }));
             write("kb_references", { references: refs });
             kbRefsSent = true;
@@ -310,7 +328,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         // 直接 AgentLoop 模式
         const loop = getAgentLoop(userId);
         if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        for await (const event of loop.runStream(enrichedMessage)) {
+        for await (const event of loop.runStream(enrichedMessage, { conversationId: convId })) {
           if (closed) break;
           await processEvent(event.event, event.data);
         }
@@ -318,7 +336,12 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         // 默认 Orchestrator 模式（始终使用 react 策略，不走 simple）
         const orchestrator = getOrchestrator();
         if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        for await (const event of orchestrator.runStream({ message: enrichedMessage, userId })) {
+        // 构建带 conversationId 和 roleAgentConfig 的 input
+        const roleAgentConfig = await resolveRoleAgentConfig(req);
+        const runStreamInput: any = { message: enrichedMessage, userId, roleAgentConfig };
+        if (convId) runStreamInput.conversationId = convId;
+
+        for await (const event of orchestrator.runStream(runStreamInput)) {
           if (closed) break;
           await processEvent(event.event, event.data);
         }

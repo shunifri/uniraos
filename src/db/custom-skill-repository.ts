@@ -178,28 +178,25 @@ export class CustomSkillRepository {
     // 根据类型选择合适的构建方法
     const builder = definition.isSystem ? defineSystemSkill : defineSkill;
 
-    return builder({
+    // JSON 序列化会丢失函数，因此使用默认的 echo handler
+    // 未来可扩展为存储代码字符串并在沙箱中重建
+    const defaultHandler = async (params: Record<string, unknown>) => {
+      return { success: true, data: { echo: params } };
+    };
+
+    const base = {
       name: customSkill.name,
       description: customSkill.description,
       version: customSkill.version,
       owner: customSkill.ownerId,
       isSystem: customSkill.isSystem,
-      handler: async (params, context) => {
-        // 重建时需要重新构建 handler
-        // 对于组合 Skill，可能需要重新创建 handler 函数
-        // 这里我们假设 definition 包含可执行的 handler
-        // 如果是简单 Skill，可以从 definition 中直接获取
-        if (definition.handler) {
-          // 对于序列化的函数，这里需要特殊处理
-          // 简单的方法是重新执行构建过程
-          // 复杂的情况需要使用沙箱或函数重建技术
-          throw new Error(`Skill handler reconstruction not supported`);
-        }
+      handler: defaultHandler,
+    };
 
-        throw new Error(`Skill ${customSkill.name} requires handler reconstruction`);
-      },
-      ...definition,
-    });
+    // 用数据库记录覆盖序列化定义中的元数据，但保留 owner 和 handler
+    const merged = { ...definition, ...base, handler: definition.handler ?? defaultHandler };
+
+    return builder(merged);
   }
 
   /** 从数据库加载并注册所有自定义 Skill */

@@ -1,10 +1,11 @@
 /**
  * MediaPreviewModal - 图片/表格全屏预览弹窗
  */
-import { Modal, Image, Table, Tabs, Typography, Space, Tag } from "antd";
+import { useEffect } from "react";
+import { Modal, Image, Table, Tabs, Typography, Space, Tag, Empty } from "antd";
 import { FileImageOutlined, TableOutlined, InfoCircleOutlined } from "@ant-design/icons";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export interface MediaItem {
   type: 'image' | 'table';
@@ -40,8 +41,6 @@ export function MediaPreviewModal({
 }: MediaPreviewModalProps) {
   const currentItem = items[currentIndex];
 
-  if (!currentItem) return null;
-
   const handlePrev = () => {
     if (currentIndex > 0 && onChangeIndex) {
       onChangeIndex(currentIndex - 1);
@@ -53,6 +52,17 @@ export function MediaPreviewModal({
       onChangeIndex(currentIndex + 1);
     }
   };
+
+  // 键盘导航：← → 切换（Esc 由 Modal 的 onCancel 自动处理）
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") handlePrev();
+      else if (e.key === "ArrowRight") handleNext();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, currentIndex, onChangeIndex, onClose]);
 
   // 渲染图片内容
   const renderImageContent = (item: MediaItem) => (
@@ -120,7 +130,7 @@ export function MediaPreviewModal({
             {item.type === 'image' ? '图片' : '表格'}
           </Tag>
         </div>
-        {item.page && (
+        {item.page != null && (
           <div>
             <Text type="secondary">页码:</Text>
             <Text style={{ marginLeft: 8 }}>第 {item.page} 页</Text>
@@ -143,16 +153,33 @@ export function MediaPreviewModal({
     </div>
   );
 
-  const items_tabs = [
+  // 空状态保护
+  if (!currentItem) {
+    return (
+      <Modal
+        open={open}
+        onCancel={onClose}
+        footer={null}
+        width={900}
+        centered
+        styles={{ body: { padding: 0 } }}
+        title="预览"
+      >
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无内容" style={{ padding: 48 }} />
+      </Modal>
+    );
+  }
+
+  const tabItems = [
     {
       key: 'content',
-      label: item.type === 'image' ? '图片' : '表格',
-      children: item.type === 'image' ? renderImageContent(item) : renderTableContent(item),
+      label: currentItem.type === 'image' ? '图片' : '表格',
+      children: currentItem.type === 'image' ? renderImageContent(currentItem) : renderTableContent(currentItem),
     },
     {
       key: 'info',
       label: <><InfoCircleOutlined /> 信息</>,
-      children: renderInfoPanel(item),
+      children: renderInfoPanel(currentItem),
     },
   ];
 
@@ -163,7 +190,7 @@ export function MediaPreviewModal({
       footer={null}
       width={900}
       centered
-      bodyStyle={{ padding: 0 }}
+      styles={{ body: { padding: 0 } }}
       title={
         <Space>
           {currentItem.type === 'image' ? <FileImageOutlined /> : <TableOutlined />}
@@ -171,7 +198,7 @@ export function MediaPreviewModal({
         </Space>
       }
     >
-      <Tabs items={items_tabs} />
+      <Tabs items={tabItems} />
       
       {/* 底部导航 */}
       {items.length > 1 && (
@@ -183,7 +210,11 @@ export function MediaPreviewModal({
           background: "#fafafa",
         }}>
           <span
+            role="button"
+            tabIndex={0}
+            aria-label="上一个"
             onClick={handlePrev}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handlePrev(); }}
             style={{ 
               cursor: currentIndex > 0 ? "pointer" : "not-allowed",
               color: currentIndex > 0 ? "#1890ff" : "#ccc",
@@ -196,7 +227,11 @@ export function MediaPreviewModal({
             {currentIndex + 1} / {items.length}
           </Text>
           <span
+            role="button"
+            tabIndex={0}
+            aria-label="下一个"
             onClick={handleNext}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleNext(); }}
             style={{ 
               cursor: currentIndex < items.length - 1 ? "pointer" : "not-allowed",
               color: currentIndex < items.length - 1 ? "#1890ff" : "#ccc",

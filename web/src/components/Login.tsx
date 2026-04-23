@@ -22,7 +22,11 @@ interface LoginForm {
   password: string;
 }
 
-const Login: React.FC = () => {
+interface LoginProps {
+  onSuccess?: () => void;
+}
+
+const Login: React.FC<LoginProps> = ({ onSuccess }) => {
   const navigate = useNavigate();
   const t = useI18nStore((s) => s.t);
   const login = useAuthStore((s) => s.login);
@@ -48,7 +52,8 @@ const Login: React.FC = () => {
 
     try {
       await login(values.username, values.password);
-      navigate('/chat');
+      if (onSuccess) onSuccess();
+      else navigate('/chat');
     } catch (err: any) {
       setError(err?.message || t('login_failed'));
     } finally {
@@ -68,7 +73,8 @@ const Login: React.FC = () => {
 
     try {
       await loginAnonymous(phone);
-      navigate('/chat');
+      if (onSuccess) onSuccess();
+      else navigate('/chat');
     } catch (err: any) {
       setError(err?.message || t('login_failed'));
     } finally {
@@ -84,7 +90,10 @@ const Login: React.FC = () => {
       setGuestLoading(true);
       setError(null);
       loginAnonymous(savedPhone)
-        .then(() => navigate('/chat'))
+        .then(() => {
+          if (onSuccess) onSuccess();
+          else navigate('/chat');
+        })
         .catch((err: any) => {
           setError(err?.message || t('login_failed'));
           // 登录失败时清除缓存的手机号，显示表单让用户重新输入

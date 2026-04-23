@@ -72,6 +72,20 @@ const autonomyColors: Record<string, string> = {
   GUARDIAN: "red",
 };
 
+const sourceColors: Record<string, string> = {
+  system: "default",
+  own: "blue",
+  shared: "purple",
+  role: "cyan",
+};
+
+const sourceLabels: Record<string, string> = {
+  system: "系统",
+  own: "我的",
+  shared: "共享",
+  role: "角色",
+};
+
 export default function SkillsPage() {
   const t = useI18nStore((s) => s.t);
   const { message } = App.useApp();
@@ -232,6 +246,14 @@ export default function SkillsPage() {
                   >
                     {skill.autonomy}
                   </Tag>
+                  {skill.source && (
+                    <Tag
+                      color={sourceColors[skill.source] || "default"}
+                      style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}
+                    >
+                      {sourceLabels[skill.source] || skill.source}
+                    </Tag>
+                  )}
                   {skill.dependencies.length > 0 && (
                     <Tag style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}>
                       {skill.dependencies.length} deps
@@ -351,6 +373,18 @@ export default function SkillsPage() {
             <Descriptions.Item label={t("visible")}>
               {selected.visible ? t("yes") : t("no")}
             </Descriptions.Item>
+            {selected.source && (
+              <Descriptions.Item label="来源">
+                <Tag color={sourceColors[selected.source] || "default"}>
+                  {sourceLabels[selected.source] || selected.source}
+                </Tag>
+              </Descriptions.Item>
+            )}
+            {selected.owner && (
+              <Descriptions.Item label="所有者">
+                {selected.owner}
+              </Descriptions.Item>
+            )}
             {selected.timeout && (
               <Descriptions.Item label={t("timeout")}>
                 {selected.timeout}ms

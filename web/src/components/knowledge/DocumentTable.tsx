@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Table, Tag, Space, Button, Popconfirm, Card, Switch, Typography } from "antd";
-import { EyeOutlined, DeleteOutlined, LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
+import { EyeOutlined, DeleteOutlined, LoadingOutlined, ReloadOutlined, ShareAltOutlined } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import type { ColumnsType } from "antd/es/table";
 import type { KBDocument } from "./types";
@@ -14,7 +14,7 @@ interface DocumentTableProps {
   onRebuild: () => void;
   rebuilding: boolean;
   onDelete: (docId: string) => void;
-  onShare: (docId: string, shared: boolean) => void;
+  onOpenShare: (doc: KBDocument) => void;
   onViewDoc: (docId: string, docName: string) => void;
 }
 
@@ -25,7 +25,7 @@ export default function DocumentTable({
   onRebuild,
   rebuilding,
   onDelete,
-  onShare,
+  onOpenShare,
   onViewDoc,
 }: DocumentTableProps) {
   const t = useI18nStore((s) => s.t);
@@ -101,12 +101,16 @@ export default function DocumentTable({
     },
     {
       title: t("kb_shared"),
-      dataIndex: "shared",
       key: "shared",
       width: 80,
-      render: (shared: boolean, record: KBDocument) => (
+      render: (_: any, record: KBDocument) => (
         <div onClick={e => e.stopPropagation()}>
-          <Switch size="small" checked={shared} onChange={(v) => onShare(record.id, v)} />
+          <Button
+            type="text"
+            size="small"
+            icon={<ShareAltOutlined />}
+            onClick={() => onOpenShare(record)}
+          />
         </div>
       ),
     },

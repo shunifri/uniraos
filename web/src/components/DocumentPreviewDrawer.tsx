@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Drawer, Tabs, Typography, Spin, Empty, Segmented, Alert } from "antd";
 import { FileTextOutlined, PictureOutlined, LayoutOutlined } from "@ant-design/icons";
-import { DocumentStructureTree } from "./DocumentStructureTree";
+import { DocumentStructureTree, type LayoutNode } from "./DocumentStructureTree";
 import { MediaGallery } from "./MediaGallery";
 import { api } from "@/api";
 
@@ -32,7 +32,7 @@ interface LayoutData {
 interface MediaItem {
   id: string;
   page: number;
-  url?: string;
+  url: string;
   type: 'image' | 'table';
   title?: string;
 }
@@ -52,7 +52,7 @@ export function DocumentPreviewDrawer({
   const [pageCount, setPageCount] = useState(0);
   const [selectedKey, setSelectedKey] = useState<string>();
   const [currentPage, setCurrentPage] = useState(1);
-  const [viewMode, setViewMode] = useState<'layout' | 'markdown'>('layout');
+  const [viewMode, setViewMode] = useState<'layout' | 'markdown' | 'media'>('layout');
   const [parsedContent, setParsedContent] = useState<string>("");
 
   // 加载文档数据
@@ -100,7 +100,7 @@ export function DocumentPreviewDrawer({
   }, [open, docId]);
 
   // 处理树节点选择
-  const handleTreeSelect = useCallback((key: string, node: LayoutData | null, type: string) => {
+  const handleTreeSelect = useCallback((key: string, node: LayoutNode | null, type: 'layout' | 'image' | 'table' | 'media') => {
     setSelectedKey(key);
     
     if (type === 'layout' && node) {
@@ -258,7 +258,7 @@ export function DocumentPreviewDrawer({
           <div style={{ padding: "16px 24px", borderBottom: "1px solid #f0f0f0" }}>
             <Segmented
               value={viewMode}
-              onChange={(v) => setViewMode(v as 'layout' | 'markdown')}
+              onChange={(v) => setViewMode(v as 'layout' | 'markdown' | 'media')}
               options={[
                 { 
                   label: <><LayoutOutlined /> 版面视图</>, 

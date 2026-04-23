@@ -65,7 +65,7 @@ export function DocumentStructureTree({
         title: (
           <span>
             <Text ellipsis style={{ maxWidth: 180 }}>{layout.text.slice(0, 50)}</Text>
-            <Tag size="small" style={{ marginLeft: 4, fontSize: 10 }}>p{layout.page}</Tag>
+            <Tag style={{ marginLeft: 4, fontSize: 10 }}>p{layout.page}</Tag>
           </span>
         ),
         icon: <FileTextOutlined />,
@@ -108,7 +108,7 @@ export function DocumentStructureTree({
           <span>
             <PictureOutlined style={{ marginRight: 4 }} />
             <Text strong>图片列表</Text>
-            <Tag size="small" style={{ marginLeft: 4 }}>{images.length}</Tag>
+            <Tag style={{ marginLeft: 4 }}>{images.length}</Tag>
           </span>
         ),
         children: images.map((img, idx) => ({
@@ -116,7 +116,7 @@ export function DocumentStructureTree({
           title: (
             <span>
               <Text ellipsis style={{ maxWidth: 140 }}>图片 {idx + 1}</Text>
-              <Tag size="small" style={{ marginLeft: 4, fontSize: 10 }}>p{img.page}</Tag>
+              <Tag style={{ marginLeft: 4, fontSize: 10 }}>p{img.page}</Tag>
             </span>
           ),
           icon: <PictureOutlined />,
@@ -134,7 +134,7 @@ export function DocumentStructureTree({
           <span>
             <TableOutlined style={{ marginRight: 4 }} />
             <Text strong>表格列表</Text>
-            <Tag size="small" style={{ marginLeft: 4 }}>{tables.length}</Tag>
+            <Tag style={{ marginLeft: 4 }}>{tables.length}</Tag>
           </span>
         ),
         children: tables.map((table, idx) => ({
@@ -142,7 +142,7 @@ export function DocumentStructureTree({
           title: (
             <span>
               <Text ellipsis style={{ maxWidth: 140 }}>表格 {idx + 1}</Text>
-              <Tag size="small" style={{ marginLeft: 4, fontSize: 10 }}>p{table.page}</Tag>
+              <Tag style={{ marginLeft: 4, fontSize: 10 }}>p{table.page}</Tag>
             </span>
           ),
           icon: <TableOutlined />,
@@ -192,7 +192,7 @@ export function DocumentStructureTree({
       showIcon
       defaultExpandAll
       expandedKeys={expandedKeys}
-      onExpand={setExpandedKeys}
+      onExpand={(keys) => setExpandedKeys(keys as string[])}
       selectedKeys={selectedKey ? [selectedKey] : []}
       onSelect={handleSelect}
       treeData={treeData}

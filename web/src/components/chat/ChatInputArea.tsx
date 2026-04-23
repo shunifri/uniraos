@@ -39,7 +39,7 @@ export default function ChatInputArea({ loading, onSendMessage, onStopChat }: Ch
         value={inputValue}
         onChange={setInputValue}
         onSubmit={handleSend}
-        placeholder={t("input_placeholder")}
+        placeholder={t("chat_placeholder")}
         disabled={loading}
       />
     </div>

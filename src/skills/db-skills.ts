@@ -103,14 +103,79 @@ function closeAll(): void {
 
 // ===== 安全检查 =====
 
-/** 检测危险的 SQL 写操作（用于 db_query 只读模式） */
+/** 检测 SQL 是否为只读查询（严格模式，去除注释并检测所有写操作关键字） */
 function isReadOnlySQL(sql: string): boolean {
-  const normalized = sql.trim().toUpperCase();
-  const writeKeywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH"];
+  const normalized = sql
+    .replace(/\/\*[\s\S]*?\*\//g, "")  // 去除块注释
+    .replace(/--.*$/gm, "")               // 去除行注释
+    .replace(/\s+/g, " ")                 // 规范化空白
+    .trim()
+    .toUpperCase();
+
+  // 必须以只读关键字开头
+  const allowedPrefixes = ["SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA"];
+  const hasAllowedPrefix = allowedPrefixes.some(p => normalized.startsWith(p));
+  if (!hasAllowedPrefix) return false;
+
+  // 禁止包含任何写操作关键字（作为独立词）
+  const writeKeywords = [
+    " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ", " CREATE ",
+    " TRUNCATE ", " REPLACE ", " GRANT ", " REVOKE ", " MERGE ", " CALL ",
+    " ATTACH ", " DETACH ", " COPY ", " LOAD ", " UNLOAD ",
+  ];
   for (const kw of writeKeywords) {
-    if (normalized.startsWith(kw)) return false;
+    if (normalized.includes(kw)) return false;
   }
+
+  // 禁止分号后跟任何内容（防止多语句注入）
+  const semicolonIndex = normalized.indexOf(";");
+  if (semicolonIndex !== -1 && semicolonIndex < normalized.length - 1) {
+    const after = normalized.slice(semicolonIndex + 1).trim();
+    if (after.length > 0) return false;
+  }
+
   return true;
+}
+
+/** 敏感字段关键词 */
+const SENSITIVE_KEYS = new Set([
+  "password", "secret", "token", "api_key", "apikey", "apiKey",
+  "credential", "credentials", "private_key", "privateKey",
+  "passphrase", "auth", "authorization", "access_token", "refresh_token",
+  "salt", "hash", "password_hash", "session_token", "jwt",
+]);
+
+/** 递归过滤敏感信息 */
+function sanitizeValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    // 如果字符串看起来像密钥（长随机字符串），部分隐藏
+    if (value.length > 12 && /^[A-Za-z0-9+/=_-]{16,}$/.test(value)) {
+      return value.slice(0, 4) + "***" + value.slice(-4);
+    }
+    return value;
+  }
+  if (typeof value === "object") {
+    if (Array.isArray(value)) {
+      return value.map(sanitizeValue);
+    }
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      const lowerKey = key.toLowerCase();
+      if (SENSITIVE_KEYS.has(lowerKey) || SENSITIVE_KEYS.has(key)) {
+        sanitized[key] = "***";
+      } else {
+        sanitized[key] = sanitizeValue(val);
+      }
+    }
+    return sanitized;
+  }
+  return value;
+}
+
+/** 过滤查询结果中的敏感字段 */
+function sanitizeRows(rows: unknown[]): unknown[] {
+  return rows.map(sanitizeValue);
 }
 
 // ===== SQLite Skills =====
@@ -150,7 +215,7 @@ function createSQLiteSkills(registry: SkillRegistry): void {
           return {
             success: true,
             data: {
-              rows,
+              rows: sanitizeRows(rows),
               rowCount: rows.length,
               columns: rows.length > 0 ? Object.keys(rows[0] as object) : [],
             },
@@ -351,6 +416,38 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
 
     const pools = new Map<string, any>();
 
+    async function testConnection(config: { host: string; port?: number; user: string; password: string; database: string }): Promise<{ success: boolean; error?: string }> {
+      try {
+        const testPool = mysql.createPool({
+          host: config.host,
+          port: config.port ?? 3306,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          connectionLimit: 1,
+          queueLimit: 0,
+          connectTimeout: 5000,
+        });
+        const conn = await testPool.getConnection();
+        await conn.ping();
+        conn.release();
+        await testPool.end();
+        return { success: true };
+      } catch (err: any) {
+        const msg = err.message || String(err);
+        if (msg.includes("ECONNREFUSED") || msg.includes("Can't connect")) {
+          return { success: false, error: `无法连接到 MySQL 服务器 ${config.host}:${config.port ?? 3306}，请确认服务已启动` };
+        }
+        if (msg.includes("Access denied")) {
+          return { success: false, error: `用户名或密码错误，无法访问 MySQL 数据库` };
+        }
+        if (msg.includes("Unknown database")) {
+          return { success: false, error: `数据库 "${config.database}" 不存在` };
+        }
+        return { success: false, error: msg };
+      }
+    }
+
     function getPool(config: { host: string; port?: number; user: string; password: string; database: string }) {
       const key = `${config.host}:${config.port ?? 3306}/${config.database}`;
       if (pools.has(key)) return pools.get(key)!;
@@ -373,7 +470,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
       defineSystemSkill({
         name: "mysql_query",
         description:
-          "执行 MySQL 查询。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
+          "执行 MySQL 查询。参数: sql(string), params?(array), connection({host,user,database,port?})。密码通过安全凭证管理，不直接传入。",
         timeout: 30000,
         paramSchema: {
           properties: {
@@ -396,12 +493,24 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
             return {
               success: true,
               data: {
-                rows,
+                rows: sanitizeRows(rows as unknown[]),
                 rowCount: Array.isArray(rows) ? rows.length : 0,
                 columns: Array.isArray(fields) ? fields.map((f: { name: string }) => f.name) : [],
               },
             };
-          } catch (err) {
+          } catch (err: any) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            // 连接相关错误：提供更详细的诊断
+            if (errorMsg.includes("ECONNREFUSED") || errorMsg.includes("Can't connect") || errorMsg.includes("connect refused") || errorMsg.includes("connect ETIMEDOUT")) {
+              const diag = await testConnection(conn);
+              return { success: false, error: new Error(`MySQL 连接失败: ${diag.error || "服务器可能未运行"}（主机: ${conn.host}, 端口: ${conn.port ?? 3306}）`) };
+            }
+            if (errorMsg.includes("Access denied")) {
+              return { success: false, error: new Error(`MySQL 认证失败: 用户名或密码错误，无法访问数据库`) };
+            }
+            if (errorMsg.includes("Unknown database")) {
+              return { success: false, error: new Error(`MySQL 错误: 数据库 "${conn.database}" 不存在`) };
+            }
             return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
           }
         },
@@ -412,7 +521,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
       defineSystemSkill({
         name: "mysql_execute",
         description:
-          "执行 MySQL 写操作。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
+          "执行 MySQL 写操作。参数: sql(string), params?(array), connection({host,user,database,port?})。密码通过安全凭证管理，不直接传入。",
         timeout: 30000,
         paramSchema: {
           properties: {
@@ -439,9 +548,46 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
                 insertId: (result as any).insertId ?? null,
               },
             };
-          } catch (err) {
+          } catch (err: any) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            if (errorMsg.includes("ECONNREFUSED") || errorMsg.includes("Can't connect") || errorMsg.includes("connect refused") || errorMsg.includes("connect ETIMEDOUT")) {
+              const diag = await testConnection(conn);
+              return { success: false, error: new Error(`MySQL 连接失败: ${diag.error || "服务器可能未运行"}（主机: ${conn.host}, 端口: ${conn.port ?? 3306}）`) };
+            }
+            if (errorMsg.includes("Access denied")) {
+              return { success: false, error: new Error(`MySQL 认证失败: 用户名或密码错误`) };
+            }
+            if (errorMsg.includes("Unknown database")) {
+              return { success: false, error: new Error(`MySQL 错误: 数据库 "${conn.database}" 不存在`) };
+            }
             return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
           }
+        },
+      }),
+    );
+
+    // MySQL 连接测试 skill
+    registry.register(
+      defineSystemSkill({
+        name: "mysql_test_connection",
+        description: "测试 MySQL 数据库连接是否可用。参数: connection({host,user,password,database,port?})",
+        timeout: 10000,
+        paramSchema: {
+          properties: {
+            connection: { type: "object", description: "MySQL connection config: {host, user, password, database, port?}" },
+          },
+          required: ["connection"],
+        },
+        handler: async (params) => {
+          const conn = params.connection as { host: string; user: string; password: string; database: string; port?: number };
+          if (!conn) {
+            return { success: false, error: new Error("connection 参数必填") };
+          }
+          const diag = await testConnection(conn);
+          if (diag.success) {
+            return { success: true, data: { connected: true, host: conn.host, port: conn.port ?? 3306, database: conn.database, message: "MySQL 连接成功" } };
+          }
+          return { success: false, error: new Error(diag.error || "连接失败") };
         },
       }),
     );
@@ -481,7 +627,7 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
       defineSystemSkill({
         name: "pg_query",
         description:
-          "执行 PostgreSQL 查询。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
+          "执行 PostgreSQL 查询。参数: sql(string), params?(array), connection({host,user,database,port?})。密码通过安全凭证管理，不直接传入。",
         timeout: 30000,
         handler: async (params) => {
           const sql = params.sql as string;
@@ -512,7 +658,7 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
       defineSystemSkill({
         name: "pg_execute",
         description:
-          "执行 PostgreSQL 写操作。参数: sql(string), params?(array), connection({host,user,password,database,port?})",
+          "执行 PostgreSQL 写操作。参数: sql(string), params?(array), connection({host,user,database,port?})。密码通过安全凭证管理，不直接传入。",
         timeout: 30000,
         handler: async (params) => {
           const sql = params.sql as string;

@@ -10,14 +10,55 @@
 import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
+import type { EvolutionController } from "../engine/evolution-controller.js";
 import type { LLMProvider } from "../llm/types.js";
 import { runInSandbox } from "../engine/worker-sandbox.js";
 import { getCurrentUserId } from "../user/request-context.js";
+import { permissions } from "../permissions/index.js";
+
+/** 计算两个字符串的编辑距离（Levenshtein Distance） */
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      matrix[i][j] = b[i - 1] === a[j - 1]
+        ? matrix[i - 1][j - 1]
+        : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+/** 计算两个字符串的相似度（0-1，1表示完全相同） */
+function stringSimilarity(a: string, b: string): number {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  const distance = levenshteinDistance(a.toLowerCase(), b.toLowerCase());
+  return 1 - distance / maxLen;
+}
+
+/** 检测是否存在相似 skill */
+function findSimilarSkill(name: string, description: string, registry: SkillRegistry): { name: string; similarity: number } | null {
+  const allSkills = registry.list();
+  let bestMatch: { name: string; similarity: number } | null = null;
+  for (const skill of allSkills) {
+    const nameSim = stringSimilarity(name, skill.name);
+    const descSim = stringSimilarity(description, skill.description ?? "");
+    const similarity = Math.max(nameSim, descSim * 0.8); // 名称权重更高
+    if (similarity > 0.75 && (!bestMatch || similarity > bestMatch.similarity)) {
+      bestMatch = { name: skill.name, similarity };
+    }
+  }
+  return bestMatch;
+}
 
 export function createMetaSkills(
   registry: SkillRegistry,
   engine: ExecutionEngine,
   llmProvider?: LLMProvider | (() => LLMProvider | null),
+  evolutionController?: EvolutionController,
 ): void {
   function getProvider(): LLMProvider | null {
     if (!llmProvider) return null;
@@ -27,14 +68,16 @@ export function createMetaSkills(
   registry.register(
     defineSystemSkill({
       name: "skill_compose",
-      description: `创建一个组合 Skill，将多个现有 Skill 串联或并行执行。
+      description: `【创建 Skill 的首选方式】创建一个组合 Skill，将多个现有 Skill 串联或并行执行。所有功能集中在一个 Skill 中，禁止拆分。
 参数:
-  name(string): 新 Skill 的名称
+  name(string): 新 Skill 名称
   description(string): 描述
-  steps(array): 执行步骤数组，每个步骤:
-    - { skill: "skill名", params: {参数映射}, outputKey?: "结果存储键" }
-    - 参数映射中可用 $input 引用原始输入，$steps.stepKey 引用前序步骤结果
-  mode?("sequential"|"parallel"): 执行模式，默认 sequential`,
+  steps(array): 执行步骤 [{ skill: "skill名", params: {参数映射}, outputKey?: "结果存储键" }]
+    参数映射可用 $input 引用原始输入，$steps.stepKey 引用前序结果
+  mode?("sequential"|"parallel"): 执行模式，默认 sequential
+规则：
+1. 优先组合现有 Skill，禁止拆分功能
+2. 创建成功后停止，不要继续创建其他 Skill`,
       paramSchema: {
         properties: {
           name: { type: "string", description: "Name for the new composed skill" },
@@ -44,7 +87,7 @@ export function createMetaSkills(
         },
         required: ["name", "steps"],
       },
-      handler: async (params) => {
+      handler: async (params, context) => {
         const name = params.name as string;
         const description = params.description as string;
         const steps = params.steps as Array<{
@@ -58,10 +101,18 @@ export function createMetaSkills(
           return { success: false, error: new Error("name 和 steps 参数必填") };
         }
 
-        // 验证所有引用的 Skill 存在
+        // 验证所有引用的 Skill 存在且用户有执行权限
+        const userId = context.user?.id ?? getCurrentUserId();
+        if (!userId || userId === "default") {
+          return { success: false, error: new Error("需要登录用户才能创建组合 Skill") };
+        }
         for (const step of steps) {
           if (!registry.lookup(step.skill)) {
             return { success: false, error: new Error(`Skill 不存在: ${step.skill}`) };
+          }
+          const canExecute = await permissions.hasSkillPermission(userId, step.skill);
+          if (!canExecute) {
+            return { success: false, error: new Error(`无权执行 Skill: ${step.skill}，无法将其包含在组合 Skill 中`) };
           }
         }
 
@@ -70,21 +121,53 @@ export function createMetaSkills(
           return { success: false, error: new Error(`Skill 已存在: ${name}`) };
         }
 
-        // 创建组合 Skill
-        const userId = getCurrentUserId();
-        const composedSkill = defineSystemSkill({
+        // 提交审批，而不是直接注册
+        const generatedBy = userId !== "default" ? userId : "skill_compose";
+
+        // 构建可序列化的 skill 定义
+        const skillDef = {
+          metaType: "composed",
           name,
           description: `[组合] ${description}`,
-          owner: userId !== "default" ? userId : undefined,
+          steps,
+          mode,
+          owner: generatedBy,
+        };
+
+        if (evolutionController) {
+          const approvalId = evolutionController.submitForApproval(
+            name,
+            description,
+            JSON.stringify(skillDef),
+            [],
+            generatedBy,
+          );
+          return {
+            success: true,
+            data: {
+              name,
+              approvalId,
+              status: "pending_approval",
+              steps: steps.length,
+              mode,
+              message: `组合 Skill "${name}" 已提交审批，请前往 Evolution → Pending Actions 审批后使用`,
+            },
+          };
+        }
+
+        // 如果没有 evolutionController，回退到直接注册（开发环境兼容）
+        const composedSkill = defineSkill({
+          name,
+          description: `[组合] ${description}`,
+          owner: generatedBy,
           handler: async (inputParams, context) => {
             const results: Record<string, unknown> = {};
             results["$input"] = inputParams;
 
             if (mode === "parallel") {
-              // 并行执行所有步骤
               const promises = steps.map(async (step) => {
                 const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                const result = await engine.execute(step.skill, resolvedParams);
+                const result = await engine.execute(step.skill, resolvedParams, true);
                 return { key: step.outputKey ?? step.skill, result };
               });
 
@@ -93,10 +176,9 @@ export function createMetaSkills(
                 results[key] = result.data;
               }
             } else {
-              // 顺序执行
               for (const step of steps) {
                 const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                const result = await engine.execute(step.skill, resolvedParams);
+                const result = await engine.execute(step.skill, resolvedParams, true);
                 const key = step.outputKey ?? step.skill;
                 results[key] = result.data;
 
@@ -152,7 +234,7 @@ export function createMetaSkills(
         },
         required: ["name", "template"],
       },
-      handler: async (params) => {
+      handler: async (params, context) => {
         const name = params.name as string;
         const description = params.description as string;
         const template = params.template as string;
@@ -166,10 +248,41 @@ export function createMetaSkills(
           return { success: false, error: new Error(`Skill 已存在: ${name}`) };
         }
 
-        let skill;
-        const userId = getCurrentUserId();
-        const ownerValue = userId !== "default" ? userId : undefined;
+        const userId = context.user?.id ?? getCurrentUserId();
+        const generatedBy = userId !== "default" ? userId : "skill_from_template";
 
+        // 构建可序列化的 skill 定义
+        const skillDef = {
+          metaType: "template",
+          name,
+          description: `[模板:${template}] ${description}`,
+          template,
+          config,
+          owner: generatedBy,
+        };
+
+        if (evolutionController) {
+          const approvalId = evolutionController.submitForApproval(
+            name,
+            description,
+            JSON.stringify(skillDef),
+            [],
+            generatedBy,
+          );
+          return {
+            success: true,
+            data: {
+              name,
+              approvalId,
+              status: "pending_approval",
+              template,
+              message: `模板 Skill "${name}" 已提交审批，请前往 Evolution → Pending Actions 审批后使用`,
+            },
+          };
+        }
+
+        // 如果没有 evolutionController，回退到直接注册（开发环境兼容）
+        let skill;
         switch (template) {
           case "transform":
             skill = createTransformSkill(name, description, config);
@@ -184,9 +297,7 @@ export function createMetaSkills(
             return { success: false, error: new Error(`未知模板: ${template}`) };
         }
 
-        if (ownerValue) {
-          (skill as any).owner = ownerValue;
-        }
+        (skill as any).owner = generatedBy;
         registry.register(skill);
 
         return {
@@ -268,12 +379,15 @@ export function createMetaSkills(
   registry.register(
     defineSystemSkill({
       name: "skill_from_description",
-      description: `从自然语言描述生成新 Skill。需要 LLM 支持。
+      description: `【最后手段】从自然语言描述生成代码 Skill。仅在现有 Skill 无法通过组合实现需求时才使用。
 参数:
   name(string): 新 Skill 名称
-  description(string): Skill 功能描述（自然语言）
+  description(string): 功能描述
   examples?(array): 输入输出示例 [{input: {}, output: {}}]
-  capabilities?(string[]): 所需权限能力声明`,
+  capabilities?(string[]): 所需权限声明
+规则：
+1. 优先使用 skill_compose 组合现有 Skill
+2. 创建成功后停止，不要继续创建其他 Skill`,
       paramSchema: {
         properties: {
           name: { type: "string", description: "Name for the new skill" },
@@ -283,7 +397,7 @@ export function createMetaSkills(
         },
         required: ["name", "description"],
       },
-      handler: async (params) => {
+      handler: async (params, context) => {
         const provider = getProvider();
         if (!provider) {
           return { success: false, error: new Error("LLM 未配置，无法生成 Skill") };
@@ -302,6 +416,18 @@ export function createMetaSkills(
           return { success: false, error: new Error(`Skill 已存在: ${name}`) };
         }
 
+        // 检测相似 skill（防止冗余创建）
+        const similar = findSimilarSkill(name, description, registry);
+        if (similar) {
+          return {
+            success: false,
+            error: new Error(
+              `检测到相似的已有 skill "${similar.name}"（相似度: ${(similar.similarity * 100).toFixed(1)}%）。` +
+              `如果现有 skill 不能满足需求，请说明具体差异；否则请直接使用现有 skill。`
+            ),
+          };
+        }
+
         // 构建 LLM Prompt
         const exampleText = examples.length > 0
           ? `\n示例:\n${examples.map((e, i) => `  ${i + 1}. 输入: ${JSON.stringify(e.input)} → 输出: ${JSON.stringify(e.output)}`).join("\n")}`
@@ -313,12 +439,15 @@ Skill 名称: ${name}
 Skill 描述: ${description}${exampleText}
 
 要求:
-1. 函数接收 params 对象（Record<string, unknown>），返回 { success: boolean, data?: unknown, error?: Error }
-2. 只输出函数体代码（不需要 function 关键字和大括号）
-3. 可以使用 async/await
-4. 代码应该简洁、安全，不能使用 eval、require、import
-5. 不能访问文件系统、网络或其他外部资源
-6. 用 JavaScript 语法（不是 TypeScript）
+1. 函数接收 (params, context) 两个参数，返回 { success: boolean, data?: unknown, error?: Error }
+   - params: Record<string, unknown> 用户传入的参数
+   - context: { callSkill(name, params) } 可调用其他系统 Skill
+2. 优先使用 context.callSkill 调用已有系统 Skill（如 db_query, user_confirm 等）来完成功能，而不是直接操作底层资源
+3. 只输出函数体代码（不需要 function 关键字和大括号）
+4. 可以使用 async/await
+5. 代码应该简洁、安全，不能使用 eval、require、import
+6. 不能访问文件系统、网络或其他外部资源
+7. 用 JavaScript 语法（不是 TypeScript）
 
 只输出纯代码，不要任何解释或 markdown 标记。`;
 
@@ -352,40 +481,28 @@ Skill 描述: ${description}${exampleText}
             return { success: false, error: new Error("生成的 Skill 未返回有效结果对象") };
           }
 
-          // 注册 — 每次调用都通过 Worker 沙箱执行
-          const userId = getCurrentUserId();
-          const skill = defineSystemSkill({
+          // 提交审批，而不是直接注册
+          if (!evolutionController) {
+            return { success: false, error: new Error("进化控制器未初始化，无法提交审批") };
+          }
+          const userId = context.user?.id ?? getCurrentUserId();
+          const generatedBy = userId !== "default" ? userId : "skill_from_description";
+          const approvalId = evolutionController.submitForApproval(
             name,
-            description: `[AI生成] ${description}`,
-            owner: userId !== "default" ? userId : undefined,
+            description,
+            code,
             capabilities,
-            handler: async (p) => {
-              const sandboxResult = await runInSandbox(code, p);
-              if (!sandboxResult.success) {
-                return { success: false, error: new Error(sandboxResult.error ?? "Sandbox execution failed") };
-              }
-              const result = sandboxResult.data as { success: boolean; data?: unknown; error?: unknown };
-              if (typeof result !== "object" || result === null) {
-                return { success: false, error: new Error("Skill 返回无效结果") };
-              }
-              return {
-                success: result.success,
-                data: result.data,
-                error: result.error instanceof Error ? result.error : result.error ? new Error(String(result.error)) : undefined,
-              };
-            },
-          });
-
-          registry.register(skill);
-
+            generatedBy,
+          );
           return {
             success: true,
             data: {
               name,
-              description,
+              approvalId,
+              status: "pending_approval",
               generatedCode: code,
               testResult,
-              message: `从描述生成 Skill "${name}" 成功`,
+              message: `Skill "${name}" 已生成并提交审批，在审批通过前无法使用。请勿尝试创建替代 skill，请等待管理员审批。`,
             },
           };
         } catch (err) {
@@ -670,7 +787,7 @@ function analyzeIssues(
 
 // ===== 辅助函数 =====
 
-function resolveParams(
+export function resolveParams(
   paramTemplate: Record<string, unknown>,
   results: Record<string, unknown>,
   originalInput: Record<string, unknown>,
@@ -700,12 +817,12 @@ function resolveParams(
   return resolved;
 }
 
-function createTransformSkill(name: string, description: string, config: Record<string, unknown>) {
+export function createTransformSkill(name: string, description: string, config: Record<string, unknown>) {
   const inputField = config.inputField as string;
   const outputField = config.outputField as string;
   const expression = config.expression as string;
 
-  return defineSystemSkill({
+  return defineSkill({
     name,
     description: `[模板:transform] ${description}`,
     handler: async (params) => {
@@ -737,10 +854,10 @@ function createTransformSkill(name: string, description: string, config: Record<
   });
 }
 
-function createValidateSkill(name: string, description: string, config: Record<string, unknown>) {
+export function createValidateSkill(name: string, description: string, config: Record<string, unknown>) {
   const rules = config.rules as Array<{ field: string; condition: string; message: string }>;
 
-  return defineSystemSkill({
+  return defineSkill({
     name,
     description: `[模板:validate] ${description}`,
     handler: async (params) => {
@@ -779,7 +896,7 @@ function createValidateSkill(name: string, description: string, config: Record<s
   });
 }
 
-function createAggregateSkill(
+export function createAggregateSkill(
   name: string,
   description: string,
   config: Record<string, unknown>,
@@ -788,7 +905,7 @@ function createAggregateSkill(
   const skills = config.skills as string[];
   const mergeStrategy = (config.mergeStrategy as string) ?? "merge";
 
-  return defineSystemSkill({
+  return defineSkill({
     name,
     description: `[模板:aggregate] ${description}`,
     handler: async (params) => {

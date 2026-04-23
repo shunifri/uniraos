@@ -18,8 +18,14 @@ import {
   ReloadOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
+import { useI18nStore } from "@/i18n";
 
 const { Text } = Typography;
+
+function useT() {
+  const { t } = useI18nStore();
+  return t;
+}
 
 interface GenealogyNode {
   name: string;
@@ -88,6 +94,7 @@ function mapToTreeData(node: GenealogyNode, parentKey = ""): TreeDataNode {
 }
 
 export default function GenealogyPage() {
+  const t = useT();
   const [tree, setTree] = useState<GenealogyNode | null>(null);
   const [stats, setStats] = useState<GenealogyStats | null>(null);
   const [patterns, setPatterns] = useState<EmergencePattern[]>([]);

@@ -2,12 +2,12 @@ import { Router } from "express";
 import { permissions } from "../permissions/index.js";
 import type { RouteDependencies } from "./index.js";
 
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
-
 export function createMemoryRoutes(deps: RouteDependencies): Router {
   const { engine, sessionManager } = deps;
   const router = Router();
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   router.get("/memory/stm", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), (req, res) => {
     const { stm } = sessionManager.getOrCreate(req.user!.id);

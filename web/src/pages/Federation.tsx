@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useI18nStore } from "@/i18n";
+import { useI18nStore, type TranslationKey } from "@/i18n";
 import { Card, Flex, Button, Typography } from "antd";
 import {
   GlobalOutlined,
@@ -28,7 +28,7 @@ type PanelKey =
 
 const panels: Array<{
   key: PanelKey;
-  label: string;
+  label: TranslationKey;
   icon: React.ReactNode;
   component: React.ComponentType;
 }> = [

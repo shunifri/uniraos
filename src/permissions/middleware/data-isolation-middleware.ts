@@ -6,6 +6,11 @@ export function userIdContextMiddleware(
   _res: Response,
   next: NextFunction
 ): void {
-  const userId = req.user?.id ?? 'default';
-  requestContext.run({ userId }, () => next());
+  const user = req.user;
+  requestContext.run({
+    userId: user?.id ?? 'default',
+    userName: user?.username,
+    userDisplayName: user?.displayName,
+    departmentId: user?.departmentId ?? undefined,
+  }, () => next());
 }

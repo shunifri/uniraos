@@ -43,13 +43,14 @@ export default function EmergenceMonitor() {
   const loadPatterns = async () => {
     try {
       setLoading(true);
-      const params: any = {};
-      if (severity !== "all") params.severity = severity;
+      const query = new URLSearchParams();
+      if (severity !== "all") query.set("severity", severity);
       if (dateRange) {
-        params.startTime = dateRange[0].toISOString();
-        params.endTime = dateRange[1].toISOString();
+        query.set("since", String(dateRange[0].valueOf()));
       }
-      const data = await api.get<any>("/api/evolution/emergence", { params });
+      const queryString = query.toString();
+      const url = "/api/evolution/emergence" + (queryString ? "?" + queryString : "");
+      const data = await api.get<any>(url);
       setPatterns(data.patterns || []);
     } catch (e: any) {
       message.error(e.message);

@@ -8,13 +8,13 @@ import { getDepartmentById } from "../db/department-repository.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { RouteDependencies } from "./index.js";
 
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
-
 export function createShareRoutes(deps: RouteDependencies & { shareRepository: ShareRepository }): Router {
   const router = Router();
   const repo = deps.shareRepository;
   const registry = deps.registry;
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   /** 获取用户的部门路径 */
   async function getUserDeptPath(userId: string): Promise<string> {

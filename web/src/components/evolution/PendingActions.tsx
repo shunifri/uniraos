@@ -29,8 +29,8 @@ interface PendingSkill {
   id: string;
   name: string;
   description: string;
-  creator: string;
-  createdAt: string;
+  generatedBy: string;
+  createdAt: number;
   code?: string;
 }
 
@@ -46,7 +46,7 @@ export default function PendingActions() {
     try {
       setLoading(true);
       const data = await api.get<any>("/api/evolution/pending");
-      setSkills(data.skills || []);
+      setSkills(data.pending || data.skills || []);
     } catch (e: any) {
       message.error(e.message);
     } finally {
@@ -68,7 +68,7 @@ export default function PendingActions() {
       onOk: async () => {
         try {
           setActionLoading(true);
-          await api.post(`/api/evolution/approve/${skill.id}`);
+          await api.post(`/api/evolution/approvals/${skill.id}/approve`);
           message.success(`Skill "${skill.name}" approved`);
           loadPendingSkills();
         } catch (e: any) {
@@ -90,7 +90,7 @@ export default function PendingActions() {
       onOk: async () => {
         try {
           setActionLoading(true);
-          await api.post(`/api/evolution/reject/${skill.id}`);
+          await api.post(`/api/evolution/approvals/${skill.id}/reject`);
           message.success(`Skill "${skill.name}" rejected`);
           loadPendingSkills();
         } catch (e: any) {
@@ -177,11 +177,11 @@ export default function PendingActions() {
                       <Text strong>{skill.name}</Text>
                       <br />
                       <Text type="secondary" style={{ fontSize: 11 }}>
-                        Creator: {skill.creator}
+                        Creator: {skill.generatedBy}
                       </Text>
                       <br />
                       <Text type="secondary" style={{ fontSize: 11 }}>
-                        Created: {new Date(skill.createdAt).toLocaleString()}
+                        Created: {skill.createdAt ? new Date(skill.createdAt).toLocaleString() : "N/A"}
                       </Text>
                     </div>
                   </Flex>

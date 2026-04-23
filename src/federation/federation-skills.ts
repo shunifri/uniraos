@@ -4,7 +4,7 @@
  * 将三大能力（迁移、联邦、进化）暴露为标准 Skill，
  * 使 Agent 可以自主调用这些能力。
  */
-import { defineSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { SkillMigrationManager } from "./skill-migration.js";
 import type { FederationManager } from "./federation-manager.js";
@@ -19,7 +19,7 @@ export function createFederationSkills(
   // ===== 迁移 Skills =====
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_pull",
       description:
         "从远程 RAOS 实例拉取 Skill 到本地。参数: endpoint(string, 远程实例地址), skillName(string, 要拉取的 Skill 名称)",
@@ -41,7 +41,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_push",
       description:
         "将本地 Skill 推送到远程 RAOS 实例。参数: endpoint(string, 远程实例地址), skillName(string, 要推送的 Skill 名称)",
@@ -63,7 +63,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_export",
       description: "将本地 Skill 导出为迁移包（JSON）。参数: skillName(string)",
       handler: async (params) => {
@@ -77,7 +77,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_import",
       description: "从迁移包导入 Skill。参数: package(object, MigrationPackage JSON)",
       handler: async (params) => {
@@ -94,7 +94,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_list_remote",
       description: "列出远程 RAOS 实例的 Skills。参数: endpoint(string)",
       timeout: 15000,
@@ -112,7 +112,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "skill_migrate_history",
       description: "查看 Skill 迁移历史记录",
       handler: async () => {
@@ -125,7 +125,7 @@ export function createFederationSkills(
   // ===== 联邦 Skills =====
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "federation_sync",
       description: "手动触发联邦指标同步并获取推荐。返回跨实例 Skill 推荐列表",
       timeout: 30000,
@@ -150,7 +150,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "federation_recommendations",
       description: "查看当前联邦推荐列表",
       handler: async () => {
@@ -161,7 +161,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "federation_accept",
       description: "采纳联邦推荐（拉取远程高质量 Skill）。参数: skillName(string, 推荐的 Skill 名称)",
       timeout: 30000,
@@ -179,7 +179,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "federation_status",
       description: "查看联邦网络状态（对等实例、指标快照）",
       handler: async () => {
@@ -201,7 +201,7 @@ export function createFederationSkills(
   // ===== 进化 Skills =====
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_run",
       description: "手动触发一次进化循环（分析系统瓶颈并生成优化建议）",
       timeout: 60000,
@@ -228,7 +228,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_pending",
       description: "查看待处理的进化动作列表",
       handler: async () => {
@@ -239,7 +239,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_execute",
       description: "手动执行一个进化动作。参数: skillName(string), actionType(string, optimize|retire|adopt|generate|canary|rollback)",
       timeout: 30000,
@@ -268,7 +268,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_history",
       description: "查看进化执行历史",
       handler: async () => {
@@ -279,7 +279,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_status",
       description: "查看进化引擎状态（运行状态、策略列表、配置等）",
       handler: async () => {
@@ -289,7 +289,7 @@ export function createFederationSkills(
   );
 
   registry.register(
-    defineSkill({
+    defineSystemSkill({
       name: "evolution_config",
       description:
         "更新进化引擎配置。参数: autoExecute?(boolean), cycleIntervalMs?(number), maxActionsPerCycle?(number), skipApprovalRequired?(boolean)",

@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { permissions } from "../permissions/index.js";
+import { identifyGodNodes } from "../memory/knowledge-graph/scoring.js";
 import type { RouteDependencies } from "./index.js";
-
-// 创建权限中间件实例
-const pm = permissions.createMiddleware(permissions.service);
 
 export function createGraphRoutes(deps: RouteDependencies): Router {
   const router = Router();
   const { sessionManager } = deps;
+
+  // 创建权限中间件实例 - 延迟到函数内部创建
+  const pm = permissions.createMiddleware(permissions.service);
 
   function getGraphManager(req: any) {
     const userId = req.user?.id ?? "default";
@@ -20,10 +21,31 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodes: [], edges: [] }); return; }
     const store = await gm.getStore();
-    const [nodes, edges] = await Promise.all([
+    let [nodes, edges] = await Promise.all([
       store.getAllNodes(),
       store.getAllEdges(),
     ]);
+
+    // Ensure communities are detected before returning data
+    if (nodes.length > 0 && !nodes.some((n: any) => n.communityId !== undefined)) {
+      await gm.getCommunities();
+      nodes = (await Promise.all(nodes.map((n: any) => store.getNode(n.id)))).filter(Boolean) as any[];
+    }
+
+    // Compute real degrees and identify god nodes on the backend
+    if (nodes.length > 0 && store.getDegree) {
+      const degrees = await Promise.all(nodes.map(async (n: any) => ({ id: n.id, degree: await store.getDegree(n.id) })));
+      const degreeMap = new Map(degrees.map(d => [d.id, d.degree]));
+      const godNodes = await identifyGodNodes(store, Math.min(10, Math.max(1, Math.ceil(nodes.length * 0.05))));
+      const godNodeIds = new Set(godNodes.map((n: any) => n.id));
+
+      nodes = nodes.map((n: any) => ({
+        ...n,
+        degree: degreeMap.get(n.id) ?? 0,
+        isGodNode: godNodeIds.has(n.id),
+      }));
+    }
+
     res.json({ nodes, edges });
   });
 

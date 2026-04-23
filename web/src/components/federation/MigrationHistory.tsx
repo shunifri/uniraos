@@ -12,7 +12,7 @@ import {
 } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api } from "@/api";
-import { useI18nStore } from "@/i18n";
+import { useI18nStore, type TranslationKey } from "@/i18n";
 import dayjs from "dayjs";
 
 interface Migration {
@@ -85,11 +85,11 @@ export default function MigrationHistory() {
       dataIndex: "status",
       key: "status",
       render: (status: string) => {
-        let color = "default";
+        let color: "success" | "error" | "default" | "warning" | "processing" = "default";
         if (status === "success") color = "success";
         else if (status === "failed") color = "error";
         else if (status === "pending") color = "processing";
-        return <Badge status={color} text={t(status)} />;
+        return <Badge status={color} text={t(status as TranslationKey)} />;
       },
     },
     {

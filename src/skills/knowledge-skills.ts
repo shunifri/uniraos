@@ -266,7 +266,7 @@ export class KnowledgeBase {
   async ingest(
     docName: string,
     content: string,
-    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string; _placeholderDocId?: string },
+    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string; _placeholderDocId?: string; images?: Array<{ id: string; description: string; page?: number; url: string }> },
   ): Promise<{ docId: string; chunkCount: number; totalTokens: number; updated: boolean; version: number }> {
     const chunkSize = opts?.chunkSize ?? 500;
     const chunkOverlap = opts?.chunkOverlap ?? 50;
@@ -398,15 +398,17 @@ export class KnowledgeBase {
         await connection.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
 
         // 更新文档记录
+        const totalChunkCount = chunks.length + (opts?.images?.length ?? 0);
         await connection.execute(
           "UPDATE kb_documents SET chunk_count = ?, total_tokens = 0, updated_at = ?, version = ?, tags = ?, shared = ?, content_hash = ?, source = ?, parsed_content = ? WHERE doc_id = ?",
-          [chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId]
+          [totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId]
         );
       } else {
         // 新文档，插入记录
+        const totalChunkCount = chunks.length + (opts?.images?.length ?? 0);
         await connection.execute(
           "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
-          [docId, this.owner, docName, source, chunks.length, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
+          [docId, this.owner, docName, source, totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
         );
       }
 
@@ -459,6 +461,41 @@ export class KnowledgeBase {
         }
       }
 
+      // 插入图片 chunks（如果文档包含内嵌图片）
+      const images = opts?.images ?? [];
+      const textChunkCount = chunks.length;
+      for (let j = 0; j < images.length; j++) {
+        const img = images[j];
+        const imgContent = `![${img.description}](${img.url})\n\n图片描述：${img.description}`;
+        const tokens = this.estimateTokens(imgContent);
+        totalTokens += tokens;
+        const vectorBlob = allVectors && allVectors.length > 0
+          ? Buffer.from(new Float32Array(allVectors[0]).buffer) // 图片复用第一个文本向量占位（后续可单独向量化）
+          : null;
+
+        await connection.execute(
+          "INSERT INTO kb_chunks (doc_id, chunk_index, content, tokens, vector, page_number, bbox_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [docId, textChunkCount + j, imgContent, tokens, vectorBlob, img.page ?? null, "[]"]
+        );
+
+        const [idRows] = await connection.query<mysql.RowDataPacket[]>("SELECT LAST_INSERT_ID() as id");
+        const chunkId = idRows[0]?.id;
+        if (chunkId) {
+          const keywords = this.extractKeywords(imgContent);
+          for (const [keyword, tf] of keywords) {
+            try {
+              const limitedKeyword = keyword.slice(0, 100);
+              await connection.execute(
+                "INSERT INTO kb_keywords (keyword, chunk_id, tf) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)",
+                [limitedKeyword, chunkId, tf]
+              );
+            } catch (e) {
+              console.warn(`[KnowledgeBase] Image keyword insert failed: ${e}`);
+            }
+          }
+        }
+      }
+
       await connection.execute(
         "UPDATE kb_documents SET total_tokens = ? WHERE doc_id = ?",
         [totalTokens, docId]
@@ -467,7 +504,8 @@ export class KnowledgeBase {
 
     this.vectorCacheDirty = true;
 
-    return { docId, chunkCount: chunks.length, totalTokens, updated, version };
+    const imageCount = opts?.images?.length ?? 0;
+    return { docId, chunkCount: chunks.length + imageCount, totalTokens, updated, version };
   }
 
   /** 对指定文档异步向量化（仅处理 vector 为 null 的 chunks） */
@@ -517,7 +555,7 @@ export class KnowledgeBase {
   async search(
     query: string,
     opts?: { limit?: number; threshold?: number; docIds?: string[]; tags?: string[]; includeShared?: boolean },
-  ): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; pageNumber: number | null; bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null }>> {
+  ): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; pageNumber: number | null; bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null; docMindTaskId: string | null }>> {
     const limit = opts?.limit ?? 10;
     // threshold 为相对阈值 (0-1)，表示结果至少达到最高分的该比例才保留，默认 0.4
     const threshold = opts?.threshold ?? 0.4;
@@ -587,6 +625,18 @@ export class KnowledgeBase {
       })).then(rs => rs.filter((r): r is NonNullable<typeof r> => r !== null));
     }
 
+    // 批量查询文档的 doc_mind_task_id，用于前端区分 Document Mind / 本地解析
+    const docIds = [...new Set(results.map((r) => r.data.docId))];
+    let docMindMap = new Map<string, string | null>();
+    if (docIds.length > 0) {
+      const placeholders = docIds.map(() => "?").join(",");
+      const docRows = await this.adapter.query<{ doc_id: string; doc_mind_task_id: string | null }>(
+        `SELECT doc_id, doc_mind_task_id FROM kb_documents WHERE doc_id IN (${placeholders}) AND owner_id = ?`,
+        [...docIds, this.owner]
+      );
+      docMindMap = new Map(docRows.map((r) => [r.doc_id, r.doc_mind_task_id || null]));
+    }
+
     return results.map((r) => {
       let bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null = null;
       try {
@@ -605,6 +655,7 @@ export class KnowledgeBase {
         shared: r.data.shared === 1,
         pageNumber: r.data.pageNumber ?? r.data.page_number ?? null,
         bboxes,
+        docMindTaskId: docMindMap.get(r.data.docId) ?? null,
       };
     });
   }
@@ -988,6 +1039,15 @@ export class KnowledgeBase {
     return rows.map((r) => r.doc_id);
   }
 
+  /** 获取所有文档 ID */
+  async getAllDocIds(): Promise<string[]> {
+    const rows = await this.adapter.query<DocIdRecord>(
+      "SELECT doc_id FROM kb_documents WHERE owner_id = ?",
+      [this.owner]
+    );
+    return rows.map((r) => r.doc_id);
+  }
+
   /** 删除文档 */
   async deleteDocument(docId: string): Promise<boolean> {
     const exists = await this.adapter.query(
@@ -1355,7 +1415,8 @@ export class KnowledgeBase {
       let existingLayouts: unknown[] = [];
       if (rows.length > 0 && rows[0].layouts_json) {
         try {
-          existingLayouts = JSON.parse(rows[0].layouts_json);
+          const raw = rows[0].layouts_json;
+          existingLayouts = Array.isArray(raw) ? raw : JSON.parse(raw);
           if (!Array.isArray(existingLayouts)) {
             existingLayouts = [];
           }
@@ -1405,7 +1466,8 @@ export class KnowledgeBase {
     );
     if (rows.length > 0 && rows[0].layouts_json) {
       try {
-        return JSON.parse(rows[0].layouts_json);
+        const raw = rows[0].layouts_json;
+        return Array.isArray(raw) ? raw : JSON.parse(raw);
       } catch (err) {
         console.warn(`[KnowledgeBase] Failed to parse layouts_json for doc ${docId}, returning empty:`, err);
         return [];
@@ -1421,7 +1483,9 @@ export class KnowledgeBase {
         "SELECT segments_json FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
         [docId, this.owner]
       );
-      const existingSegments = rows.length > 0 ? JSON.parse(rows[0].segments_json || '[]') : [];
+      const existingSegments = rows.length > 0
+        ? (Array.isArray(rows[0].segments_json) ? rows[0].segments_json : JSON.parse(rows[0].segments_json || '[]'))
+        : [];
       const allSegments = [...existingSegments, ...segments];
       await this.adapter.execute(
         "UPDATE kb_documents SET segments_json = ? WHERE doc_id = ? AND owner_id = ?",
@@ -1443,7 +1507,8 @@ export class KnowledgeBase {
     );
     if (rows.length > 0 && rows[0].segments_json) {
       try {
-        return JSON.parse(rows[0].segments_json);
+        const raw = rows[0].segments_json;
+        return Array.isArray(raw) ? raw : JSON.parse(raw);
       } catch (err) {
         console.warn(`[KnowledgeBase] Failed to parse segments_json for doc ${docId}, returning empty:`, err);
         return [];
@@ -1484,6 +1549,30 @@ export class KnowledgeBase {
     await this.adapter.execute(
       "UPDATE kb_documents SET chunk_count = chunk_count + ?, total_tokens = total_tokens + ? WHERE doc_id = ? AND owner_id = ?",
       [count, tokens, docId, this.owner]
+    );
+  }
+
+  /**
+   * 设置文档 chunk 计数和 token 计数（用于增量索引替换旧数据）
+   */
+  async setChunkCount(docId: string, count: number, tokens: number = 0): Promise<void> {
+    await this.adapter.execute(
+      "UPDATE kb_documents SET chunk_count = ?, total_tokens = ? WHERE doc_id = ? AND owner_id = ?",
+      [count, tokens, docId, this.owner]
+    );
+  }
+
+  /**
+   * 清除文档的所有 chunks 和 keywords（用于增量索引前清理旧数据）
+   */
+  async clearDocChunks(docId: string): Promise<void> {
+    await this.adapter.execute(
+      "DELETE FROM kb_keywords WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)",
+      [docId]
+    );
+    await this.adapter.execute(
+      "DELETE FROM kb_chunks WHERE doc_id = ?",
+      [docId]
     );
   }
 
@@ -1911,20 +2000,12 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             // 同时检查 Document Mind 是否已启用配置
             const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
 
-            // 如果是占位文档模式，直接走本地解析（避免 Document Mind 未配置导致的卡住）
-            if (placeholderDocId) {
-              console.log(`[kb_ingest] 占位文档模式，直接走本地解析: ${placeholderDocId}`);
-              // 更新解析进度为 5%，表示解析已经开始
-              await kb.updateParsingStatus(placeholderDocId, {
-                parsingStatus: 'processing',
-                parsingProgress: 5,
-              });
-            } else if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
-             // 使用 Document Mind 异步解析队列（仅非占位模式）
+            // 优先使用 Document Mind 异步解析队列（包括占位文档模式）
+            if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
              console.log(`[kb_ingest] 文件 ${path} 符合二进制文件类型，使用 Document Mind 解析队列`);
              const docNameForQueue = docName || path.split("/").pop() || `doc_${Date.now()}`;
              const tags = (params.tags as string[]) ?? [];
-             const taskDocId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+             const taskDocId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
              console.log(`[kb_ingest] taskDocId: ${taskDocId}`);
 
              try {
@@ -1950,6 +2031,16 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                // Fall through to local parsing
              }
            }
+
+            // 如果是占位文档模式且未走队列，直接走本地解析
+            if (placeholderDocId) {
+              console.log(`[kb_ingest] 占位文档模式，直接走本地解析: ${placeholderDocId}`);
+              // 更新解析进度为 5%，表示解析已经开始
+              await kb.updateParsingStatus(placeholderDocId, {
+                parsingStatus: 'processing',
+                parsingProgress: 5,
+              });
+            }
 
           // 本地解析（Fallback）
           // 音视频文档必须启用 Document Mind，不允许本地解析
@@ -2069,6 +2160,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                   key: `kb:${docName}`,
                   value: `Knowledge base document: ${docName}`,
                   tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
+                  type: "kb_document",
                 });
 
                 // 只有在 path 存在时才处理版面数据和音视频切片
@@ -2085,6 +2177,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                         value: (layout.content || layout.text || '').slice(0, 200),
                         tags: ['kb_layout', layout.type, layout.subType, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                         relation: `kb:${docName}`,
+                        type: "entity",
                       });
                     }
                   }
@@ -2101,6 +2194,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                         value: (segment.synopsis || segment.searchableText || '').slice(0, 200),
                         tags: ['kb_segment', params.media_type || 'video', ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                         relation: `kb:${docName}`,
+                        type: "entity",
                       });
                     }
                   }
@@ -2141,6 +2235,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                       value: blockContent,
                       tags: ['kb_content', block.type, ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
                       relation: `kb:${docName}`,
+                      type: "entity",
                     });
 
                     // 建立层级关系（标题与内容块之间的连接）
@@ -2156,6 +2251,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                         value: `${parentHeading.label} 包含 ${block.type} 内容`,
                         tags: ['kb_relation', 'contains'],
                         relation: parentKey,
+                        type: "entity",
                       });
                     }
                   }
@@ -2595,9 +2691,12 @@ interface ClassifiedQuery {
             // P3: 关系查询或发现查询 → 使用图谱检索
             console.log(`[kb_search] 使用图谱检索 (${classified.type})`);
             try {
+              // 获取用户自己的文档 ID 列表，用于图谱权限过滤
+              const ownDocIds = await kb.getAllDocIds();
               const subgraphResult = await graphManager.querySubgraph(query, {
                 maxDepth: 3,
                 maxNodes: 50,
+                allowedDocIds: ownDocIds,
               });
 
               // 从子图中提取 kb_document 节点
@@ -2723,15 +2822,20 @@ interface ClassifiedQuery {
                     key: `kb:${result.docName}:chunk${result.chunkIndex}`,
                     value: result.content.slice(0, 200),
                     tags: ['kb_document', (result.docName.split('.').pop() || 'doc')],
+                    type: "kb_document",
                   });
                 }
               }
             } catch { /* 图谱同步失败不影响搜索结果 */ }
           }
 
+          const results = combined.slice(0, limit);
           return {
             success: true,
-            data: combined.slice(0, limit),
+            data: results,
+            message: results.length === 0 
+              ? "知识库中没有找到与查询相关的文档。您是匿名用户或当前用户知识库为空，请先上传文档到知识库。"
+              : `找到 ${results.length} 条相关知识`,
           };
         } catch (err: unknown) {
           return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -3091,6 +3195,7 @@ interface SessionWithGraphManager {
       value: string;
       tags?: string[];
       relation?: string;
+      type?: "ltm" | "kb_document" | "entity" | "concept";
     }) => Promise<void>;
     getStore: () => {
       findNodeByLabel: (label: string) => { id: string } | undefined;

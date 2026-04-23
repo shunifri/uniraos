@@ -339,3 +339,37 @@ function mapPermission(row: any): Permission {
     action: row.action,
   };
 }
+
+export async function replacePermissionsForRole(roleId: string, permissionIds: string[]): Promise<void> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+
+    // 先删除所有现有权限
+    await adapter.execute(
+      "DELETE FROM role_permissions WHERE role_id = ?",
+      [roleId]
+    );
+
+    // 再添加新权限
+    for (const permId of permissionIds) {
+      await adapter.execute(
+        "INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)",
+        [roleId, permId]
+      );
+    }
+    return;
+  }
+
+  const db = getDb();
+  const transaction = db.transaction(() => {
+    // 先删除所有现有权限
+    db.prepare("DELETE FROM role_permissions WHERE role_id = ?").run(roleId);
+
+    // 再添加新权限
+    const stmt = db.prepare("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)");
+    for (const permId of permissionIds) {
+      stmt.run(roleId, permId);
+    }
+  });
+  transaction();
+}

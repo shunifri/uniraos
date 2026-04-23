@@ -5,6 +5,7 @@ import type { SkillDefinition } from "../types/index.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserDepartment } from "../db/user-repository.js";
+import { getKnowledgeBase } from "./knowledge-skills.js";
 
 export function createGraphSkills(sessionManager: UserSessionManager): SkillDefinition[] {
   function getGraphManager(owner?: string) {
@@ -24,7 +25,6 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
     defineSystemSkill({
       name: "graph_query",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "查询知识图谱。通过 BFS 遍历返回与查询相关的节点和边。参数: query(string), maxDepth?(number), maxNodes?(number), owner?(string, 默认当前用户)",
       paramSchema: {
         properties: {
@@ -40,7 +40,10 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
         const gm = getGraphManager(owner);
         if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
 
-        // 获取用户有权访问的知识库文档 ID 列表
+        // 获取用户自己的知识库文档 ID + 有权访问的共享文档 ID
+        const kb = getKnowledgeBase(owner);
+        const ownDocIds = await kb.getAllDocIds();
+
         const shareRepo = ShareRepository.getInstance();
         const userRoles = await getUserRoles(owner);
         const roleIds = userRoles.map(r => r.id);
@@ -50,7 +53,9 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
 
         // 过滤知识库文档类型的共享规则，提取文档 ID
         const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
-        const allowedDocIds = [...new Set(kbRules.map(rule => rule.resourceId))];
+        const sharedDocIds = kbRules.map(rule => rule.resourceId);
+
+        const allowedDocIds = [...new Set([...ownDocIds, ...sharedDocIds])];
 
         const result = await gm.querySubgraph(params.query as string, {
           maxDepth: params.maxDepth as number,
@@ -68,7 +73,6 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
     defineSystemSkill({
       name: "graph_path",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "查找知识图谱中两个概念之间的最短路径。参数: source(string), target(string)",
       paramSchema: {
         properties: {
@@ -89,7 +93,6 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
     defineSystemSkill({
       name: "graph_communities",
       visible: true,
-      autonomy: Autonomy.MANUAL,
       description: "查看知识图谱的社区结构。参数: rebuild?(boolean)",
       paramSchema: {
         properties: {
@@ -111,7 +114,6 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
      defineSystemSkill({
        name: "graph_deduplicate",
        visible: true,
-       autonomy: Autonomy.MANUAL,
        description: "知识图谱节点去重，合并相同标签的节点并转移关系。",
        paramSchema: { properties: {} },
        handler: async () => {
