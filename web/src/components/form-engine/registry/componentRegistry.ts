@@ -11,6 +11,9 @@ import { SwitchInput } from "../components/SwitchInput.js";
 import { DatePickerField } from "../components/DatePickerField.js";
 import { DateRangePickerField } from "../components/DateRangePickerField.js";
 import { TimePickerField } from "../components/TimePickerField.js";
+import { UserPicker } from "../components/UserPicker.js";
+import { DeptPicker } from "../components/DeptPicker.js";
+import { FileUploader } from "../components/FileUploader.js";
 
 export interface FieldRendererProps {
   schema: RaosFieldSchema;
@@ -61,3 +64,6 @@ registerComponent("switch", SwitchInput);
 registerComponent("datePicker", DatePickerField);
 registerComponent("dateRange", DateRangePickerField);
 registerComponent("timePicker", TimePickerField);
+registerComponent("userPicker", UserPicker);
+registerComponent("deptPicker", DeptPicker);
+registerComponent("fileUploader", FileUploader);
