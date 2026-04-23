@@ -84,7 +84,6 @@ export default function App() {
               <Route path="federation" element={<FederationPage />} />
               <Route path="connections" element={<ConnectionsPage />} />
               <Route path="approvals" element={<ApprovalCenter />} />
-              <Route path="approvals" element={<ApprovalCenter />} />
             </Route>
             <Route path="/embed" element={<EmbedChat />} />
           </Routes>

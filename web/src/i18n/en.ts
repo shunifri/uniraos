@@ -503,6 +503,7 @@ const en: Translations = {
   approval_reject: 'Reject',
   approval_transfer: 'Transfer',
   approval_return: 'Return',
+  approval_task_info: 'Task Info',
 };
 
 export default en;
