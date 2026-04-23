@@ -14,13 +14,32 @@ export interface DBConnectionConfig {
   options?: Record<string, any>;
 }
 
-// 连接池（简单实现：每个 connectionId 维护一个连接）
-const connectionPools = new Map<string, any>();
+interface PoolEntry {
+  connection: any;
+  lastUsedAt: number;
+}
+
+// 连接池（每个 connectionId 维护一个连接 + 最后使用时间）
+const connectionPools = new Map<string, PoolEntry>();
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 
 /** 仅用于测试：清空连接池 */
 export function clearConnectionPool(): void {
   connectionPools.clear();
 }
+
+// 定时清理空闲连接
+setInterval(() => {
+  const now = Date.now();
+  for (const [connectionId, entry] of connectionPools.entries()) {
+    if (now - entry.lastUsedAt > IDLE_TIMEOUT_MS) {
+      closeConnection(connectionId).catch(() => {
+        // Ignore cleanup errors
+      });
+    }
+  }
+}, CLEANUP_INTERVAL_MS);
 
 /** 带超时的 Promise 包装 */
 function withTimeout<T>(promise: Promise<T>, ms: number, context: string): Promise<T> {
@@ -32,9 +51,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number, context: string): Promi
 
 // 获取数据库连接
 export async function getConnection(connectionId: string): Promise<any> {
-  // 1. 如果连接池中有，返回已有连接
+  // 1. 如果连接池中有，更新最后使用时间并返回
   if (connectionPools.has(connectionId)) {
-    return connectionPools.get(connectionId);
+    const entry = connectionPools.get(connectionId)!;
+    entry.lastUsedAt = Date.now();
+    return entry.connection;
   }
 
   // 2. 从 connections 表读取配置
@@ -68,8 +89,8 @@ export async function getConnection(connectionId: string): Promise<any> {
       throw new Error(`Unsupported database type: ${dbConfig.type}`);
   }
 
-  // 5. 存入连接池
-  connectionPools.set(connectionId, connection);
+  // 5. 存入连接池（带时间戳）
+  connectionPools.set(connectionId, { connection, lastUsedAt: Date.now() });
   return connection;
 }
 
@@ -139,6 +160,9 @@ export async function executeQuery(
   timeout = 5000
 ): Promise<any[]> {
   const connection = await getConnection(connectionId);
+  // 更新最后使用时间
+  const entry = connectionPools.get(connectionId);
+  if (entry) entry.lastUsedAt = Date.now();
 
   // 获取连接类型
   const mainDb = getDb();
@@ -170,8 +194,9 @@ export async function executeQuery(
 
 // 关闭连接
 export async function closeConnection(connectionId: string): Promise<void> {
-  const connection = connectionPools.get(connectionId);
-  if (!connection) return;
+  const poolEntry = connectionPools.get(connectionId);
+  if (!poolEntry) return;
+  const connection = poolEntry.connection;
 
   const mainDb = getDb();
   const row = mainDb.prepare('SELECT db_config FROM connections WHERE id = ?').get(connectionId) as any;

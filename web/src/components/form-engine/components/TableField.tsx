@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Table, Button, Input, Select, Space } from "antd";
+import { Table, Button, Input, InputNumber, Select, Switch, Space } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import type { FieldRendererProps } from "../registry/componentRegistry";
 import { formT } from "../i18n/form-i18n";
@@ -12,8 +12,8 @@ const TableField: React.FC<FieldRendererProps> = ({ schema, value, onChange, rea
 
   const handleAdd = () => {
     const newRow: Record<string, any> = {};
-    Object.keys(columnsSchema).forEach((key) => {
-      newRow[key] = columnsSchema[key].default ?? "";
+    Object.keys(columnsSchema).forEach((k) => {
+      newRow[k] = columnsSchema[k].default ?? "";
     });
     onChange([...rows, newRow]);
     setEditingKey(rows.length);
@@ -30,6 +30,49 @@ const TableField: React.FC<FieldRendererProps> = ({ schema, value, onChange, rea
     onChange(next);
   };
 
+  const renderCellEditor = (colSchema: any, rowIndex: number, key: string, cellValue: any) => {
+    if (colSchema.enum) {
+      return (
+        <Select
+          value={cellValue}
+          options={colSchema.enum.map((v: string) => ({ label: v, value: v }))}
+          onChange={(v) => handleCellChange(rowIndex, key, v)}
+          style={{ width: "100%" }}
+          size="small"
+        />
+      );
+    }
+
+    if (colSchema.type === "boolean") {
+      return (
+        <Switch
+          checked={!!cellValue}
+          onChange={(v) => handleCellChange(rowIndex, key, v)}
+          size="small"
+        />
+      );
+    }
+
+    if (colSchema.type === "number" || colSchema.type === "integer") {
+      return (
+        <InputNumber
+          value={cellValue}
+          onChange={(v) => handleCellChange(rowIndex, key, v)}
+          style={{ width: "100%" }}
+          size="small"
+        />
+      );
+    }
+
+    return (
+      <Input
+        value={cellValue}
+        onChange={(e) => handleCellChange(rowIndex, key, e.target.value)}
+        size="small"
+      />
+    );
+  };
+
   const columns = [
     ...Object.entries(columnsSchema).map(([key, colSchema]: [string, any]) => ({
       title: colSchema.title || key,
@@ -38,28 +81,7 @@ const TableField: React.FC<FieldRendererProps> = ({ schema, value, onChange, rea
       render: (_: any, record: any, rowIndex: number) => {
         const isEditing = editingKey === rowIndex && !readOnly && !disabled;
         const cellValue = record[key];
-
-        if (isEditing) {
-          if (colSchema.enum) {
-            return (
-              <Select
-                value={cellValue}
-                options={colSchema.enum.map((v: string) => ({ label: v, value: v }))}
-                onChange={(v) => handleCellChange(rowIndex, key, v)}
-                style={{ width: "100%" }}
-                size="small"
-              />
-            );
-          }
-          return (
-            <Input
-              value={cellValue}
-              onChange={(e) => handleCellChange(rowIndex, key, e.target.value)}
-              size="small"
-            />
-          );
-        }
-        return cellValue ?? "-";
+        return isEditing ? renderCellEditor(colSchema, rowIndex, key, cellValue) : (cellValue ?? "-");
       },
     })),
     {

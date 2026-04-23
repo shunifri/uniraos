@@ -8,14 +8,29 @@ import type { WorkflowTask } from '../workflow/types.js';
 
 const router = Router();
 
+interface TaskQuery {
+  status?: string | string[];
+  page?: number;
+  pageSize?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}
+
 /**
  * GET /workflow/tasks
  * Return pending tasks for current user (filter by assignee or candidateUsers/candidateGroups)
+ * Query params: page, pageSize, sortBy, sortOrder
  */
 router.get('/workflow/tasks', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.id;
     const repo = getWorkflowRepository();
+
+    // Parse pagination and sorting
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string, 10) || 20));
+    const sortBy = (req.query.sortBy as string) || 'createdAt';
+    const sortOrder = (req.query.sortOrder as string) === 'asc' ? 'asc' : 'desc';
 
     // Fetch all pending/claimed tasks
     const { items: allTasks } = await repo.listTasks({
@@ -30,28 +45,37 @@ router.get('/workflow/tasks', requireAuth, async (req, res) => {
 
     // Filter tasks assignable to current user
     const myTasks = allTasks.filter((task: WorkflowTask) => {
-      // Direct assignee
       if (task.assignee === userId) return true;
-
-      // Candidate users
       if (task.candidateUsers?.includes(userId)) return true;
-
-      // Candidate groups (roles)
       if (task.candidateGroups && task.candidateGroups.length > 0) {
         if (task.candidateGroups.some((g) => userRoleIds.has(g) || userRoleNames.has(g))) {
           return true;
         }
       }
-
-      // No assignee and no candidates → anyone can claim
       if (!task.assignee && !task.candidateUsers?.length && !task.candidateGroups?.length) {
         return true;
       }
-
       return false;
     });
 
-    res.json({ success: true, data: myTasks });
+    // Sort
+    const sortedTasks = myTasks.sort((a: any, b: any) => {
+      const aVal = a[sortBy] ?? 0;
+      const bVal = b[sortBy] ?? 0;
+      return sortOrder === 'asc' ? (aVal > bVal ? 1 : -1) : (aVal < bVal ? 1 : -1);
+    });
+
+    // Paginate
+    const total = sortedTasks.length;
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const paginatedTasks = sortedTasks.slice(start, end);
+
+    res.json({
+      success: true,
+      data: paginatedTasks,
+      pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

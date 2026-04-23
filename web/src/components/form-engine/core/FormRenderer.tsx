@@ -7,13 +7,12 @@
 import React, { useRef, useState, useEffect, useReducer, useCallback } from "react";
 import { Form, Row, Col } from "antd";
 import type { RaosFormSchema, RaosFieldSchema, FieldState } from "../types";
-import { getComponent, getComponentAsync, hasComponent } from "../registry/componentRegistry";
+import { FieldWrapper } from "./FieldWrapper";
 import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
 import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
 import { useAuthStore } from "../../../store/auth";
-import { formT } from "../i18n/form-i18n";
 
 // ───────────────────────────────────────────────────────────────
 // Props 接口
@@ -341,7 +340,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   const user = useAuthStore((s) => s.user);
   const userPermissions = getUserPermissions(user);
 
-  // 字段渲染
+  // 字段渲染（使用 memoized FieldWrapper）
   const renderField = (name: string, fieldSchema: RaosFieldSchema) => {
     const state = store.getState();
     const fieldState = state.getFieldState(name);
@@ -354,64 +353,22 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
 
     const isFieldReadOnly = readOnly || fieldState.readonly || permResult.readOnly;
 
-    const value = state.getFieldValue(name);
-    const errors = state.errors[name] || [];
-    const widgetName = fieldSchema["ui:widget"] || "input";
-
-    let Component: React.FC<any> | undefined;
-    try {
-      Component = getComponent(widgetName);
-    } catch {
-      Component = asyncComponents.get(widgetName);
-      if (!Component && hasComponent(widgetName) && !loadingAsync.has(widgetName)) {
-        loadAsyncComponent(widgetName);
-        return (
-          <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
-            <Form.Item label={fieldSchema.title}>
-              <div style={{ color: "#999", padding: "8px 0" }}>{formT("component.loading")}</div>
-            </Form.Item>
-          </Col>
-        );
-      }
-    }
-
-    if (!Component) {
-      return (
-        <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
-          <Form.Item label={fieldSchema.title} validateStatus="error"
-            help={`Component "${widgetName}" not found`}>
-            <div style={{ color: "red" }}>{formT("component.notFound", { name: widgetName })}</div>
-          </Form.Item>
-        </Col>
-      );
-    }
-
     return (
-      <Col
+      <FieldWrapper
         key={name}
-        span={fieldSchema["ui:colSpan"] || 24}
-      >
-        <Form.Item
-          htmlFor={name}
-          label={fieldSchema.title}
-          required={fieldState.required}
-          validateStatus={errors.length > 0 ? "error" : undefined}
-          help={errors[0] || fieldSchema["ui:help"]}
-        >
-          <Component
-            schema={fieldSchema}
-            name={name}
-            value={value}
-            onChange={(val: any) => handleFieldChange(name, val)}
-            onBlur={() => handleFieldBlur(name)}
-            formData={state.formData}
-            fieldState={fieldState}
-            readOnly={isFieldReadOnly}
-            disabled={fieldState.disabled}
-            id={name}
-          />
-        </Form.Item>
-      </Col>
+        name={name}
+        fieldSchema={fieldSchema}
+        fieldState={fieldState}
+        value={state.getFieldValue(name)}
+        errors={state.errors[name] || []}
+        formData={state.formData}
+        readOnly={isFieldReadOnly}
+        onChange={handleFieldChange}
+        onBlur={handleFieldBlur}
+        asyncComponents={asyncComponents}
+        loadingAsync={loadingAsync}
+        onLoadAsync={loadAsyncComponent}
+      />
     );
   };
 

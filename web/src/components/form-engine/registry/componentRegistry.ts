@@ -10,6 +10,7 @@ import { CheckboxGroup } from "../components/CheckboxGroup.js";
 import { SwitchInput } from "../components/SwitchInput.js";
 import { DatePickerField } from "../components/DatePickerField.js";
 import { DateRangePickerField } from "../components/DateRangePickerField.js";
+import { DateTimeRangePickerField } from "../components/DateTimeRangePickerField.js";
 import { TimePickerField } from "../components/TimePickerField.js";
 import { UserPicker } from "../components/UserPicker.js";
 import { DeptPicker } from "../components/DeptPicker.js";
@@ -131,6 +132,7 @@ registerComponent("checkbox", CheckboxGroup, { name: "checkbox", displayName: "C
 registerComponent("switch", SwitchInput, { name: "switch", displayName: "Switch", category: "basic" });
 registerComponent("datePicker", DatePickerField, { name: "datePicker", displayName: "Date Picker", category: "basic" });
 registerComponent("dateRange", DateRangePickerField, { name: "dateRange", displayName: "Date Range", category: "basic" });
+registerComponent("dateTimeRange", DateTimeRangePickerField, { name: "dateTimeRange", displayName: "Date Time Range", category: "basic" });
 registerComponent("timePicker", TimePickerField, { name: "timePicker", displayName: "Time Picker", category: "basic" });
 registerComponent("userPicker", UserPicker, { name: "userPicker", displayName: "User Picker", category: "business" });
 registerComponent("deptPicker", DeptPicker, { name: "deptPicker", displayName: "Department Picker", category: "business" });

@@ -191,7 +191,21 @@ export async function validateField(
   // 5. 同步自定义表达式验证
   const customValidator = (schema as any).customValidator;
   if (customValidator) {
-    // Phase 4 会实现完整表达式沙箱
+    const expr = typeof customValidator === "string" ? customValidator : String(customValidator);
+    try {
+      const fn = new Function(
+        "value", "formData", "Math", "String", "Number", "Date", "Array", "Object", "JSON",
+        `"use strict"; return (${expr.replace(/^expr:/, "")});`
+      );
+      const result = fn(value, formData, Math, String, Number, Date, Array, Object, JSON);
+      if (result === false) {
+        errors.push(getErrorMessage(schema, "custom", formT("validation.pattern")));
+      } else if (typeof result === "string") {
+        errors.push(result);
+      }
+    } catch (e: any) {
+      errors.push(`Custom validator error: ${e.message}`);
+    }
   }
 
   return { valid: errors.length === 0, errors };
