@@ -2,6 +2,7 @@ import React from "react";
 import { TimePicker } from "antd";
 import dayjs from "dayjs";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
+import { formT } from "../i18n/form-i18n";
 
 export const TimePickerField: React.FC<FieldRendererProps> = ({
   schema,
@@ -15,7 +16,7 @@ export const TimePickerField: React.FC<FieldRendererProps> = ({
       value={value ? dayjs(value, "HH:mm:ss") : null}
       onChange={(time) => onChange(time ? time.format("HH:mm:ss") : null)}
       onBlur={onBlur}
-      placeholder={schema["ui:placeholder"] || "请选择时间"}
+      placeholder={schema["ui:placeholder"] || formT("placeholder.time")}
       disabled={fieldState.disabled}
       readOnly={fieldState.readonly}
       status={fieldState.errors?.length ? "error" : undefined}

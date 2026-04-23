@@ -24,7 +24,7 @@ describe("ArrayField", () => {
         onChange={onChange}
       />
     );
-    fireEvent.click(screen.getByText("Add Item"));
+    fireEvent.click(screen.getByText("Add item"));
     expect(onChange).toHaveBeenCalledWith([""]);
   });
 });
@@ -73,7 +73,7 @@ describe("TableField", () => {
       />
     );
     expect(screen.getByText("A")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Add Row"));
+    fireEvent.click(screen.getByText("Add row"));
     expect(onChange).toHaveBeenCalled();
   });
 });

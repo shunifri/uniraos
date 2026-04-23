@@ -2,6 +2,7 @@ import React from "react";
 import { Upload, Button, message } from "antd";
 import { UploadOutlined } from "@ant-design/icons";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
+import { formT } from "../i18n/form-i18n";
 
 export const FileUploader: React.FC<FieldRendererProps> = ({
   schema,
@@ -46,7 +47,7 @@ export const FileUploader: React.FC<FieldRendererProps> = ({
             : [];
           onChange([...current, url]);
         }
-        message.success(`${info.file.name} 上传成功`);
+        message.success(formT("uploader.success", { name: info.file.name }));
       }
     } else if (info.file.status === "error") {
       message.error(`${info.file.name} 上传失败`);
@@ -56,7 +57,7 @@ export const FileUploader: React.FC<FieldRendererProps> = ({
   const beforeUpload = (file: File) => {
     if (file.size > maxSize) {
       message.error(
-        `文件大小不能超过 ${(maxSize / 1024 / 1024).toFixed(0)}MB`
+        formT("uploader.maxSize", { size: (maxSize / 1024 / 1024).toFixed(0) })
       );
       return Upload.LIST_IGNORE;
     }

@@ -18,7 +18,7 @@ describe("Business Components", () => {
         fieldState={{ visible: true, disabled: false, readonly: false, required: false }}
       />
     );
-    expect(screen.getByText("请选择用户")).toBeInTheDocument();
+    expect(screen.getByText("Please select user")).toBeInTheDocument();
   });
 
   it("should render DeptPicker", async () => {
@@ -50,7 +50,7 @@ describe("Business Components", () => {
         fieldState={{ visible: true, disabled: false, readonly: false, required: false }}
       />
     );
-    expect(screen.getByText("请选择部门")).toBeInTheDocument();
+    expect(screen.getByText("Please select department")).toBeInTheDocument();
   });
 
   it("should render FileUploader", async () => {

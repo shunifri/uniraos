@@ -13,6 +13,7 @@ import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
 import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
 import { useAuthStore } from "../../../store/auth";
+import { formT } from "../i18n/form-i18n";
 
 // ───────────────────────────────────────────────────────────────
 // Props 接口
@@ -368,7 +369,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         return (
           <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
             <Form.Item label={fieldSchema.title}>
-              <div style={{ color: "#999", padding: "8px 0" }}>Loading component...</div>
+              <div style={{ color: "#999", padding: "8px 0" }}>{formT("component.loading")}</div>
             </Form.Item>
           </Col>
         );
@@ -380,7 +381,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
           <Form.Item label={fieldSchema.title} validateStatus="error"
             help={`Component "${widgetName}" not found`}>
-            <div style={{ color: "red" }}>Unknown component: {widgetName}</div>
+            <div style={{ color: "red" }}>{formT("component.notFound", { name: widgetName })}</div>
           </Form.Item>
         </Col>
       );

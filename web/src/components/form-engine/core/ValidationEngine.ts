@@ -5,6 +5,7 @@
  */
 
 import type { RaosFieldSchema, ValidationResult } from "../types";
+import { formT } from "../i18n/form-i18n";
 
 /**
  * 获取字段验证错误提示
@@ -42,25 +43,25 @@ function validateFormat(value: string, format: string): string | null {
   switch (format) {
     case "email": {
       const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      return emailRe.test(value) ? null : "请输入正确的邮箱格式";
+      return emailRe.test(value) ? null : formT("validation.format.email");
     }
     case "url": {
       const urlRe = /^https?:\/\/.+/;
-      return urlRe.test(value) ? null : "请输入正确的 URL 格式";
+      return urlRe.test(value) ? null : formT("validation.format.url");
     }
     case "mobile": {
       const mobileRe = /^1[3-9]\d{9}$/;
-      return mobileRe.test(value) ? null : "请输入正确的手机号码格式";
+      return mobileRe.test(value) ? null : formT("validation.format.mobile");
     }
     case "date": {
       const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-      return dateRe.test(value) ? null : "请输入正确的日期格式（YYYY-MM-DD）";
+      return dateRe.test(value) ? null : formT("validation.format.date");
     }
     case "datetime": {
       const datetimeRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
       return datetimeRe.test(value)
         ? null
-        : "请输入正确的日期时间格式（YYYY-MM-DDTHH:mm:ss）";
+        : formT("validation.format.datetime");
     }
     default:
       return null;
@@ -99,7 +100,7 @@ export async function validateField(
 
   // 2. Required 验证
   if (isRequired === true && isEmptyValue(value)) {
-    errors.push(getErrorMessage(schema, "required", "此字段为必填项"));
+    errors.push(getErrorMessage(schema, "required", formT("validation.required")));
   }
 
   // 3. 空值短路
@@ -117,7 +118,7 @@ export async function validateField(
         getErrorMessage(
           schema,
           "minLength",
-          `长度不能少于 ${schema.minLength} 个字符`
+          formT("validation.minLength", { min: schema.minLength })
         )
       );
     }
@@ -131,7 +132,7 @@ export async function validateField(
         getErrorMessage(
           schema,
           "maxLength",
-          `长度不能超过 ${schema.maxLength} 个字符`
+          formT("validation.maxLength", { max: schema.maxLength })
         )
       );
     }
@@ -145,7 +146,7 @@ export async function validateField(
         getErrorMessage(
           schema,
           "minimum",
-          `数值不能小于 ${schema.minimum}`
+          formT("validation.minimum", { min: schema.minimum })
         )
       );
     }
@@ -159,7 +160,7 @@ export async function validateField(
         getErrorMessage(
           schema,
           "maximum",
-          `数值不能大于 ${schema.maximum}`
+          formT("validation.maximum", { max: schema.maximum })
         )
       );
     }
@@ -171,7 +172,7 @@ export async function validateField(
     const regex = new RegExp(schema.pattern);
     if (!regex.test(strValue)) {
       errors.push(
-        getErrorMessage(schema, "pattern", "格式不匹配")
+        getErrorMessage(schema, "pattern", formT("validation.pattern"))
       );
     }
   }
@@ -258,7 +259,7 @@ async function fetchRemoteValidation(
     });
     const data = await res.json();
     if (data.valid === false) {
-      return { valid: false, errors: [data.message || "验证失败"] };
+      return { valid: false, errors: [data.message || formT("validation.async")] };
     }
     return { valid: true, errors: [] };
   } catch {

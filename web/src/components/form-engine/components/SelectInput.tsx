@@ -1,6 +1,7 @@
 import React from "react";
 import { Select } from "antd";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
+import { formT } from "../i18n/form-i18n";
 
 export const SelectInput: React.FC<FieldRendererProps> = ({
   schema,
@@ -22,7 +23,7 @@ export const SelectInput: React.FC<FieldRendererProps> = ({
       value={value}
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
-      placeholder={schema["ui:placeholder"] || "请选择"}
+      placeholder={schema["ui:placeholder"] || formT("placeholder.select")}
       disabled={fieldState.disabled}
       options={options.map((opt) => ({
         label: opt.label,

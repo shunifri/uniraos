@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Select } from "antd";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
+import { formT } from "../i18n/form-i18n";
 
 export const UserPicker: React.FC<FieldRendererProps> = ({
   schema,
@@ -40,7 +41,7 @@ export const UserPicker: React.FC<FieldRendererProps> = ({
       value={value}
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
-      placeholder={schema["ui:placeholder"] || "请选择用户"}
+      placeholder={schema["ui:placeholder"] || formT("placeholder.user")}
       disabled={fieldState.disabled}
       options={options}
       loading={fieldState.loading}

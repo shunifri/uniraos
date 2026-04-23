@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { TreeSelect } from "antd";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
+import { formT } from "../i18n/form-i18n";
 
 export const DeptPicker: React.FC<FieldRendererProps> = ({
   schema,
@@ -39,7 +40,7 @@ export const DeptPicker: React.FC<FieldRendererProps> = ({
       value={value}
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
-      placeholder={schema["ui:placeholder"] || "请选择部门"}
+      placeholder={schema["ui:placeholder"] || formT("placeholder.dept")}
       disabled={fieldState.disabled}
       treeData={treeData}
       loading={fieldState.loading}

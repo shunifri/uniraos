@@ -2,6 +2,7 @@ import React from "react";
 import { Button, Space, Card } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import type { FieldRendererProps } from "../registry/componentRegistry";
+import { formT } from "../i18n/form-i18n";
 import FormRenderer from "../core/FormRenderer";
 
 const ArrayField: React.FC<FieldRendererProps> = ({ schema, value, onChange, readOnly, disabled }) => {
@@ -65,7 +66,7 @@ const ArrayField: React.FC<FieldRendererProps> = ({ schema, value, onChange, rea
       ))}
       {!readOnly && !disabled && (
         <Button type="dashed" block icon={<PlusOutlined />} onClick={handleAdd}>
-          Add Item
+          {formT("array.add")}
         </Button>
       )}
     </div>

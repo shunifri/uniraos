@@ -12,7 +12,7 @@ describe("ValidationEngine", () => {
       const schema: RaosFieldSchema = { type: "string", title: "Name" };
       const result = await validateField(schema, "", { name: "" }, true);
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain("此字段为必填项");
+      expect(result.errors).toContain("This field is required");
     });
 
     it("email 格式验证", async () => {
@@ -23,7 +23,7 @@ describe("ValidationEngine", () => {
       };
       const result = await validateField(schema, "invalid", {}, false);
       expect(result.valid).toBe(false);
-      expect(result.errors[0]).toContain("邮箱");
+      expect(result.errors[0]).toContain("email");
     });
 
     it("minLength 验证", async () => {
@@ -45,7 +45,7 @@ describe("ValidationEngine", () => {
       };
       const result = await validateField(schema, "123", {}, false);
       expect(result.valid).toBe(false);
-      expect(result.errors[0]).toContain("格式");
+      expect(result.errors[0]).toContain("Format");
     });
 
     it("最大值验证", async () => {
@@ -134,7 +134,7 @@ describe("ValidationEngine", () => {
     });
 
     it("email 格式失败", () => {
-      expect(validateFormat("invalid", "email")).toContain("邮箱");
+      expect(validateFormat("invalid", "email")).toContain("email");
     });
 
     it("url 格式通过", () => {
@@ -150,7 +150,7 @@ describe("ValidationEngine", () => {
     });
 
     it("mobile 格式失败", () => {
-      expect(validateFormat("123", "mobile")).toContain("手机");
+      expect(validateFormat("123", "mobile")).toContain("mobile");
     });
 
     it("date 格式通过", () => {
@@ -158,7 +158,7 @@ describe("ValidationEngine", () => {
     });
 
     it("date 格式失败", () => {
-      expect(validateFormat("2024/01/15", "date")).toContain("日期");
+      expect(validateFormat("2024/01/15", "date")).toContain("date");
     });
 
     it("datetime 格式通过", () => {
@@ -166,7 +166,7 @@ describe("ValidationEngine", () => {
     });
 
     it("datetime 格式失败", () => {
-      expect(validateFormat("2024-01-15", "datetime")).toContain("日期时间");
+      expect(validateFormat("2024-01-15", "datetime")).toContain("datetime");
     });
 
     it("未知格式直接通过", () => {

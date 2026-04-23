@@ -102,7 +102,7 @@ describe("FormRenderer", () => {
     const input = screen.getByLabelText("Email");
     fireEvent.blur(input); // 触发验证
     await waitFor(() =>
-      expect(screen.getByText("此字段为必填项")).toBeInTheDocument()
+      expect(screen.getByText("This field is required")).toBeInTheDocument()
     );
   });
 

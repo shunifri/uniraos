@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Table, Button, Input, Select, Space } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import type { FieldRendererProps } from "../registry/componentRegistry";
+import { formT } from "../i18n/form-i18n";
 
 const TableField: React.FC<FieldRendererProps> = ({ schema, value, onChange, readOnly, disabled }) => {
   const rows = Array.isArray(value) ? value : [];
@@ -94,7 +95,7 @@ const TableField: React.FC<FieldRendererProps> = ({ schema, value, onChange, rea
       />
       {!readOnly && !disabled && (
         <Button type="dashed" block icon={<PlusOutlined />} onClick={handleAdd} style={{ marginTop: 8 }}>
-          Add Row
+          {formT("table.addRow")}
         </Button>
       )}
     </div>
