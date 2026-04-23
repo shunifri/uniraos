@@ -12,7 +12,7 @@ import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
 import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
-import { useAuthStore } from "@/store/auth";
+import { useAuthStore } from "../../../store/auth";
 
 // ───────────────────────────────────────────────────────────────
 // Props 接口

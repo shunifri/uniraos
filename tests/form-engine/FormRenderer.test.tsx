@@ -167,7 +167,7 @@ describe("FormRenderer", () => {
       },
     };
     render(<FormRenderer schema={schema} />);
-    expect(screen.getByText(/组件加载失败/)).toBeInTheDocument();
+    expect(screen.getByText(/Unknown component/)).toBeInTheDocument();
   });
 
   it("grid 布局渲染", () => {

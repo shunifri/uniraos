@@ -132,10 +132,17 @@ export function evaluateExpression(
 // 查找依赖某字段的所有字段（用于级联更新）
 // ───────────────────────────────────────────────────────────────
 
+// Simple cache for findDependentFields
+const dependentFieldsCache = new Map<string, string[]>();
+
 export function findDependentFields(
   changedField: string,
   schemaProperties: Record<string, any>
 ): string[] {
+  const cacheKey = `${changedField}:${Object.keys(schemaProperties).join(",")}`;
+  const cached = dependentFieldsCache.get(cacheKey);
+  if (cached) return cached;
+
   const dependents = new Set<string>();
 
   for (const [fieldName, fieldSchema] of Object.entries(schemaProperties)) {
@@ -179,5 +186,12 @@ export function findDependentFields(
     }
   }
 
-  return Array.from(dependents);
+  const result = Array.from(dependents);
+  dependentFieldsCache.set(cacheKey, result);
+  // Limit cache size to prevent memory leaks
+  if (dependentFieldsCache.size > 1000) {
+    const firstKey = dependentFieldsCache.keys().next().value;
+    dependentFieldsCache.delete(firstKey);
+  }
+  return result;
 }
