@@ -1,5 +1,9 @@
 import React from "react";
 import type { RaosFieldSchema, FieldState } from "../types.js";
+import { TextInput } from "../components/TextInput.js";
+import { TextArea } from "../components/TextArea.js";
+import { NumberInput } from "../components/NumberInput.js";
+import { PasswordInput } from "../components/PasswordInput.js";
 
 export interface FieldRendererProps {
   schema: RaosFieldSchema;
@@ -39,5 +43,7 @@ export function listComponents(): string[] {
   return Array.from(registry.keys());
 }
 
-const PlaceholderInput: FieldComponent = () => React.createElement("input", null);
-registerComponent("input", PlaceholderInput);
+registerComponent("input", TextInput);
+registerComponent("textarea", TextArea);
+registerComponent("number", NumberInput);
+registerComponent("password", PasswordInput);
