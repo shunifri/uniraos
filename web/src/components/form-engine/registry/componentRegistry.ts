@@ -29,20 +29,39 @@ export interface FieldRendererProps {
 
 export type FieldComponent = React.FC<FieldRendererProps>;
 
-const registry = new Map<string, FieldComponent>();
-
-export { registry };
-
-export function registerComponent(name: string, component: FieldComponent): void {
-  registry.set(name, component);
+export interface ComponentMeta {
+  name: string;
+  displayName: string;
+  description?: string;
+  icon?: string;
+  category?: string;
+  defaultProps?: Record<string, any>;
+  configSchema?: RaosFieldSchema;
 }
 
-export function getComponent(name: string): FieldComponent {
-  const component = registry.get(name);
-  if (!component) {
-    throw new Error(`Component "${name}" not found in registry`);
-  }
-  return component;
+export interface AsyncComponentModule {
+  default: FieldComponent;
+  meta?: ComponentMeta;
+}
+
+export type ComponentLoader = () => Promise<AsyncComponentModule>;
+
+interface RegistryEntry {
+  component?: FieldComponent;
+  loader?: ComponentLoader;
+  meta?: ComponentMeta;
+  loaded: boolean;
+  loading?: Promise<FieldComponent>;
+}
+
+const registry = new Map<string, RegistryEntry>();
+
+export function registerComponent(name: string, component: FieldComponent, meta?: ComponentMeta): void {
+  registry.set(name, { component, meta, loaded: true });
+}
+
+export function registerAsyncComponent(name: string, loader: ComponentLoader, meta?: ComponentMeta): void {
+  registry.set(name, { loader, meta, loaded: false });
 }
 
 export function hasComponent(name: string): boolean {
@@ -53,17 +72,70 @@ export function listComponents(): string[] {
   return Array.from(registry.keys());
 }
 
-registerComponent("input", TextInput);
-registerComponent("textarea", TextArea);
-registerComponent("number", NumberInput);
-registerComponent("password", PasswordInput);
-registerComponent("select", SelectInput);
-registerComponent("radio", RadioGroup);
-registerComponent("checkbox", CheckboxGroup);
-registerComponent("switch", SwitchInput);
-registerComponent("datePicker", DatePickerField);
-registerComponent("dateRange", DateRangePickerField);
-registerComponent("timePicker", TimePickerField);
-registerComponent("userPicker", UserPicker);
-registerComponent("deptPicker", DeptPicker);
-registerComponent("fileUploader", FileUploader);
+export function listComponentMeta(): ComponentMeta[] {
+  const result: ComponentMeta[] = [];
+  for (const [name, entry] of registry.entries()) {
+    result.push(entry.meta ? { ...entry.meta, name } : { name, displayName: name });
+  }
+  return result;
+}
+
+export function getComponentMeta(name: string): ComponentMeta | undefined {
+  const entry = registry.get(name);
+  return entry?.meta ? { ...entry.meta, name } : undefined;
+}
+
+export async function getComponentAsync(name: string): Promise<FieldComponent> {
+  const entry = registry.get(name);
+  if (!entry) throw new Error(`Component "${name}" not found in registry`);
+  if (entry.loaded && entry.component) return entry.component;
+  if (entry.loading) return entry.loading;
+  if (entry.loader) {
+    const promise = entry.loader().then((mod) => {
+      entry.component = mod.default;
+      entry.loaded = true;
+      entry.loading = undefined;
+      if (mod.meta) entry.meta = { ...mod.meta, name };
+      return mod.default;
+    });
+    entry.loading = promise;
+    return promise;
+  }
+  throw new Error(`Component "${name}" has no loader or component`);
+}
+
+export function getComponent(name: string): FieldComponent {
+  const entry = registry.get(name);
+  if (!entry) throw new Error(`Component "${name}" not found in registry`);
+  if (entry.component) return entry.component;
+  throw new Error(`Component "${name}" is async and not loaded. Use getComponentAsync instead.`);
+}
+
+export async function loadExternalComponent(url: string, name?: string): Promise<void> {
+  const mod = await import(url) as AsyncComponentModule;
+  const componentName = name || mod.meta?.name || url.split("/").pop()?.replace(/\.[^.]+$/, "") || "custom";
+  if (!mod.default) throw new Error(`External module ${url} does not export a default component`);
+  registerComponent(componentName, mod.default, mod.meta);
+}
+
+registerComponent("input", TextInput, { name: "input", displayName: "Text Input", category: "basic" });
+registerComponent("textarea", TextArea, { name: "textarea", displayName: "Text Area", category: "basic" });
+registerComponent("number", NumberInput, { name: "number", displayName: "Number", category: "basic" });
+registerComponent("password", PasswordInput, { name: "password", displayName: "Password", category: "basic" });
+registerComponent("select", SelectInput, { name: "select", displayName: "Select", category: "basic" });
+registerComponent("radio", RadioGroup, { name: "radio", displayName: "Radio", category: "basic" });
+registerComponent("checkbox", CheckboxGroup, { name: "checkbox", displayName: "Checkbox", category: "basic" });
+registerComponent("switch", SwitchInput, { name: "switch", displayName: "Switch", category: "basic" });
+registerComponent("datePicker", DatePickerField, { name: "datePicker", displayName: "Date Picker", category: "basic" });
+registerComponent("dateRange", DateRangePickerField, { name: "dateRange", displayName: "Date Range", category: "basic" });
+registerComponent("timePicker", TimePickerField, { name: "timePicker", displayName: "Time Picker", category: "basic" });
+registerComponent("userPicker", UserPicker, { name: "userPicker", displayName: "User Picker", category: "business" });
+registerComponent("deptPicker", DeptPicker, { name: "deptPicker", displayName: "Department Picker", category: "business" });
+registerComponent("fileUploader", FileUploader, { name: "fileUploader", displayName: "File Uploader", category: "business" });
+
+// Example async component registration (lazy-loaded)
+registerAsyncComponent(
+  "signaturePad",
+  () => import("../examples/SignaturePad"),
+  { name: "signaturePad", displayName: "Signature Pad", category: "custom" }
+);

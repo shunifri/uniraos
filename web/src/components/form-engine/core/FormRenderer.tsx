@@ -7,7 +7,7 @@
 import React, { useRef, useEffect, useReducer, useCallback } from "react";
 import { Form, Row, Col } from "antd";
 import type { RaosFormSchema, RaosFieldSchema, FieldState } from "../types";
-import { getComponent } from "../registry/componentRegistry";
+import { getComponent, getComponentAsync, hasComponent } from "../registry/componentRegistry";
 import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField } from "./ValidationEngine";
@@ -292,6 +292,31 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
     [store, schema, onSubmit]
   );
 
+  // Async component loading state
+  const [asyncComponents, setAsyncComponents] = React.useState<Map<string, React.FC<any>>>(new Map());
+  const [loadingAsync, setLoadingAsync] = React.useState<Set<string>>(new Set());
+
+  const loadAsyncComponent = useCallback(async (widgetName: string) => {
+    if (asyncComponents.has(widgetName) || loadingAsync.has(widgetName)) return;
+    setLoadingAsync((prev) => new Set(prev).add(widgetName));
+    try {
+      const Comp = await getComponentAsync(widgetName);
+      setAsyncComponents((prev) => {
+        const next = new Map(prev);
+        next.set(widgetName, Comp);
+        return next;
+      });
+    } catch (err) {
+      console.error(`Failed to load async component "${widgetName}":`, err);
+    } finally {
+      setLoadingAsync((prev) => {
+        const next = new Set(prev);
+        next.delete(widgetName);
+        return next;
+      });
+    }
+  }, [asyncComponents, loadingAsync]);
+
   // 字段渲染
   const renderField = (name: string, fieldSchema: RaosFieldSchema) => {
     const state = store.getState();
@@ -305,14 +330,31 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
     const errors = state.errors[name] || [];
     const widgetName = fieldSchema["ui:widget"] || "input";
 
-    let Component: React.FC<any>;
+    let Component: React.FC<any> | undefined;
     try {
       Component = getComponent(widgetName);
-    } catch (err) {
+    } catch {
+      Component = asyncComponents.get(widgetName);
+      if (!Component && hasComponent(widgetName) && !loadingAsync.has(widgetName)) {
+        loadAsyncComponent(widgetName);
+        return (
+          <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
+            <Form.Item label={fieldSchema.title}>
+              <div style={{ color: "#999", padding: "8px 0" }}>Loading component...</div>
+            </Form.Item>
+          </Col>
+        );
+      }
+    }
+
+    if (!Component) {
       return (
-        <div key={name} style={{ color: "red", marginBottom: 8 }}>
-          组件加载失败: {(err as Error).message}
-        </div>
+        <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
+          <Form.Item label={fieldSchema.title} validateStatus="error"
+            help={`Component "${widgetName}" not found`}>
+            <div style={{ color: "red" }}>Unknown component: {widgetName}</div>
+          </Form.Item>
+        </Col>
       );
     }
 
