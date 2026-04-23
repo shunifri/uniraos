@@ -14,6 +14,9 @@ import { TimePickerField } from "../components/TimePickerField.js";
 import { UserPicker } from "../components/UserPicker.js";
 import { DeptPicker } from "../components/DeptPicker.js";
 import { FileUploader } from "../components/FileUploader.js";
+import { ArrayField } from "../components/ArrayField.js";
+import { GroupField } from "../components/GroupField.js";
+import { TableField } from "../components/TableField.js";
 
 export interface FieldRendererProps {
   schema: RaosFieldSchema;
@@ -132,6 +135,9 @@ registerComponent("timePicker", TimePickerField, { name: "timePicker", displayNa
 registerComponent("userPicker", UserPicker, { name: "userPicker", displayName: "User Picker", category: "business" });
 registerComponent("deptPicker", DeptPicker, { name: "deptPicker", displayName: "Department Picker", category: "business" });
 registerComponent("fileUploader", FileUploader, { name: "fileUploader", displayName: "File Uploader", category: "business" });
+registerComponent("array", ArrayField, { name: "array", displayName: "Array", category: "advanced" });
+registerComponent("group", GroupField, { name: "group", displayName: "Group", category: "advanced" });
+registerComponent("table", TableField, { name: "table", displayName: "Table", category: "advanced" });
 
 // Example async component registration (lazy-loaded)
 registerAsyncComponent(
