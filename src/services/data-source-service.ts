@@ -40,9 +40,52 @@ export async function resolveDataSource(
       return resolveExpression(dataSource, formData);
     case 'workflowVar':
       return resolveWorkflowVar(dataSource, formData);
-    case 'database':
-      // Phase 15 实现
-      return { options: [] };
+    case 'database': {
+      const dbConfig = dataSource.database;
+      if (!dbConfig) return { options: [] };
+
+      // 解析 queryParams，替换 formField 来源的值
+      const params: any[] = [];
+      for (const param of dbConfig.queryParams || []) {
+        if (param.source === 'formField' && param.sourceField) {
+          params.push(request.formData[param.sourceField] ?? null);
+        } else if (param.source === 'static') {
+          params.push(param.value ?? null);
+        } else if (param.source === 'userContext') {
+          // TODO: 从 req.user 获取
+          params.push(null);
+        } else {
+          params.push(param.value ?? null);
+        }
+      }
+
+      try {
+        const { executeQuery } = await import('./database-connector.js');
+        const rows = await executeQuery(
+          dbConfig.connectionId!,
+          dbConfig.query,
+          params,
+          dbConfig.timeout || 5000
+        );
+
+        const options = rows.map((row: any) => ({
+          label: row[dbConfig.labelField],
+          value: row[dbConfig.valueField],
+          extra: dbConfig.extraFields?.reduce((acc: any, field: string) => {
+            acc[field] = row[field];
+            return acc;
+          }, {}),
+        }));
+
+        return {
+          options,
+          total: options.length,
+        };
+      } catch (error) {
+        console.error('Database query failed:', error);
+        return { options: [] };
+      }
+    }
     default:
       return { options: [] };
   }

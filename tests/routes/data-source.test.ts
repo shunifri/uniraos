@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
+
+vi.mock('../../src/services/database-connector.js', () => ({
+  executeQuery: vi.fn(),
+}));
 
 const { resolveDataSource } = await import('../../src/services/data-source-service.js');
+const { executeQuery } = await import('../../src/services/database-connector.js');
 
 describe('Data Source Service', () => {
   describe('static data source', () => {
@@ -535,6 +541,194 @@ describe('Data Source Service', () => {
         },
         formData: {},
       });
+      expect(result.options).toHaveLength(0);
+    });
+  });
+
+  describe('database data source', () => {
+    beforeEach(() => {
+      (executeQuery as Mock).mockReset();
+    });
+
+    it('should resolve database options with query params', async () => {
+      (executeQuery as Mock).mockResolvedValueOnce([
+        { id: 'u1', name: '张三', age: 25 },
+        { id: 'u2', name: '李四', age: 30 },
+      ]);
+
+      const result = await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: '员工',
+          'x-dataSource': {
+            type: 'database',
+            database: {
+              connectionId: 'conn-1',
+              query: 'SELECT * FROM users WHERE dept_id = ?',
+              queryParams: [
+                { source: 'formField', sourceField: 'department' },
+              ],
+              labelField: 'name',
+              valueField: 'id',
+              extraFields: ['age'],
+            },
+          },
+        },
+        formData: { department: 'dept-1' },
+      });
+
+      expect(executeQuery).toHaveBeenCalledWith(
+        'conn-1',
+        'SELECT * FROM users WHERE dept_id = ?',
+        ['dept-1'],
+        5000
+      );
+      expect(result.options).toHaveLength(2);
+      expect(result.options[0]).toEqual({
+        label: '张三',
+        value: 'u1',
+        extra: { age: 25 },
+      });
+      expect(result.options[1]).toEqual({
+        label: '李四',
+        value: 'u2',
+        extra: { age: 30 },
+      });
+      expect(result.total).toBe(2);
+    });
+
+    it('should handle static query params', async () => {
+      (executeQuery as Mock).mockResolvedValueOnce([
+        { id: 'a1', name: 'Item A' },
+      ]);
+
+      await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: 'Test',
+          'x-dataSource': {
+            type: 'database',
+            database: {
+              connectionId: 'conn-1',
+              query: 'SELECT * FROM items WHERE status = ?',
+              queryParams: [
+                { source: 'static', value: 'active' },
+              ],
+              labelField: 'name',
+              valueField: 'id',
+            },
+          },
+        },
+        formData: {},
+      });
+
+      expect(executeQuery).toHaveBeenCalledWith(
+        'conn-1',
+        'SELECT * FROM items WHERE status = ?',
+        ['active'],
+        5000
+      );
+    });
+
+    it('should handle multiple query params', async () => {
+      (executeQuery as Mock).mockResolvedValueOnce([]);
+
+      await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: 'Test',
+          'x-dataSource': {
+            type: 'database',
+            database: {
+              connectionId: 'conn-1',
+              query: 'SELECT * WHERE a = ? AND b = ?',
+              queryParams: [
+                { source: 'formField', sourceField: 'fieldA' },
+                { source: 'static', value: 42 },
+              ],
+              labelField: 'name',
+              valueField: 'id',
+            },
+          },
+        },
+        formData: { fieldA: 'valueA' },
+      });
+
+      expect(executeQuery).toHaveBeenCalledWith(
+        'conn-1',
+        'SELECT * WHERE a = ? AND b = ?',
+        ['valueA', 42],
+        5000
+      );
+    });
+
+    it('should use custom timeout', async () => {
+      (executeQuery as Mock).mockResolvedValueOnce([]);
+
+      await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: 'Test',
+          'x-dataSource': {
+            type: 'database',
+            database: {
+              connectionId: 'conn-1',
+              query: 'SELECT 1',
+              queryParams: [],
+              labelField: 'name',
+              valueField: 'id',
+              timeout: 10000,
+            },
+          },
+        },
+        formData: {},
+      });
+
+      expect(executeQuery).toHaveBeenCalledWith(
+        'conn-1',
+        'SELECT 1',
+        [],
+        10000
+      );
+    });
+
+    it('should return empty options when database config is missing', async () => {
+      const result = await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: 'Test',
+          'x-dataSource': {
+            type: 'database',
+          },
+        },
+        formData: {},
+      });
+
+      expect(result.options).toHaveLength(0);
+      expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it('should return empty options on query error', async () => {
+      (executeQuery as Mock).mockRejectedValueOnce(new Error('DB error'));
+
+      const result = await resolveDataSource({
+        fieldSchema: {
+          type: 'string',
+          title: 'Test',
+          'x-dataSource': {
+            type: 'database',
+            database: {
+              connectionId: 'conn-1',
+              query: 'SELECT * FROM users',
+              queryParams: [],
+              labelField: 'name',
+              valueField: 'id',
+            },
+          },
+        },
+        formData: {},
+      });
+
       expect(result.options).toHaveLength(0);
     });
   });

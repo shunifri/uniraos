@@ -120,5 +120,40 @@ describe("LinkageEngine", () => {
         "employeeId"
       );
     });
+
+    it("查找级联依赖", () => {
+      const properties = {
+        employeeId: {
+          "x-dataSource": {
+            type: "remote",
+            url: "/api/employees",
+            cascade: {
+              dependency: "department",
+            },
+          },
+        },
+      };
+      expect(findDependentFields("department", properties)).toContain(
+        "employeeId"
+      );
+    });
+
+    it("查找多级联依赖", () => {
+      const properties = {
+        employeeId: {
+          "x-dataSource": {
+            type: "remote",
+            url: "/api/employees",
+            cascade: {
+              dependency: ["department", "team"],
+            },
+          },
+        },
+      };
+      expect(findDependentFields("department", properties)).toContain(
+        "employeeId"
+      );
+      expect(findDependentFields("team", properties)).toContain("employeeId");
+    });
   });
 });

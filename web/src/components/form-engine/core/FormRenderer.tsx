@@ -60,6 +60,93 @@ function applyLinkageToField(
 // FormRenderer 组件
 // ───────────────────────────────────────────────────────────────
 
+async function loadFieldDataSource(
+  fieldName: string,
+  fieldSchema: RaosFieldSchema,
+  store: ReturnType<typeof createFormStore>,
+  timersRef: React.MutableRefObject<Map<string, ReturnType<typeof setTimeout>>>
+) {
+  const dataSource = fieldSchema['x-dataSource']!;
+  const cascade = dataSource.cascade!;
+
+  // 1. 设置 loading 状态
+  store.getState().setFieldState(fieldName, { loading: true });
+
+  // 2. 根据 executeWhen 判断是否需要加载
+  const dependencies = Array.isArray(cascade.dependency)
+    ? cascade.dependency
+    : [cascade.dependency];
+
+  const formData = store.getState().formData;
+
+  if (cascade.executeWhen === 'allFilled') {
+    const allFilled = dependencies.every((dep) => {
+      const val = formData[dep];
+      return val !== undefined && val !== null && val !== '';
+    });
+    if (!allFilled) {
+      store.getState().setFieldState(fieldName, { loading: false, options: [] });
+      if (cascade.clearOnChange) {
+        store.getState().setFieldValue(fieldName, undefined);
+      }
+      return;
+    }
+  }
+
+  // 3. 防抖
+  const debounceMs = cascade.debounce || 300;
+  const existingTimer = timersRef.current.get(fieldName);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(async () => {
+    try {
+      const response = await fetch('/api/form/data-source/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fieldSchema,
+          formData,
+          dependencyValues: Object.fromEntries(
+            dependencies.map((dep) => [dep, formData[dep]])
+          ),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        store.getState().setFieldState(fieldName, {
+          loading: false,
+          options: result.data.options,
+        });
+
+        if (cascade.clearOnChange) {
+          const currentValue = store.getState().getFieldValue(fieldName);
+          const hasValue = result.data.options.some(
+            (opt: any) => opt.value === currentValue
+          );
+          if (!hasValue) {
+            store.getState().setFieldValue(fieldName, undefined);
+          }
+        }
+      } else {
+        store.getState().setFieldState(fieldName, { loading: false });
+      }
+    } catch (error) {
+      console.error(`Failed to load data source for ${fieldName}:`, error);
+      store.getState().setFieldState(fieldName, { loading: false });
+    } finally {
+      if (timersRef.current.get(fieldName) === timer) {
+        timersRef.current.delete(fieldName);
+      }
+    }
+  }, debounceMs);
+
+  timersRef.current.set(fieldName, timer);
+}
+
 export const FormRenderer: React.FC<FormRendererProps> = ({
   schema,
   initialData,
@@ -73,6 +160,9 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
     storeRef.current = createFormStore({ schema, initialData, readOnly });
   }
   const store = storeRef.current;
+
+  // 防抖定时器管理
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // 强制重渲染机制
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
@@ -122,6 +212,9 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         const depSchema = schema.properties[depField];
         if (depSchema) {
           applyLinkageToField(store, depField, depSchema);
+        }
+        if (depSchema?.['x-dataSource']?.cascade) {
+          loadFieldDataSource(depField, depSchema, store, timersRef);
         }
       }
     },

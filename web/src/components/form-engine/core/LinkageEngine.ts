@@ -167,6 +167,16 @@ export function findDependentFields(
         }
       }
     }
+
+    // 检查 x-dataSource.cascade.dependency 是否包含 changedField
+    if (dataSource?.cascade) {
+      const deps = Array.isArray(dataSource.cascade.dependency)
+        ? dataSource.cascade.dependency
+        : [dataSource.cascade.dependency];
+      if (deps.includes(changedField)) {
+        dependents.add(fieldName);
+      }
+    }
   }
 
   return Array.from(dependents);
