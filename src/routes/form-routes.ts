@@ -5,6 +5,7 @@ import {
   updateFormDefinition, deleteFormDefinition,
   createFormInstance, getFormInstance, updateFormInstance
 } from '../services/form-service.js';
+import { resolveDataSource } from '../services/data-source-service.js';
 
 const router = Router();
 
@@ -101,6 +102,16 @@ router.post('/form/instances/:id/submit', requireAuth, (req, res) => {
     res.json({ success: true, data: instance });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// Data Source Resolver
+router.post('/form/data-source/resolve', requireAuth, async (req, res) => {
+  try {
+    const result = await resolveDataSource(req.body);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
