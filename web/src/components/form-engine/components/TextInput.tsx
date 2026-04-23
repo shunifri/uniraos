@@ -4,10 +4,15 @@ import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const TextInput: React.FC<FieldRendererProps> = ({
   schema,
+  name,
   value,
   onChange,
   onBlur,
+  formData,
   fieldState,
+  readOnly,
+  disabled,
+  ...rest
 }) => {
   return (
     <Input
@@ -19,6 +24,7 @@ export const TextInput: React.FC<FieldRendererProps> = ({
       readOnly={fieldState.readonly}
       status={fieldState.errors?.length ? "error" : undefined}
       {...(schema["ui:props"] || {})}
+      {...rest}
     />
   );
 };

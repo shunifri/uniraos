@@ -4,10 +4,15 @@ import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const SelectInput: React.FC<FieldRendererProps> = ({
   schema,
+  name,
   value,
   onChange,
   onBlur,
+  formData,
   fieldState,
+  readOnly,
+  disabled,
+  ...rest
 }) => {
   const uiProps = schema["ui:props"] || {};
   const options = fieldState.options || schema["x-dataSource"]?.options || [];
@@ -31,6 +36,7 @@ export const SelectInput: React.FC<FieldRendererProps> = ({
       status={fieldState.errors?.length ? "error" : undefined}
       style={{ width: "100%" }}
       {...uiProps}
+      {...rest}
     />
   );
 };

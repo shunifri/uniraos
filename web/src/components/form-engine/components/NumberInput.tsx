@@ -4,10 +4,15 @@ import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const NumberInput: React.FC<FieldRendererProps> = ({
   schema,
+  name,
   value,
   onChange,
   onBlur,
+  formData,
   fieldState,
+  readOnly,
+  disabled,
+  ...rest
 }) => {
   return (
     <InputNumber
@@ -22,6 +27,7 @@ export const NumberInput: React.FC<FieldRendererProps> = ({
       max={schema.maximum}
       style={{ width: "100%" }}
       {...(schema["ui:props"] || {})}
+      {...rest}
     />
   );
 };

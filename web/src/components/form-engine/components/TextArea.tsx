@@ -4,10 +4,15 @@ import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const TextArea: React.FC<FieldRendererProps> = ({
   schema,
+  name,
   value,
   onChange,
   onBlur,
+  formData,
   fieldState,
+  readOnly,
+  disabled,
+  ...rest
 }) => {
   const uiProps = schema["ui:props"] || {};
 
@@ -24,6 +29,7 @@ export const TextArea: React.FC<FieldRendererProps> = ({
       showCount={uiProps.showCount}
       maxLength={uiProps.maxLength ?? schema.maxLength}
       {...uiProps}
+      {...rest}
     />
   );
 };

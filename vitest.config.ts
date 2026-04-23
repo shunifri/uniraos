@@ -5,10 +5,16 @@ export default defineConfig({
   resolve: {
     alias: {
       react: resolve(__dirname, "web/node_modules/react"),
+      "react-dom": resolve(__dirname, "web/node_modules/react-dom"),
+      "react/jsx-runtime": resolve(__dirname, "web/node_modules/react/jsx-runtime.js"),
+      "react/jsx-dev-runtime": resolve(__dirname, "web/node_modules/react/jsx-dev-runtime.js"),
     },
+    dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    environment: "jsdom",
+    setupFiles: ["tests/setup.ts"],
     env: {
       // Qdrant 端口配置 - 与 docker-compose.local.yml 保持一致
       QDRANT_URL: "http://localhost:6334",

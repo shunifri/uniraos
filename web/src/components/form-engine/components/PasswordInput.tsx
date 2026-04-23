@@ -4,10 +4,15 @@ import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const PasswordInput: React.FC<FieldRendererProps> = ({
   schema,
+  name,
   value,
   onChange,
   onBlur,
+  formData,
   fieldState,
+  readOnly,
+  disabled,
+  ...rest
 }) => {
   return (
     <Input.Password
@@ -19,6 +24,7 @@ export const PasswordInput: React.FC<FieldRendererProps> = ({
       readOnly={fieldState.readonly}
       status={fieldState.errors?.length ? "error" : undefined}
       {...(schema["ui:props"] || {})}
+      {...rest}
     />
   );
 };
