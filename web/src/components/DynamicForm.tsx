@@ -16,7 +16,9 @@ export interface DynamicFormProps {
   onChange?: (formData: Record<string, any>) => void;
   onSubmit?: (formData: Record<string, any>) => void;
   onReset?: () => void;
+  onCancel?: () => void;
   loading?: boolean;
+  embedded?: boolean;
 }
 
 const defaultActions: FormAction[] = [
@@ -36,7 +38,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
   onChange,
   onSubmit,
   onReset,
+  onCancel,
   loading,
+  embedded,
 }) => {
   const actions = schema.actions ?? defaultActions;
 
@@ -48,11 +52,13 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
       }
     } else if (action.type === "reset") {
       onReset?.();
+    } else if (action.type === "cancel") {
+      onCancel?.();
     }
   };
 
-  return (
-    <Card title={schema.title} className="dynamic-form">
+  const formContent = (
+    <>
       {schema.description && (
         <div style={{ marginBottom: 16 }}>{schema.description}</div>
       )}
@@ -81,6 +87,16 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           ))}
         </Space>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return formContent;
+  }
+
+  return (
+    <Card title={schema.title} className="dynamic-form">
+      {formContent}
     </Card>
   );
 };

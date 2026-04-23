@@ -4,9 +4,11 @@ import {
   Select, DatePicker, Space, Typography, Flex, Divider,
 } from "antd";
 import {
-  CheckCircleOutlined, CheckOutlined,
+  CheckCircleOutlined, CheckOutlined, CloseCircleOutlined,
   FormOutlined, UnorderedListOutlined, QuestionCircleOutlined,
 } from "@ant-design/icons";
+import DynamicForm from "./DynamicForm";
+import type { RaosFormSchema } from "./form-engine/types";
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -40,6 +42,7 @@ interface ConfirmCardProps {
   onConfirm: (confirmId: string, response: unknown) => void;
   onCancel: (confirmId: string) => void;
   disabled?: boolean;
+  schema?: RaosFormSchema;
 }
 
 const glassCardStyle: React.CSSProperties = {
@@ -79,10 +82,36 @@ export default function ConfirmCard({
   options = [], multiSelect = false, fields = [],
   confirmText = "确定", cancelText = "取消",
   onConfirm, onCancel, disabled = false,
+  schema,
 }: ConfirmCardProps) {
   const [selectedSingle, setSelectedSingle] = useState<string | null>(null);
   const [selectedMulti, setSelectedMulti] = useState<string[]>([]);
   const [form] = Form.useForm();
+
+  // --- NEW FORM ENGINE MODE ---
+  if (schema) {
+    return (
+      <div style={{ ...glassCardStyle, maxWidth: 520 }}>
+        <GlassCardHeader
+          icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
+          title={title}
+        />
+        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+        <DynamicForm
+          schema={schema}
+          embedded
+          onSubmit={(formData) => onConfirm(confirmId, formData)}
+          onCancel={() => onCancel(confirmId)}
+        />
+        {disabled && (
+          <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+            <CheckCircleOutlined style={{ color: "#10B981" }} />
+            <Text style={{ color: "#10B981", fontSize: 12 }}>已提交</Text>
+          </Flex>
+        )}
+      </div>
+    );
+  }
 
   // --- SELECTION MODE --- 统一横排芯片布局
   if (type === "selection") {
@@ -304,23 +333,68 @@ export default function ConfirmCard({
 
   // --- APPROVAL MODE ---
   return (
-    <div style={glassCardStyle}>
+    <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
       <GlassCardHeader
         icon={<QuestionCircleOutlined style={{ color: "white", fontSize: 14 }} />}
         title={title}
       />
-      {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
-      <Space>
-        <Button
-          type="primary"
-          disabled={disabled}
-          style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10 }}
-          onClick={() => onConfirm(confirmId, { approved: true })}>{confirmText}</Button>
-        <Button
-          style={{ borderRadius: 10 }}
-          disabled={disabled}
-          onClick={() => onCancel(confirmId)}>{cancelText}</Button>
-      </Space>
+      {description && <Text type="secondary" style={{ display: "block", marginBottom: 16, fontSize: 13 }}>{description}</Text>}
+      <div style={{ display: "flex", gap: 12 }}>
+        <div
+          onClick={() => { if (!disabled) onConfirm(confirmId, { approved: true }); }}
+          style={{
+            flex: 1,
+            padding: "16px 12px",
+            borderRadius: 14,
+            textAlign: "center",
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            background: "rgba(16, 185, 129, 0.06)",
+            border: "2px solid rgba(16, 185, 129, 0.2)",
+            transition: "all 0.2s",
+          }}
+          onMouseEnter={(e) => {
+            if (!disabled) {
+              e.currentTarget.style.background = "rgba(16, 185, 129, 0.12)";
+              e.currentTarget.style.borderColor = "rgba(16, 185, 129, 0.4)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(16, 185, 129, 0.06)";
+            e.currentTarget.style.borderColor = "rgba(16, 185, 129, 0.2)";
+          }}
+        >
+          <CheckCircleOutlined style={{ fontSize: 28, color: "#10B981", marginBottom: 8, display: "block" }} />
+          <Text strong style={{ color: "#059669", fontSize: 15 }}>{confirmText}</Text>
+        </div>
+        <div
+          onClick={() => { if (!disabled) onCancel(confirmId); }}
+          style={{
+            flex: 1,
+            padding: "16px 12px",
+            borderRadius: 14,
+            textAlign: "center",
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            background: "rgba(239, 68, 68, 0.06)",
+            border: "2px solid rgba(239, 68, 68, 0.2)",
+            transition: "all 0.2s",
+          }}
+          onMouseEnter={(e) => {
+            if (!disabled) {
+              e.currentTarget.style.background = "rgba(239, 68, 68, 0.12)";
+              e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(239, 68, 68, 0.06)";
+            e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.2)";
+          }}
+        >
+          <CloseCircleOutlined style={{ fontSize: 28, color: "#EF4444", marginBottom: 8, display: "block" }} />
+          <Text strong style={{ color: "#DC2626", fontSize: 15 }}>{cancelText}</Text>
+        </div>
+      </div>
       {disabled && (
         <Flex align="center" gap={4} style={{ marginTop: 12 }}>
           <CheckCircleOutlined style={{ color: "#10B981" }} />

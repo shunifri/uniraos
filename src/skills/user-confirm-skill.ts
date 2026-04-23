@@ -4,8 +4,69 @@
  * AI 调用此 Skill 时会暂停对话，在前端显示交互卡片（单选/多选/表单/审批）。
  * 用户操作后，结果作为 tool result 注入回对话。
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
-import { Autonomy } from "../types/index.js";
+import { defineSkill, Autonomy } from "../types/index.js";
+
+function convertFieldsToSchema(
+  fields: any[],
+  title?: string,
+  description?: string,
+  confirmText?: string,
+  cancelText?: string
+): any {
+  const properties: Record<string, any> = {};
+  const required: string[] = [];
+
+  const widgetMap: Record<string, string> = {
+    text: "input",
+    number: "number",
+    select: "select",
+    radio: "radio",
+    checkbox: "checkbox",
+    textarea: "textarea",
+    date: "datePicker",
+  };
+
+  for (const field of fields) {
+    properties[field.key] = {
+      type: field.type === "number" ? "number" : "string",
+      title: field.label || field.key,
+      "ui:widget": widgetMap[field.type] || "input",
+      required: field.required,
+    };
+
+    if (field.required) required.push(field.key);
+
+    if (field.placeholder) {
+      properties[field.key]["ui:placeholder"] = field.placeholder;
+    }
+
+    if (field.defaultValue !== undefined) {
+      properties[field.key].default = field.defaultValue;
+    }
+
+    if (field.options) {
+      properties[field.key]["x-dataSource"] = {
+        type: "static",
+        options: field.options.map((opt: any) => ({
+          label: opt.label,
+          value: opt.id,
+        })),
+      };
+    }
+  }
+
+  return {
+    type: "object",
+    title,
+    description,
+    properties,
+    required,
+    actions: [
+      { type: "submit", label: confirmText ?? "确定", primary: true },
+      { type: "cancel", label: cancelText ?? "取消" },
+    ],
+  };
+}
 
 // 全局确认队列：confirmId → { resolve, reject, timeout }
 export const confirmQueue = new Map<string, {
@@ -15,25 +76,25 @@ export const confirmQueue = new Map<string, {
 }>();
 
 export function createUserConfirmSkill() {
-  return defineSystemSkill({
+  return defineSkill({
     name: "user_confirm",
     visible: true,
-    autonomy: Autonomy.MANUAL,
-    description: `请求用户确认或输入信息。调用后会在前端显示交互卡片，暂停对话等待用户操作。
+    autonomy: Autonomy.GUARDIAN,
+    description: `请求用户确认或输入信息。调用后在前端显示交互卡片，暂停对话等待用户操作。
 
-支持三种模式：
-1. selection — 选项卡片（单选或多选）
-2. form — 表单（AI 决定字段和控件类型）
-3. approval — 简单确认/取消
+模式：
+- selection：选项卡片（单选/多选）
+- form：表单（仅用于自由文本输入，如姓名、地址）
+- approval：确认/取消
 
 参数:
   type("selection"|"form"|"approval"): 交互类型
   title(string): 卡片标题
   description?(string): 补充说明
-  options?(array): 选项列表（selection 模式），每项 { id, label, description? }
-  multiSelect?(boolean): 是否多选（默认 false，仅 selection 模式）
-  fields?(array): 表单字段（form 模式），每项 { key, label, type, required?, options?, placeholder?, defaultValue? }
-    支持的 type: "text"|"number"|"select"|"radio"|"checkbox"|"textarea"|"date"
+  options?(array): 选项列表（selection），每项 { id, label, description? }
+  multiSelect?(boolean): 是否多选（默认 false）
+  fields?(array): 表单字段（form），每项 { key, label, type, required?, options?, placeholder?, defaultValue? }
+    type: "text"|"number"|"select"|"radio"|"checkbox"|"textarea"|"date"
   confirmText?(string): 确认按钮文字（默认"确定"）
   cancelText?(string): 取消按钮文字（默认"取消"）`,
     paramSchema: {
@@ -78,6 +139,31 @@ export function createUserConfirmSkill() {
     timeout: 600000, // 10 分钟等待用户
     handler: async (params) => {
       const confirmId = crypto.randomUUID().slice(0, 12);
+
+      if (params.type === "form") {
+        return {
+          success: true,
+          data: {
+            __formRender: true,
+            __userConfirm: true,
+            confirmId,
+            type: params.type,
+            title: params.title,
+            description: params.description,
+            schema: convertFieldsToSchema(
+              params.fields ?? [],
+              params.title,
+              params.description,
+              params.confirmText,
+              params.cancelText
+            ),
+            fields: params.fields,
+            confirmText: params.confirmText ?? "确定",
+            cancelText: params.cancelText ?? "取消",
+          },
+        };
+      }
+
       return {
         success: true,
         data: {

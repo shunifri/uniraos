@@ -20,7 +20,6 @@ import type { ChatMsg, KbReference } from "./types";
 import { markdownComponents } from "./MarkdownConfig";
 import { useI18nStore } from "@/i18n";
 import { apiFetch } from "@/api";
-import KBReferenceCard from "@/components/KBReferenceCard";
 import ConfirmCard from "@/components/ConfirmCard";
 
 const { Text } = Typography;
@@ -38,7 +37,16 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
 
   // 渲染用户确认卡片
   if (msg.role === "user_confirm") {
-    const data = JSON.parse(msg.content);
+    let data: any;
+    try {
+      data = JSON.parse(msg.content);
+    } catch {
+      return (
+        <div style={{ marginLeft: 46 }}>
+          <Text type="danger" style={{ fontSize: 12 }}>确认卡片数据解析失败</Text>
+        </div>
+      );
+    }
     const isDisabled = confirmedCards.has(data.confirmId);
     return (
       <div style={{ marginLeft: 46 }}>
@@ -50,6 +58,7 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
           options={data.options}
           multiSelect={data.multiSelect}
           fields={data.fields}
+          schema={data.schema}
           confirmText={data.confirmText}
           cancelText={data.cancelText}
           disabled={isDisabled}
@@ -99,7 +108,7 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
     if (msg.content === "__typing__") {
       return (
         <div style={{ display: "flex", gap: 12, alignItems: "center", marginLeft: 4, animation: "fade-in-up 0.3s ease-out" }}>
-          <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10 }} />
+          <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
           <div style={{ display: "flex", gap: 4, padding: "10px 16px", borderRadius: 16, background: "rgba(139, 92, 246, 0.06)" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#8B5CF6", opacity: 0.6, animation: "pulse-border 1.2s infinite" }} />
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#A78BFA", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.2s" }} />
@@ -198,8 +207,8 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
   return (
     <Bubble
       key={msg.id}
-      avatar={<img src="/ai-avatar.png" alt="AI" style={{ width: 36, height: 36, borderRadius: 14 }} />}
-      contentStyle={{ maxWidth: "100%" }}
+      avatar={<img src="/ai-avatar.png" alt="AI" style={{ width: 36, height: 36, borderRadius: 14 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+      styles={{ content: { maxWidth: "100%" } }}
       content={
         <div>
           <XMarkdown
@@ -207,10 +216,27 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
             components={markdownComponents}
           />
           {msg.kbReferences && msg.kbReferences.length > 0 && (
-            <KBReferenceCard
-              references={msg.kbReferences}
-              onViewDoc={onViewKbDoc}
-            />
+            <div style={{ marginTop: 8 }}>
+              {msg.kbReferences.map((ref) => (
+                <div
+                  key={ref.index}
+                  onClick={() => onViewKbDoc(ref.docId, ref.docName)}
+                  className="glass-card"
+                  style={{
+                    padding: "10px 14px",
+                    marginBottom: 8,
+                    borderRadius: 14,
+                    cursor: "pointer",
+                    borderLeft: "3px solid #1890ff",
+                  }}
+                >
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#334155" }}>{ref.docName}</div>
+                  <div style={{ fontSize: 10, color: "#64748B", marginTop: 4, lineHeight: 1.5 }}>
+                    {ref.content.slice(0, 120)}{ref.content.length > 120 ? "..." : ""}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
           {msg.chartOptions && msg.chartOptions.map((option, i) => (
             <div key={i} style={{ height: 400, marginTop: 8 }}>
