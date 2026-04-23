@@ -823,6 +823,36 @@ function runMigrations(db: Database.Database): void {
       try { db.exec(`ALTER TABLE connections ADD COLUMN db_config TEXT`); } catch (_) { }
       try { db.exec(`ALTER TABLE connections ADD COLUMN test_query TEXT`); } catch (_) { }
     },
+    // v15: chat_messages role 增加 user_confirm（修复刷新后 ConfirmCard 不渲染）
+    () => {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE chat_messages_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          role TEXT NOT NULL CHECK(role IN ('user','assistant','tool','system','thinking','strategy','user_confirm')),
+          content TEXT NOT NULL DEFAULT '',
+          skill_name TEXT,
+          status TEXT,
+          is_error INTEGER NOT NULL DEFAULT 0,
+          extra TEXT DEFAULT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        INSERT INTO chat_messages_new
+          SELECT id, conversation_id, role, content, skill_name, status, is_error, extra, created_at
+          FROM chat_messages;
+
+        DROP TABLE chat_messages;
+
+        ALTER TABLE chat_messages_new RENAME TO chat_messages;
+
+        CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id);
+
+        PRAGMA foreign_keys = ON;
+      `);
+    },
   ];
 
   // 执行未应用的迁移

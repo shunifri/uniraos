@@ -129,7 +129,9 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
           const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
           insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[saveMsg] failed: role=${role}, convId=${convId}, error=${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     async function updateConvTitle(title: string) {

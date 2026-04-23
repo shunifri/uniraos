@@ -910,6 +910,16 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE connections DROP COLUMN db_config;
       ALTER TABLE connections DROP COLUMN test_query;
     `
+  },
+  {
+    version: 8,
+    name: 'chat_messages_role_user_confirm',
+    up: `
+      ALTER TABLE chat_messages MODIFY COLUMN role ENUM('user', 'assistant', 'tool', 'system', 'thinking', 'strategy', 'user_confirm') NOT NULL COMMENT '角色：user-用户, assistant-助手, tool-工具, system-系统, thinking-思考, strategy-策略, user_confirm-用户确认卡片';
+    `,
+    down: `
+      ALTER TABLE chat_messages MODIFY COLUMN role ENUM('user', 'assistant', 'tool', 'system', 'thinking', 'strategy') NOT NULL COMMENT '角色：user-用户, assistant-助手, tool-工具, system-系统, thinking-思考, strategy-策略';
+    `
   }
 ];
 
