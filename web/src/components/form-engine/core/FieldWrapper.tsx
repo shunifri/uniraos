@@ -1,5 +1,5 @@
 import React from "react";
-import { Col, Form } from "antd";
+import { Col, Form, theme } from "antd";
 import { getComponent, getComponentAsync, hasComponent } from "../registry/componentRegistry";
 import type { RaosFieldSchema, FieldState } from "../types";
 
@@ -20,6 +20,7 @@ interface FieldWrapperProps {
 
 const FieldWrapper: React.FC<FieldWrapperProps> = React.memo(
   ({ name, fieldSchema, fieldState, value, errors, formData, readOnly, onChange, onBlur, asyncComponents, loadingAsync, onLoadAsync }) => {
+    const { token } = theme.useToken();
     const widgetName = fieldSchema["ui:widget"] || "input";
 
     let Component: React.FC<any> | undefined;
@@ -32,7 +33,7 @@ const FieldWrapper: React.FC<FieldWrapperProps> = React.memo(
         return (
           <Col key={name} span={fieldSchema["ui:colSpan"] || 24}>
             <Form.Item label={fieldSchema.title}>
-              <div style={{ color: "#999", padding: "8px 0" }}>Loading component...</div>
+              <div style={{ color: token.colorTextDisabled, padding: "8px 0" }}>Loading component...</div>
             </Form.Item>
           </Col>
         );

@@ -62,10 +62,10 @@ const SignaturePad: React.FC<FieldRendererProps> = ({ value, onChange, readOnly,
         width={400}
         height={150}
         style={{
-          border: "1px solid #d9d9d9",
+          border: "1px solid var(--ant-color-border)",
           borderRadius: 4,
           cursor: readOnly || disabled ? "not-allowed" : "crosshair",
-          background: readOnly || disabled ? "#f5f5f5" : "#fff",
+          background: readOnly || disabled ? "var(--ant-color-fill-secondary)" : "var(--ant-color-bg-container)",
         }}
         onMouseDown={startDraw}
         onMouseMove={draw}

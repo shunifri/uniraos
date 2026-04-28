@@ -15,7 +15,7 @@ const chipStyle = (
   opacity: isDisabled ? 0.6 : 1,
   transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
   background: isSelected ? token.colorPrimary : token.colorFillTertiary,
-  color: isSelected ? "#fff" : token.colorText,
+  color: isSelected ? token.colorTextLightSolid : token.colorText,
   border: `1px solid ${isSelected ? "transparent" : token.colorBorderSecondary}`,
   boxShadow: isSelected ? `0 2px 8px ${token.colorPrimaryBorderHover ?? token.colorPrimary}` : "none",
   whiteSpace: "nowrap" as const,
