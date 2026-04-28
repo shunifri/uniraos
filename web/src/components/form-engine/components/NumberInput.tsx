@@ -20,8 +20,8 @@ export const NumberInput: React.FC<FieldRendererProps> = ({
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"]}
-      disabled={fieldState.disabled}
-      readOnly={fieldState.readonly}
+      disabled={fieldState.disabled || disabled}
+      readOnly={fieldState.readonly || readOnly}
       status={fieldState.errors?.length ? "error" : undefined}
       min={schema.minimum}
       max={schema.maximum}

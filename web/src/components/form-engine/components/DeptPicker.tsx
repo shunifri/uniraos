@@ -41,7 +41,7 @@ export const DeptPicker: React.FC<FieldRendererProps> = ({
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"] || formT("placeholder.dept")}
-      disabled={fieldState.disabled}
+      disabled={fieldState.disabled || disabled || readOnly}
       treeData={treeData}
       loading={fieldState.loading}
       showSearch

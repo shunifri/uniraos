@@ -28,7 +28,7 @@ function convertFieldsToSchema(
 
   for (const field of fields) {
     properties[field.key] = {
-      type: field.type === "number" ? "number" : "string",
+      type: field.type === "number" ? "number" : field.type === "checkbox" ? "array" : "string",
       title: field.label || field.key,
       "ui:widget": widgetMap[field.type] || "input",
       required: field.required,
@@ -164,13 +164,13 @@ export function createUserConfirmSkill() {
             title: params.title,
             description: params.description,
             schema: convertFieldsToSchema(
-              params.fields ?? [],
-              params.title,
-              params.description,
-              params.confirmText,
-              params.cancelText
+              (params.fields as any[]) ?? [],
+              params.title as string,
+              params.description as string,
+              params.confirmText as string,
+              params.cancelText as string
             ),
-            fields: params.fields,
+            fields: params.fields as any[],
             confirmText: params.confirmText ?? "确定",
             cancelText: params.cancelText ?? "取消",
           },

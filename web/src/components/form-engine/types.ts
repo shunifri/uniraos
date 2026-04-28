@@ -9,6 +9,12 @@
 // 根级 Schema
 // ───────────────────────────────────────────────────────────────
 
+export interface CrossFieldValidationRule {
+  expr: string;
+  message: string;
+  targetFields?: string[];
+}
+
 export interface RaosFormSchema {
   type: "object";
   title?: string;
@@ -17,6 +23,7 @@ export interface RaosFormSchema {
   required?: string[];
   layout?: FormLayout;
   actions?: FormAction[];
+  "x-crossFieldValidation"?: CrossFieldValidationRule[];
 }
 
 // ───────────────────────────────────────────────────────────────

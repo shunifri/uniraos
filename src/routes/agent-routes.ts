@@ -209,6 +209,10 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
     try {
       const processEvent = async (eventName: string, eventData: any) => {
+        // DEBUG: log all tool_result events
+        if (eventName === "tool_result") {
+          console.warn("[DEBUG tool_result] skillName=", eventData?.skillName, "result.data?.__userConfirm=", eventData?.result?.data?.__userConfirm, "result.data keys=", eventData?.result?.data ? Object.keys(eventData.result.data) : "undefined", "result.success=", eventData?.result?.success);
+        }
         // 拦截 user_confirm：当 tool_result 包含 __userConfirm 时，改为发送 user_confirm 事件
         if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
           write("user_confirm", eventData.result.data);
@@ -224,9 +228,12 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
           });
           return;
         }
-        // user_confirm 事件直接透传（来自 AgentLoop 路径）
+        // user_confirm 事件直接透传，同时保存到数据库以便刷新后恢复
         if (eventName === "user_confirm") {
           write("user_confirm", eventData);
+          await saveMsg("user_confirm", JSON.stringify(eventData), {
+            skillName: pendingToolName || eventData.skillName || "user_confirm",
+          });
           return;
         }
 

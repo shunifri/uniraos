@@ -67,7 +67,7 @@ const FieldWrapper: React.FC<FieldWrapperProps> = React.memo(
             formData={formData}
             fieldState={fieldState}
             readOnly={readOnly}
-            disabled={fieldState.disabled}
+            disabled={fieldState.disabled || readOnly}
             id={name}
           />
         </Form.Item>

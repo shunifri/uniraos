@@ -1,4 +1,4 @@
-import { useI18nStore } from "../../../i18n";
+import { useI18nStore, type TranslationKey } from "../../../i18n";
 
 const builtInZh: Record<string, string> = {
   "validation.required": "此字段为必填项",
@@ -59,7 +59,7 @@ export function formT(key: string, params?: Record<string, string | number>): st
   try {
     const store = useI18nStore.getState?.();
     if (store) {
-      text = store.t(key);
+      text = store.t(key as TranslationKey);
       if (text !== key) return interpolate(text, params);
     }
   } catch {

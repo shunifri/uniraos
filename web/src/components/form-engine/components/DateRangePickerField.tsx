@@ -1,6 +1,6 @@
 import React from "react";
 import { DatePicker } from "antd";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
 
 export const DateRangePickerField: React.FC<FieldRendererProps> = ({
@@ -9,8 +9,10 @@ export const DateRangePickerField: React.FC<FieldRendererProps> = ({
   onChange,
   onBlur,
   fieldState,
+  readOnly,
+  disabled,
 }) => {
-  const rangeValue =
+  const rangeValue: [Dayjs, Dayjs] | null =
     Array.isArray(value) && value.length === 2
       ? [dayjs(value[0]), dayjs(value[1])]
       : null;
@@ -29,8 +31,8 @@ export const DateRangePickerField: React.FC<FieldRendererProps> = ({
         }
       }}
       onBlur={onBlur}
-      disabled={fieldState.disabled}
-      readOnly={fieldState.readonly}
+      disabled={fieldState.disabled || disabled}
+      readOnly={fieldState.readonly || readOnly}
       status={fieldState.errors?.length ? "error" : undefined}
       style={{ width: "100%" }}
       {...(schema["ui:props"] || {})}

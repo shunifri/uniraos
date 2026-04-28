@@ -74,12 +74,12 @@ export const FileUploader: React.FC<FieldRendererProps> = ({
       beforeUpload={beforeUpload}
       accept={accept}
       maxCount={maxCount}
-      disabled={fieldState.disabled}
+      disabled={fieldState.disabled || disabled || readOnly}
       multiple={maxCount > 1}
       {...uiProps}
       {...rest}
     >
-      <Button icon={<UploadOutlined />} disabled={fieldState.disabled}>
+      <Button icon={<UploadOutlined />} disabled={fieldState.disabled || disabled || readOnly}>
         {uiProps.uploadText || "点击上传"}
       </Button>
     </Upload>

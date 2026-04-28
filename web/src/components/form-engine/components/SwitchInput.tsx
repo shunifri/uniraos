@@ -7,6 +7,8 @@ export const SwitchInput: React.FC<FieldRendererProps> = ({
   value,
   onChange,
   fieldState,
+  readOnly,
+  disabled,
 }) => {
   const uiProps = schema["ui:props"] || {};
 
@@ -14,7 +16,7 @@ export const SwitchInput: React.FC<FieldRendererProps> = ({
     <Switch
       checked={!!value}
       onChange={(checked) => onChange(checked)}
-      disabled={fieldState.disabled}
+      disabled={fieldState.disabled || disabled || readOnly}
       checkedChildren={uiProps.checkedChildren}
       unCheckedChildren={uiProps.unCheckedChildren}
     />

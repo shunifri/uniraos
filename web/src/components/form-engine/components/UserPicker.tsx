@@ -42,7 +42,7 @@ export const UserPicker: React.FC<FieldRendererProps> = ({
       onChange={(val) => onChange(val)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"] || formT("placeholder.user")}
-      disabled={fieldState.disabled}
+      disabled={fieldState.disabled || disabled || readOnly}
       options={options}
       loading={fieldState.loading}
       mode={uiProps.multiple ? "multiple" : undefined}

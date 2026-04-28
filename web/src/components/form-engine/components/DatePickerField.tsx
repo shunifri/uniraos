@@ -10,6 +10,8 @@ export const DatePickerField: React.FC<FieldRendererProps> = ({
   onChange,
   onBlur,
   fieldState,
+  readOnly,
+  disabled,
 }) => {
   return (
     <DatePicker
@@ -17,8 +19,8 @@ export const DatePickerField: React.FC<FieldRendererProps> = ({
       onChange={(date) => onChange(date ? date.format("YYYY-MM-DD") : null)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"] || formT("placeholder.date")}
-      disabled={fieldState.disabled}
-      readOnly={fieldState.readonly}
+      disabled={fieldState.disabled || disabled}
+      readOnly={fieldState.readonly || readOnly}
       status={fieldState.errors?.length ? "error" : undefined}
       style={{ width: "100%" }}
       {...(schema["ui:props"] || {})}

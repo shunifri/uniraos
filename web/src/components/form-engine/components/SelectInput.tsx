@@ -1,59 +1,85 @@
 import React from "react";
-import { Select, Segmented } from "antd";
+import { Select, theme } from "antd";
 import type { FieldRendererProps } from "../registry/componentRegistry.js";
-import { formT } from "../i18n/form-i18n";
+
+const chipStyle = (
+  token: any,
+  isSelected: boolean,
+  isDisabled?: boolean
+): React.CSSProperties => ({
+  padding: `${token.paddingXS + 2}px ${token.paddingSM + 6}px`,
+  borderRadius: token.borderRadiusSM * 5,
+  fontSize: token.fontSize,
+  fontWeight: token.fontWeightStrong ?? 500,
+  cursor: isDisabled ? "default" : "pointer",
+  opacity: isDisabled ? 0.6 : 1,
+  transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+  background: isSelected ? token.colorPrimary : token.colorFillTertiary,
+  color: isSelected ? "#fff" : token.colorText,
+  border: `1px solid ${isSelected ? "transparent" : token.colorBorderSecondary}`,
+  boxShadow: isSelected ? `0 2px 8px ${token.colorPrimaryBorderHover ?? token.colorPrimary}` : "none",
+  whiteSpace: "nowrap" as const,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  userSelect: "none",
+});
 
 export const SelectInput: React.FC<FieldRendererProps> = ({
   schema,
-  name,
   value,
   onChange,
-  onBlur,
-  formData,
   fieldState,
   readOnly,
-  disabled,
-  ...rest
 }) => {
-  const uiProps = schema["ui:props"] || {};
   const options = fieldState.options || schema["x-dataSource"]?.options || [];
-  const variant = uiProps.variant || "default";
-  const isMultiple = uiProps.multiple;
+  const isDisabled = fieldState.disabled || readOnly;
+  const variant = schema["ui:props"]?.variant || "segmented";
+  const { token } = theme.useToken();
 
-  const mappedOptions = options.map((opt) => ({
-    label: opt.label,
-    value: opt.value,
-    disabled: opt.disabled,
-  }));
-
-  // 单选 + variant=segmented 时使用 Segmented 分段控制器
-  if (!isMultiple && variant === "segmented") {
+  // dropdown: 原生 Antd Select
+  if (variant === "dropdown") {
     return (
-      <Segmented
+      <Select
         value={value}
-        onChange={(val) => onChange(val)}
-        disabled={fieldState.disabled}
-        options={mappedOptions}
+        onChange={onChange}
+        disabled={isDisabled}
+        placeholder={schema["ui:placeholder"] || "请选择"}
+        style={{ width: "100%" }}
+        options={options.map((opt: any) => ({ label: opt.label, value: opt.value }))}
+        allowClear
       />
     );
   }
 
+  // segmented / tag / default: chip 样式（保持向后兼容）
   return (
-    <Select
-      value={value}
-      onChange={(val) => onChange(val)}
-      onBlur={onBlur}
-      placeholder={schema["ui:placeholder"] || formT("placeholder.select")}
-      disabled={fieldState.disabled}
-      options={mappedOptions}
-      loading={fieldState.loading}
-      mode={isMultiple ? "multiple" : undefined}
-      showSearch={uiProps.showSearch}
-      allowClear={uiProps.allowClear}
-      status={fieldState.errors?.length ? "error" : undefined}
-      style={{ width: "100%" }}
-      {...uiProps}
-      {...rest}
-    />
+    <div style={{ display: "flex", gap: token.paddingXS, flexWrap: "wrap" }}>
+      {options.map((opt: any) => {
+        const isSelected = value === opt.value;
+        return (
+          <div
+            key={String(opt.value)}
+            onClick={() => {
+              if (isDisabled) return;
+              onChange(opt.value);
+            }}
+            style={chipStyle(token, isSelected, isDisabled)}
+            onMouseEnter={(e) => {
+              if (isDisabled || isSelected) return;
+              e.currentTarget.style.background = token.colorFillSecondary;
+              e.currentTarget.style.borderColor = token.colorPrimaryBorder;
+            }}
+            onMouseLeave={(e) => {
+              if (isDisabled || isSelected) return;
+              e.currentTarget.style.background = token.colorFillTertiary;
+              e.currentTarget.style.borderColor = token.colorBorderSecondary;
+            }}
+          >
+            {opt.label}
+          </div>
+        );
+      })}
+    </div>
   );
 };

@@ -191,7 +191,7 @@ export function findDependentFields(
   // Limit cache size to prevent memory leaks
   if (dependentFieldsCache.size > 1000) {
     const firstKey = dependentFieldsCache.keys().next().value;
-    dependentFieldsCache.delete(firstKey);
+    if (firstKey) dependentFieldsCache.delete(firstKey);
   }
   return result;
 }

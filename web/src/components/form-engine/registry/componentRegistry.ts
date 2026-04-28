@@ -116,7 +116,7 @@ export function getComponent(name: string): FieldComponent {
 }
 
 export async function loadExternalComponent(url: string, name?: string): Promise<void> {
-  const mod = await import(url) as AsyncComponentModule;
+  const mod = await import(/* @vite-ignore */ url) as AsyncComponentModule;
   const componentName = name || mod.meta?.name || url.split("/").pop()?.replace(/\.[^.]+$/, "") || "custom";
   if (!mod.default) throw new Error(`External module ${url} does not export a default component`);
   registerComponent(componentName, mod.default, mod.meta);

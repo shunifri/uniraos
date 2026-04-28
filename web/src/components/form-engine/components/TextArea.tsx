@@ -22,8 +22,8 @@ export const TextArea: React.FC<FieldRendererProps> = ({
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"]}
-      disabled={fieldState.disabled}
-      readOnly={fieldState.readonly}
+      disabled={fieldState.disabled || disabled}
+      readOnly={fieldState.readonly || readOnly}
       status={fieldState.errors?.length ? "error" : undefined}
       rows={uiProps.rows ?? 3}
       showCount={uiProps.showCount}

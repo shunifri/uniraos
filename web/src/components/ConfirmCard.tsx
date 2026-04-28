@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Button, Radio, Checkbox, Form, Input, InputNumber,
   Select, DatePicker, Space, Typography, Flex, Divider,
@@ -43,17 +43,13 @@ interface ConfirmCardProps {
   onCancel: (confirmId: string) => void;
   disabled?: boolean;
   schema?: RaosFormSchema;
+  submittedData?: any;
 }
 
 const glassCardStyle: React.CSSProperties = {
   maxWidth: 520,
   margin: "8px 0",
   padding: "20px",
-  borderRadius: 16,
-  background: "rgba(255, 255, 255, 0.9)",
-  backdropFilter: "blur(12px)",
-  border: "1px solid rgba(139, 92, 246, 0.15)",
-  boxShadow: "0 4px 16px rgba(139, 92, 246, 0.08)",
 };
 
 const gradientIconStyle: React.CSSProperties = {
@@ -83,16 +79,24 @@ export default function ConfirmCard({
   confirmText = "确定", cancelText = "取消",
   onConfirm, onCancel, disabled = false,
   schema,
+  submittedData: externalSubmittedData,
 }: ConfirmCardProps) {
   const [selectedSingle, setSelectedSingle] = useState<string | null>(null);
   const [selectedMulti, setSelectedMulti] = useState<string[]>([]);
-  const [submittedData, setSubmittedData] = useState<any>(null);
+  const [submittedData, setSubmittedData] = useState<any>(externalSubmittedData ?? null);
   const [form] = Form.useForm();
+
+  // 当外部 submittedData 变化时更新内部状态（用于刷新后恢复）
+  useEffect(() => {
+    if (externalSubmittedData !== undefined) {
+      setSubmittedData(externalSubmittedData);
+    }
+  }, [externalSubmittedData]);
 
   // --- NEW FORM ENGINE MODE ---
   if (schema) {
     return (
-      <div style={{ ...glassCardStyle, maxWidth: 520 }}>
+      <div className="glass-card" style={{ ...glassCardStyle, maxWidth: 520 }}>
         <GlassCardHeader
           icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
           title={title}
@@ -138,7 +142,7 @@ export default function ConfirmCard({
 
     if (!multiSelect) {
       return (
-        <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
+        <div className="glass-card" style={{ ...glassCardStyle, maxWidth: "100%" }}>
           <GlassCardHeader
             icon={<UnorderedListOutlined style={{ color: "white", fontSize: 14 }} />}
             title={title}
@@ -180,7 +184,7 @@ export default function ConfirmCard({
 
     // Multi select: horizontal chips + confirm button
     return (
-      <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
+      <div className="glass-card" style={{ ...glassCardStyle, maxWidth: "100%" }}>
         <GlassCardHeader
           icon={<UnorderedListOutlined style={{ color: "white", fontSize: 14 }} />}
           title={title}
@@ -296,7 +300,7 @@ export default function ConfirmCard({
     };
 
     return (
-      <div style={{ ...glassCardStyle, maxWidth: 520 }}>
+      <div className="glass-card" style={{ ...glassCardStyle, maxWidth: 520 }}>
         <GlassCardHeader
           icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
           title={title}
@@ -339,7 +343,7 @@ export default function ConfirmCard({
 
   // --- APPROVAL MODE ---
   return (
-    <div style={{ ...glassCardStyle, maxWidth: "100%" }}>
+    <div className="glass-card" style={{ ...glassCardStyle, maxWidth: "100%" }}>
       <GlassCardHeader
         icon={<QuestionCircleOutlined style={{ color: "white", fontSize: 14 }} />}
         title={title}

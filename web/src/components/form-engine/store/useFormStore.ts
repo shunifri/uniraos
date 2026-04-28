@@ -36,7 +36,7 @@ export interface FormStoreState {
   setFieldError: (name: string, errors: string[]) => void;
   setFieldState: (name: string, state: Partial<FieldState>) => void;
   setSubmitting: (submitting: boolean) => void;
-  reset: () => void;
+  reset: (readOnly?: boolean) => void;
   getFieldValue: (name: string) => any;
   getFieldState: (name: string) => FieldState;
 }
@@ -96,7 +96,8 @@ function isFieldRequired(
  * 创建初始 fieldStates
  */
 function createInitialFieldStates(
-  schema: RaosFormSchema
+  schema: RaosFormSchema,
+  readOnly: boolean = false
 ): Record<string, FieldState> {
   const fieldStates: Record<string, FieldState> = {};
   const properties = schema.properties ?? {};
@@ -105,6 +106,8 @@ function createInitialFieldStates(
     fieldStates[name] = {
       ...createDefaultFieldState(),
       required: isFieldRequired(name, fieldSchema, schema),
+      readonly: readOnly,
+      disabled: readOnly,
     };
   }
 
@@ -120,7 +123,7 @@ export function createFormStore(options: FormStoreOptions) {
 
   const defaultData = extractDefaults(schema);
   const initialFormData = { ...defaultData, ...initialData };
-  const initialFieldStates = createInitialFieldStates(schema);
+  const initialFieldStates = createInitialFieldStates(schema, readOnly);
 
   const store = createStore<FormStoreState>((set, get) => ({
     schema,
@@ -158,13 +161,14 @@ export function createFormStore(options: FormStoreOptions) {
 
     setSubmitting: (submitting) => set({ submitting }),
 
-    reset: () =>
-      set({
+    reset: (resetReadOnly?: boolean) =>
+      set((state) => ({
         formData: initialFormData,
         errors: {},
-        fieldStates: initialFieldStates,
+        fieldStates: createInitialFieldStates(schema, resetReadOnly ?? state.readOnly),
         submitting: false,
-      }),
+        readOnly: resetReadOnly ?? state.readOnly,
+      })),
 
     getFieldValue: (name) => get().formData[name],
 

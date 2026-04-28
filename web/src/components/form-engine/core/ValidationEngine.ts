@@ -4,7 +4,7 @@
  * 提供 JSON Schema 标准验证规则及自定义验证支持。
  */
 
-import type { RaosFieldSchema, ValidationResult } from "../types";
+import type { RaosFieldSchema, ValidationResult, AsyncValidatorConfig } from "../types";
 import { formT } from "../i18n/form-i18n";
 
 /**
@@ -211,14 +211,6 @@ export async function validateField(
   return { valid: errors.length === 0, errors };
 }
 
-export interface AsyncValidatorConfig {
-  type: "remote";
-  url: string;
-  method?: "GET" | "POST";
-  fieldParam?: string;
-  debounce?: number;
-}
-
 const asyncValidatorCache = new Map<string, Promise<ValidationResult>>();
 const asyncValidatorTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -297,6 +289,48 @@ export function debouncedAsyncValidate(
 
     asyncValidatorTimers.set(fieldName, timer);
   });
+}
+
+// ───────────────────────────────────────────────────────────────
+// Cross-field validation
+// ───────────────────────────────────────────────────────────────
+
+export interface CrossFieldValidationError {
+  message: string;
+  targetFields: string[];
+}
+
+export function validateCrossFieldRules(
+  rules: import("../types").CrossFieldValidationRule[],
+  formData: Record<string, any>
+): CrossFieldValidationError[] {
+  const errors: CrossFieldValidationError[] = [];
+  for (const rule of rules) {
+    try {
+      const fn = new Function(
+        "formData", "Math", "String", "Number", "Date", "Array", "Object", "JSON",
+        `"use strict"; return (${rule.expr});`
+      );
+      const result = fn(formData, Math, String, Number, Date, Array, Object, JSON);
+      if (result === false) {
+        errors.push({
+          message: rule.message,
+          targetFields: rule.targetFields || [],
+        });
+      } else if (typeof result === "string") {
+        errors.push({
+          message: result,
+          targetFields: rule.targetFields || [],
+        });
+      }
+    } catch (e: any) {
+      errors.push({
+        message: `Cross-field validation error: ${e.message}`,
+        targetFields: rule.targetFields || [],
+      });
+    }
+  }
+  return errors;
 }
 
 export { getErrorMessage, validateFormat };

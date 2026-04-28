@@ -10,6 +10,8 @@ export const TimePickerField: React.FC<FieldRendererProps> = ({
   onChange,
   onBlur,
   fieldState,
+  readOnly,
+  disabled,
 }) => {
   return (
     <TimePicker
@@ -17,8 +19,8 @@ export const TimePickerField: React.FC<FieldRendererProps> = ({
       onChange={(time) => onChange(time ? time.format("HH:mm:ss") : null)}
       onBlur={onBlur}
       placeholder={schema["ui:placeholder"] || formT("placeholder.time")}
-      disabled={fieldState.disabled}
-      readOnly={fieldState.readonly}
+      disabled={fieldState.disabled || disabled}
+      readOnly={fieldState.readonly || readOnly}
       status={fieldState.errors?.length ? "error" : undefined}
       style={{ width: "100%" }}
       {...(schema["ui:props"] || {})}

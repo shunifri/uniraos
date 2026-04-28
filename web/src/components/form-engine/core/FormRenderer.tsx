@@ -5,12 +5,13 @@
  */
 
 import React, { useRef, useState, useEffect, useReducer, useCallback } from "react";
-import { Form, Row, Col } from "antd";
+import { Form, Row, Col, theme } from "antd";
 import type { RaosFormSchema, RaosFieldSchema, FieldState } from "../types";
 import { FieldWrapper } from "./FieldWrapper";
 import { createFormStore, type FormStoreState } from "../store/useFormStore";
 import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
-import { validateField, validateFieldAsync, debouncedAsyncValidate } from "./ValidationEngine";
+import { validateField, validateFieldAsync, debouncedAsyncValidate, validateCrossFieldRules } from "./ValidationEngine";
+import { getComponentAsync } from "../registry/componentRegistry";
 import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
 import { useAuthStore } from "../../../store/auth";
 
@@ -18,12 +19,18 @@ import { useAuthStore } from "../../../store/auth";
 // Props 接口
 // ───────────────────────────────────────────────────────────────
 
+export interface AutoSaveConfig {
+  debounce?: number;
+  onSave: (formData: Record<string, any>) => void | Promise<void>;
+}
+
 export interface FormRendererProps {
   schema: RaosFormSchema;
   initialData?: Record<string, any>;
   readOnly?: boolean;
   onChange?: (formData: Record<string, any>) => void;
   onSubmit?: (formData: Record<string, any>) => void;
+  autoSave?: AutoSaveConfig;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -155,21 +162,28 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   readOnly = false,
   onChange,
   onSubmit,
+  autoSave,
 }) => {
+  const { token } = theme.useToken();
   // 使用 useState lazy initializer 创建 store，避免 StrictMode 双渲染问题
   const [store] = useState(() => createFormStore({ schema, initialData, readOnly }));
 
   // 当 schema 或 initialData 变化时重置 store
   useEffect(() => {
-    store.getState().reset();
+    store.getState().reset(readOnly);
     if (initialData) {
       store.getState().setFieldValues(initialData);
     }
     applyLinkageToAllFields(store, schema);
-  }, [schema, initialData, store]);
+  }, [schema, initialData, store, readOnly]);
 
   // 防抖定时器管理
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // 自动保存防抖
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveRef = useRef(autoSave);
+  autoSaveRef.current = autoSave;
 
   // 强制重渲染机制
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
@@ -214,6 +228,47 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         ).then((result) => {
           state.setFieldError(name, result.errors);
         });
+      }
+
+      // 跨字段验证实时检查
+      const crossRules = schema["x-crossFieldValidation"];
+      if (crossRules && crossRules.length > 0) {
+        // 清除该字段相关的跨字段验证错误
+        for (const rule of crossRules) {
+          if (rule.targetFields?.includes(name)) {
+            for (const target of rule.targetFields) {
+              const currentErrors = state.getFieldState(target).errors || [];
+              const filtered = currentErrors.filter(
+                (e) => e !== rule.message && !e.startsWith("Cross-field validation error:")
+              );
+              state.setFieldError(target, filtered);
+            }
+          }
+        }
+        // 重新执行跨字段验证
+        const crossErrors = validateCrossFieldRules(crossRules, state.formData);
+        for (const err of crossErrors) {
+          if (err.targetFields.length > 0) {
+            for (const fieldName of err.targetFields) {
+              const currentErrors = state.getFieldState(fieldName).errors || [];
+              if (!currentErrors.includes(err.message)) {
+                state.setFieldError(fieldName, [...currentErrors, err.message]);
+              }
+            }
+          }
+        }
+      }
+
+      // 自动保存
+      if (autoSaveRef.current) {
+        if (autoSaveTimerRef.current) {
+          clearTimeout(autoSaveTimerRef.current);
+        }
+        const debounceMs = autoSaveRef.current.debounce ?? 3000;
+        autoSaveTimerRef.current = setTimeout(() => {
+          autoSaveRef.current?.onSave(state.formData);
+          autoSaveTimerRef.current = null;
+        }, debounceMs);
       }
 
       // 查找依赖字段并重新应用联动
@@ -303,6 +358,23 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
       }
 
       await Promise.all(validationPromises);
+
+      // 跨字段验证
+      const crossRules = schema["x-crossFieldValidation"];
+      if (crossRules && crossRules.length > 0) {
+        const crossErrors = validateCrossFieldRules(crossRules, state.formData);
+        for (const err of crossErrors) {
+          if (err.targetFields.length > 0) {
+            for (const fieldName of err.targetFields) {
+              const existing = errorMap[fieldName] || [];
+              existing.push(err.message);
+              errorMap[fieldName] = existing;
+            }
+          }
+          // 如果没有 targetFields，错误会被忽略（无法关联到具体字段）
+          // 未来可以扩展到表单级别的错误展示
+        }
+      }
 
       // 更新所有错误到 store
       for (const [name, errors] of Object.entries(errorMap)) {
@@ -412,7 +484,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
                 fontWeight: 600,
                 marginBottom: 16,
                 paddingBottom: 8,
-                borderBottom: "1px solid #f0f0f0",
+                borderBottom: `1px solid ${token.colorBorderSecondary}`,
               }}
             >
               {section.title}

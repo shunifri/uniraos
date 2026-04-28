@@ -159,6 +159,7 @@ export interface DataSourceConfig {
   cascade?: CascadeConfig;
   variableName?: string;
   expression?: string;
+  filters?: DataFilter[];
 }
 
 export interface DatabaseSourceConfig {
