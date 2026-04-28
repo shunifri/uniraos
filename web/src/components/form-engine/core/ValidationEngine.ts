@@ -307,9 +307,26 @@ export function validateCrossFieldRules(
   const errors: CrossFieldValidationError[] = [];
   for (const rule of rules) {
     try {
+      // 支持 {{fieldName}} 语法（与 LinkageEngine 保持一致）
+      let expr = rule.expr;
+      if (expr.includes("{{")) {
+        expr = expr.replace(/\{\{([\w.\-\[\]]+)\}\}/g, (_match, fieldName) => {
+          const value = formData[fieldName];
+          if (value === undefined || value === null) return "null";
+          if (typeof value === "string") {
+            const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            return `"${escaped}"`;
+          }
+          if (typeof value === "number" || typeof value === "boolean") {
+            return String(value);
+          }
+          return JSON.stringify(value);
+        });
+      }
+
       const fn = new Function(
         "formData", "Math", "String", "Number", "Date", "Array", "Object", "JSON",
-        `"use strict"; return (${rule.expr});`
+        `"use strict"; return (${expr});`
       );
       const result = fn(formData, Math, String, Number, Date, Array, Object, JSON);
       if (result === false) {

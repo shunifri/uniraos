@@ -72,4 +72,37 @@ describe("validateCrossFieldRules", () => {
     const errors = validateCrossFieldRules(rules, {});
     expect(errors[0].targetFields).toEqual([]);
   });
+
+  it("should support {{fieldName}} syntax", () => {
+    const rules: CrossFieldValidationRule[] = [
+      { expr: "{{endDate}} > {{startDate}}", message: "结束日期必须大于开始日期", targetFields: ["endDate"] },
+    ];
+    const errors = validateCrossFieldRules(rules, { startDate: "2024-01-01", endDate: "2024-12-31" });
+    expect(errors).toHaveLength(0);
+  });
+
+  it("should fail with {{fieldName}} syntax when condition not met", () => {
+    const rules: CrossFieldValidationRule[] = [
+      { expr: "{{endDate}} > {{startDate}}", message: "结束日期必须大于开始日期", targetFields: ["endDate"] },
+    ];
+    const errors = validateCrossFieldRules(rules, { startDate: "2024-12-31", endDate: "2024-01-01" });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe("结束日期必须大于开始日期");
+  });
+
+  it("should support {{fieldName}} with number comparison", () => {
+    const rules: CrossFieldValidationRule[] = [
+      { expr: "{{max}} >= {{min}}", message: "最大值必须大于等于最小值", targetFields: ["max"] },
+    ];
+    const errors = validateCrossFieldRules(rules, { min: 10, max: 5 });
+    expect(errors).toHaveLength(1);
+  });
+
+  it("should support mixed syntax (formData and {{}})", () => {
+    const rules: CrossFieldValidationRule[] = [
+      { expr: "formData.a > {{b}}", message: "a must be greater than b", targetFields: ["a"] },
+    ];
+    const errors = validateCrossFieldRules(rules, { a: 10, b: 5 });
+    expect(errors).toHaveLength(0);
+  });
 });
