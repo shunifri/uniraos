@@ -4,3 +4,4 @@ src/ui/assets/
 .raos/
 .worktrees/
 uploads/
+*.tsbuildinfo
