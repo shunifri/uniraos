@@ -13,6 +13,7 @@ import { evaluateLinkage, findDependentFields } from "./LinkageEngine";
 import { validateField, validateFieldAsync, debouncedAsyncValidate, validateCrossFieldRules } from "./ValidationEngine";
 import { getComponentAsync } from "../registry/componentRegistry";
 import { evaluateFieldPermission, getUserPermissions } from "./PermissionEngine";
+import { applyConditionalSchema, getConditionDependencies, hasConditionalSchema } from "./ConditionEngine";
 import { useAuthStore } from "../../../store/auth";
 
 // ───────────────────────────────────────────────────────────────
@@ -282,6 +283,17 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
           loadFieldDataSource(depField, depSchema, store, timersRef);
         }
       }
+
+      // 检查条件 Schema 依赖：如果当前字段是某个条件规则的依赖项，强制重渲染
+      for (const [fieldName, fieldSchema] of Object.entries(schema.properties)) {
+        if (hasConditionalSchema(fieldSchema)) {
+          const deps = getConditionDependencies(fieldSchema["x-condition"]!);
+          if (deps.includes(name)) {
+            forceUpdate();
+            break; // 一次重渲染即可刷新所有条件字段
+          }
+        }
+      }
     },
     [store, schema]
   );
@@ -422,9 +434,15 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   const userPermissions = getUserPermissions(user);
 
   // 字段渲染（使用 memoized FieldWrapper）
-  const renderField = (name: string, fieldSchema: RaosFieldSchema) => {
+  const renderField = (name: string, baseSchema: RaosFieldSchema) => {
     const state = store.getState();
     const fieldState = state.getFieldState(name);
+
+    // 应用条件 Schema（x-condition）
+    let fieldSchema = baseSchema;
+    if (hasConditionalSchema(baseSchema)) {
+      fieldSchema = applyConditionalSchema(baseSchema, baseSchema["x-condition"]!, state.formData);
+    }
 
     // 权限评估
     const permResult = evaluateFieldPermission(fieldSchema["x-permission"], userPermissions);

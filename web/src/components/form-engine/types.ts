@@ -87,8 +87,15 @@ export interface RaosFieldSchema {
     write?: string[];
   };
   "x-asyncValidator"?: AsyncValidatorConfig;
+  "x-condition"?: ConditionalSchemaRule[];
   properties?: Record<string, RaosFieldSchema>; // type: 'object' 时
   items?: RaosFieldSchema; // type: 'array' 时
+}
+
+export interface ConditionalSchemaRule {
+  when: string;
+  then: Partial<RaosFieldSchema>;
+  else?: Partial<RaosFieldSchema>;
 }
 
 export interface AsyncValidatorConfig {
