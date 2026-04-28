@@ -68,7 +68,7 @@ export async function resolveDataSource(
           dbConfig.timeout || 5000
         );
 
-        let options = rows.map((row: any) => ({
+        let options: DataSourceOption[] = rows.map((row: any) => ({
           label: row[dbConfig.labelField],
           value: row[dbConfig.valueField],
           extra: dbConfig.extraFields?.reduce((acc: any, field: string) => {
@@ -173,11 +173,11 @@ function resolveStatic(
     filtered = options.filter((opt) => opt.label.toLowerCase().includes(keyword));
   }
 
-  let result = filtered.map((opt) => ({
+  let result: DataSourceOption[] = filtered.map((opt) => ({
     label: opt.label,
     value: opt.value,
-    extra: opt.extra,
-    disabled: opt.disabled,
+    extra: (opt as any).extra,
+    disabled: (opt as any).disabled,
   }));
 
   if (config.filters) {
@@ -250,7 +250,7 @@ async function resolveRemote(
     const data = await response.json();
 
     // 从响应中提取选项数组
-    let options: any[] = data;
+    let options: any = data;
     if (path) {
       // 支持路径如 "data.list"
       const parts = path.split('.');
@@ -263,7 +263,7 @@ async function resolveRemote(
       return { options: [] };
     }
 
-    let result = options.map((opt) => ({
+    let result: DataSourceOption[] = options.map((opt) => ({
       label: opt.label || opt.name || opt.title || String(opt.value ?? opt.id ?? opt.key ?? ''),
       value: opt.value ?? opt.id ?? opt.key,
       extra: opt.extra,

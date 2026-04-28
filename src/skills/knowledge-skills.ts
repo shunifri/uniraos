@@ -1146,84 +1146,7 @@ export class KnowledgeBase {
     return this.embeddingProvider;
   }
 
-  /** 图谱检索：根据查询内容查询相关子图，并返回关联的知识库文档 */
-  async graphSearch(
-    query: string,
-    opts?: {
-      limit?: number;
-      maxDepth?: number;
-      maxNodes?: number;
-    }
-  ): Promise<Array<{
-    docId: string;
-    docName: string;
-    chunkIndex: number;
-    content: string;
-    score: number;
-    matchType: 'graph_subgraph' | 'graph_path' | 'graph_community';
-    graphContext?: {
-      path?: any[];
-      subgraph?: { nodes: any[]; edges: any[] };
-      community?: number;
-    };
-  }>> {
-    // 目前先返回空结果，等待与 sessionManager 集成
-    // 在实际使用中，需要从 session 中获取 graphManager
-    return [];
-  }
-
-  /** 路径查询：查找两个实体之间的路径 */
-  async pathSearch(
-    source: string,
-    target: string,
-    opts?: { maxDepth?: number }
-  ): Promise<{
-    found: boolean;
-    path?: Array<{ node: any; edge?: any }>;
-    explanation?: string;
-  }> {
-    return { found: false };
-  }
-
-  /** 混合检索（包含图谱增强） */
-  async hybridSearchWithGraph(
-    query: string,
-    opts?: { limit?: number; threshold?: number }
-  ): Promise<Array<{
-    docId: string;
-    docName: string;
-    chunkIndex: number;
-    content: string;
-    score: number;
-    matchType: 'keyword' | 'semantic' | 'graph_subgraph' | 'graph_path' | 'hybrid';
-    graphContext?: any;
-  }>> {
-    const limit = opts?.limit ?? 10;
-    const classified = classifyQuery(query);
-
-    // 阶段 1: 基础检索（始终执行）
-    const keywordResults = await this.keywordSearch(query, limit * 2);
-    const semanticResults = await this.semanticSearch(query, limit * 2);
-
-    // 阶段 2: 图谱检索（根据查询类型）
-    let graphResults: any[] = [];
-    // 目前先不执行图谱检索，等待与 sessionManager 集成
-    // if (classified.type === 'relational' || classified.type === 'discovery' || classified.type === 'hybrid') {
-    //   graphResults = await this.graphSearch(query, { limit: limit * 2 });
-    // }
-
-    // 阶段 3: RRF 融合 + 图谱增强评分
-    const allResults = this.mergeAndRescoreResults(
-      keywordResults,
-      semanticResults,
-      graphResults,
-      classified.type
-    );
-
-    return allResults.slice(0, limit);
-  }
-
-  /** 结果融合与重评分（RRF + 图谱增强） */
+  /** 结果融合与重评分（RRF + 图谱增强）—— 保留供后续扩展使用 */
   private mergeAndRescoreResults(
     keywordResults: any[],
     semanticResults: any[],
@@ -2688,47 +2611,43 @@ interface ClassifiedQuery {
 
           // 根据查询类型选择检索策略
           if ((classified.type === 'relational' || classified.type === 'discovery') && graphManager) {
-            // P3: 关系查询或发现查询 → 使用图谱检索
-            console.log(`[kb_search] 使用图谱检索 (${classified.type})`);
+            // P3: 关系查询或发现查询 → 使用图谱增强检索
+            console.log(`[kb_search] 使用图谱增强检索 (${classified.type})`);
             try {
               // 获取用户自己的文档 ID 列表，用于图谱权限过滤
               const ownDocIds = await kb.getAllDocIds();
-              const subgraphResult = await graphManager.querySubgraph(query, {
+
+              // 使用 graphSearch 进行图谱检索（含预计算优化）
+              const graphResults = await graphManager.graphSearch(query, {
+                limit: limit * 2,
                 maxDepth: 3,
                 maxNodes: 50,
                 allowedDocIds: ownDocIds,
               });
 
-              // 从子图中提取 kb_document 节点
-              const docNodes = subgraphResult.nodes.filter((n: any) => n.type === 'kb_document');
-
-              if (docNodes.length > 0) {
-                // 从知识库获取完整信息
-                const docIds = docNodes.map((n: any) => {
-                  // 从节点 id 中提取 docId (格式: kb_doc_${docId})
-                  const match = n.id.match(/kb_doc_(.*)/);
-                  return match ? match[1] : null;
-                }).filter(Boolean);
-
+              if (graphResults.length > 0) {
+                const docIds = graphResults.map((r: any) => r.docId);
                 console.log(`[kb_search] 从知识图谱找到相关文档: ${docIds.length} 个`);
 
                 // 使用图谱相关的文档 ID 进行知识库检索
                 ownResults = await kb.search(query, {
                   limit: limit * 2,
-                  docIds: docIds as string[],
+                  docIds,
                   tags: params.tags as string[]
                 });
 
-                // 为结果添加图谱上下文
-                ownResults = ownResults.map(result => ({
-                  ...result,
-                  matchType: `graph_${classified.type}`,
-                  graphContext: {
-                    subgraphSize: subgraphResult.nodes.length,
-                    edgesCount: subgraphResult.edges.length,
-                    sourceNode: docNodes.find((d: any) => `kb_doc_${result.docId}` === d.id),
-                  }
-                }));
+                // 为结果添加图谱上下文和增强评分
+                const graphResultMap = new Map(graphResults.map((r: any) => [r.docId, r]));
+                ownResults = ownResults.map((result: any) => {
+                  const graphResult: any = graphResultMap.get(result.docId);
+                  const graphBoost = graphResult ? graphResult.score * 0.2 : 0;
+                  return {
+                    ...result,
+                    score: Math.min(result.score + graphBoost, 1.0),
+                    matchType: `graph_${classified.type}`,
+                    graphContext: graphResult?.graphContext,
+                  };
+                });
 
                 graphUsed = true;
               } else {

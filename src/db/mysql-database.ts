@@ -14,7 +14,7 @@ interface Migration {
   down: string;
 }
 
-const MIGRATIONS: Migration[] = [
+export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: 'init_complete_schema',
@@ -920,6 +920,18 @@ const MIGRATIONS: Migration[] = [
     down: `
       ALTER TABLE chat_messages MODIFY COLUMN role ENUM('user', 'assistant', 'tool', 'system', 'thinking', 'strategy') NOT NULL COMMENT '角色：user-用户, assistant-助手, tool-工具, system-系统, thinking-思考, strategy-策略';
     `
+  },
+  {
+    version: 9,
+    name: 'add_graph_node_community_id',
+    up: `
+      ALTER TABLE kb_graph_nodes ADD COLUMN community_id INT DEFAULT NULL COMMENT '社区ID（由Louvain算法分配）' AFTER properties;
+      ALTER TABLE kb_graph_nodes ADD INDEX idx_kb_graph_nodes_community (owner_id, community_id) COMMENT '社区索引';
+    `,
+    down: `
+      ALTER TABLE kb_graph_nodes DROP INDEX idx_kb_graph_nodes_community;
+      ALTER TABLE kb_graph_nodes DROP COLUMN community_id;
+    `
   }
 ];
 
@@ -936,6 +948,75 @@ async function getCurrentVersion(): Promise<number> {
   } catch (error) {
     // Table doesn't exist yet
     return 0;
+  }
+}
+
+/**
+ * Get migration status
+ */
+export async function getMigrationStatus(): Promise<{ currentVersion: number; latestVersion: number; pendingMigrations: string[] }> {
+  const currentVersion = await getCurrentVersion();
+  const pending = MIGRATIONS.filter(m => m.version > currentVersion).map(m => m.name);
+  return {
+    currentVersion,
+    latestVersion: MIGRATIONS.length,
+    pendingMigrations: pending,
+  };
+}
+
+/**
+ * Check if database is initialized
+ */
+export async function isDatabaseInitialized(): Promise<boolean> {
+  return (await getCurrentVersion()) > 0;
+}
+
+/**
+ * Migrate to a specific version
+ */
+export async function migrateToVersion(targetVersion: number): Promise<void> {
+  const currentVersion = await getCurrentVersion();
+  const adapter = getMySQLAdapter();
+
+  if (targetVersion < currentVersion) {
+    // Rollback
+    for (const migration of [...MIGRATIONS].reverse()) {
+      if (migration.version <= currentVersion && migration.version > targetVersion) {
+        const statements = parseSQLStatements(migration.down);
+        for (const statement of statements) {
+          try {
+            await adapter.execute(statement);
+          } catch {
+            // Ignore rollback errors
+          }
+        }
+        try {
+          await adapter.execute('DELETE FROM schema_version WHERE version = ?', [migration.version]);
+        } catch {
+          // Table may have been dropped by the down migration
+        }
+      }
+    }
+  } else if (targetVersion > currentVersion) {
+    // Forward
+    for (const migration of MIGRATIONS) {
+      if (migration.version > currentVersion && migration.version <= targetVersion) {
+        const statements = parseSQLStatements(migration.up);
+        for (const statement of statements) {
+          try {
+            await adapter.execute(statement);
+          } catch (error) {
+            const err = error as { errno?: number; code?: string };
+            if ([1826, 1050, 1061, 1062, 1060].includes(err.errno ?? 0)) continue;
+            throw error;
+          }
+        }
+        await adapter.execute(
+          'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+          [migration.version, migration.name]
+        );
+      }
+    }
   }
 }
 
@@ -1128,10 +1209,7 @@ export async function resetMySQLDatabase(): Promise<void> {
           name: migration.name 
         });
 
-        const statements = migration.down
-          .split(';')
-          .map(s => s.trim())
-          .filter(s => s.length > 0 && !s.startsWith('--'));
+        const statements = parseSQLStatements(migration.down);
 
         for (const statement of statements) {
           try {

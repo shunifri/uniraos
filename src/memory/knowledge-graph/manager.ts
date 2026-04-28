@@ -3,7 +3,7 @@ import { extractSubgraph, findShortestPath } from "./bfs-extractor.js";
 import { detectCommunities } from "./community-detection.js";
 import { identifyGodNodes, scoreSurprise } from "./scoring.js";
 import { extractRelationships, extractTagRelationships } from "./relationship-extractor.js";
-import type { GraphNode, SubgraphResult, NodeType } from "./types.js";
+import type { GraphNode, GraphEdge, SubgraphResult, NodeType } from "./types.js";
 import type { BFSOptions } from "./bfs-extractor.js";
 import type { LLMProvider } from "../../llm/types.js";
 
@@ -12,6 +12,18 @@ export class KnowledgeGraphManager {
   private store: any | null = null;
   private llmProvider?: LLMProvider;
   private backend: string;
+
+  // ===== 阶段 5: 预计算缓存 =====
+  private precomputed: {
+    communities: Map<number, string[]> | null;
+    godNodes: GraphNode[] | null;
+    lastComputed: number;
+  } = {
+    communities: null,
+    godNodes: null,
+    lastComputed: 0,
+  };
+  private precomputeLock = false;
 
   constructor(
     owner: string,
@@ -162,10 +174,264 @@ export class KnowledgeGraphManager {
     }
   }
 
+  /** 确保预计算数据可用（社区 + 中心节点） */
+  async ensurePrecomputed(force = false): Promise<void> {
+    const now = Date.now();
+    const ONE_HOUR = 3600000;
+
+    if (!force && this.precomputed.communities && (now - this.precomputed.lastComputed) < ONE_HOUR) {
+      return;
+    }
+
+    // 防止并发重复计算
+    if (this.precomputeLock) return;
+    this.precomputeLock = true;
+
+    try {
+      const store = await this.ensureStore();
+
+      // 1. 检测社区
+      const communities = await detectCommunities(store);
+      this.precomputed.communities = communities;
+
+      // 2. 识别中心节点（top 10）
+      this.precomputed.godNodes = await identifyGodNodes(store, 10);
+
+      // 3. 将社区信息写回节点（便于后续查询直接使用）
+      for (const [communityId, nodeIds] of communities) {
+        for (const nodeId of nodeIds) {
+          if (store.updateNode) {
+            try {
+              await store.updateNode(nodeId, { communityId });
+            } catch {
+              // 忽略更新失败
+            }
+          }
+        }
+      }
+
+      this.precomputed.lastComputed = now;
+      console.log(
+        `[KnowledgeGraphManager] 预计算完成: ${communities.size} 个社区, ` +
+        `${this.precomputed.godNodes.length} 个中心节点`
+      );
+    } catch (err) {
+      console.warn("[KnowledgeGraphManager] 预计算失败:", err);
+    } finally {
+      this.precomputeLock = false;
+    }
+  }
+
+  /** 获取当前预计算状态（调试用） */
+  getPrecomputedStatus(): { hasCommunities: boolean; hasGodNodes: boolean; lastComputed: number } {
+    return {
+      hasCommunities: this.precomputed.communities !== null,
+      hasGodNodes: this.precomputed.godNodes !== null,
+      lastComputed: this.precomputed.lastComputed,
+    };
+  }
+
   /** BFS subgraph query */
   async querySubgraph(query: string, options?: BFSOptions): Promise<SubgraphResult> {
     const store = await this.ensureStore();
+    // 自动触发预计算（非阻塞，已有缓存时直接返回）
+    await this.ensurePrecomputed();
     return extractSubgraph(store, query, options);
+  }
+
+  /** 知识库文档图谱检索（P3 核心方法） */
+  async graphSearch(
+    query: string,
+    opts?: {
+      limit?: number;
+      maxDepth?: number;
+      maxNodes?: number;
+      allowedDocIds?: string[];
+    }
+  ): Promise<Array<{
+    docId: string;
+    docName: string;
+    chunkIndex: number;
+    content: string;
+    score: number;
+    matchType: 'graph_subgraph' | 'graph_path' | 'graph_community';
+    graphContext?: {
+      path?: any[];
+      subgraph?: { nodes: any[]; edges: any[] };
+      community?: number;
+    };
+  }>> {
+    await this.ensurePrecomputed();
+    const store = await this.ensureStore();
+
+    const limit = opts?.limit ?? 10;
+    const allowedDocIds = opts?.allowedDocIds;
+
+    // 阶段 1: 使用 BFS 子图查询获取相关节点
+    const subgraphResult = await extractSubgraph(store, query, {
+      maxSeeds: 3,
+      maxDepth: opts?.maxDepth ?? 3,
+      maxNodes: opts?.maxNodes ?? 50,
+      allowedDocIds,
+    });
+
+    // 阶段 2: 提取 kb_document 节点
+    let docNodes = subgraphResult.nodes.filter((n: any) => n.type === 'kb_document');
+
+    // 阶段 3: 如果直接匹配的文档不足，利用中心节点补充
+    if (docNodes.length < limit && this.precomputed.godNodes && this.precomputed.godNodes.length > 0) {
+      const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+      const existingDocIds = new Set(docNodes.map((n: any) => n.id));
+
+      for (const godNode of this.precomputed.godNodes) {
+        if (docNodes.length >= limit) break;
+        const godLabel = godNode.label.toLowerCase();
+        // 中心节点标签与查询相关时，扩展其邻居
+        if (terms.some(t => godLabel.includes(t) || t.includes(godLabel))) {
+          const neighbors = await store.getNeighbors(godNode.id);
+          for (const neighbor of neighbors) {
+            if (neighbor.type === 'kb_document' && !existingDocIds.has(neighbor.id)) {
+              // 权限检查
+              if (!allowedDocIds || allowedDocIds.some(id => neighbor.id.includes(id))) {
+                docNodes.push(neighbor);
+                existingDocIds.add(neighbor.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 阶段 4: 利用社区信息进一步补充（发现查询类型）
+    if (docNodes.length < limit && this.precomputed.communities) {
+      const existingDocIds = new Set(docNodes.map((n: any) => n.id));
+      for (const docNode of [...docNodes]) {
+        if (docNodes.length >= limit) break;
+        if (docNode.communityId !== undefined) {
+          const communityNodeIds = this.precomputed.communities.get(docNode.communityId) ?? [];
+          for (const nodeId of communityNodeIds) {
+            if (existingDocIds.has(nodeId)) continue;
+            const node = await store.getNode(nodeId);
+            if (node && node.type === 'kb_document') {
+              if (!allowedDocIds || allowedDocIds.some(id => node.id.includes(id))) {
+                docNodes.push(node);
+                existingDocIds.add(node.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 阶段 5: 映射为知识库检索结果格式
+    const results: Array<{
+      docId: string;
+      docName: string;
+      chunkIndex: number;
+      content: string;
+      score: number;
+      matchType: 'graph_subgraph' | 'graph_path' | 'graph_community';
+      graphContext?: any;
+    }> = [];
+
+    for (const docNode of docNodes.slice(0, limit)) {
+      const match = docNode.id.match(/kb_doc_(.*)/);
+      const docId = match ? match[1] : docNode.id;
+
+      // 计算图谱评分：种子距离 + 社区归属 + 中心节点关联
+      let score = 0.7;
+      if (subgraphResult.seedNodes.includes(docNode.id)) {
+        score += 0.15; // 种子节点加分
+      }
+      if (this.precomputed.godNodes?.some(g => g.id === docNode.id)) {
+        score += 0.1; // 中心节点加分
+      }
+      if (docNode.communityId !== undefined && this.precomputed.communities) {
+        const commSize = this.precomputed.communities.get(docNode.communityId)?.length ?? 0;
+        score += Math.min(commSize * 0.005, 0.05); // 大社区微微加分
+      }
+
+      results.push({
+        docId,
+        docName: docNode.label.replace(/^kb:/, ''),
+        chunkIndex: 0,
+        content: (docNode.properties?.contentPreview as string) || (docNode.properties?.value as string) || '',
+        score: Math.min(score, 1.0),
+        matchType: 'graph_subgraph',
+        graphContext: {
+          subgraphSize: subgraphResult.nodes.length,
+          edgesCount: subgraphResult.edges.length,
+          community: docNode.communityId,
+          sourceNode: docNode,
+        },
+      });
+    }
+
+    return results;
+  }
+
+  /** 路径查询：查找两个实体之间的路径（P3） */
+  async pathSearch(
+    source: string,
+    target: string,
+    opts?: { maxDepth?: number }
+  ): Promise<{
+    found: boolean;
+    path?: Array<{ node: GraphNode; edge?: GraphEdge }>;
+    explanation?: string;
+  }> {
+    const store = await this.ensureStore();
+
+    // 查找源节点和目标节点（支持标签模糊匹配）
+    let sourceNode = await store.findNodeByLabel(source);
+    let targetNode = await store.findNodeByLabel(target);
+
+    // 模糊匹配 fallback
+    if (!sourceNode || !targetNode) {
+      const allNodes = await store.getAllNodes();
+      const sourceLower = source.toLowerCase();
+      const targetLower = target.toLowerCase();
+      for (const node of allNodes) {
+        if (!sourceNode && node.label.toLowerCase().includes(sourceLower)) {
+          sourceNode = node;
+        }
+        if (!targetNode && node.label.toLowerCase().includes(targetLower)) {
+          targetNode = node;
+        }
+        if (sourceNode && targetNode) break;
+      }
+    }
+
+    if (!sourceNode || !targetNode) {
+      return {
+        found: false,
+        explanation: `未找到节点: ${!sourceNode ? source : ''} ${!targetNode ? target : ''}`,
+      };
+    }
+
+    // 查找最短路径
+    const pathResult = await findShortestPath(store, sourceNode.id, targetNode.id, opts?.maxDepth ?? 10);
+
+    if (!pathResult) {
+      return {
+        found: false,
+        explanation: `${source} 和 ${target} 之间未找到路径（可能在 maxDepth 范围内不连通）`,
+      };
+    }
+
+    // 构建路径详情
+    const path: Array<{ node: GraphNode; edge?: GraphEdge }> = [];
+    for (let i = 0; i < pathResult.path.length; i++) {
+      const node = pathResult.path[i];
+      const edge = i < pathResult.edges.length ? pathResult.edges[i] : undefined;
+      path.push({ node, edge });
+    }
+
+    // 生成解释文本
+    const nodeLabels = pathResult.path.map(n => n.label);
+    const explanation = `${source} → ${target} 的路径: ${nodeLabels.join(' → ')}（共 ${pathResult.path.length} 个节点, ${pathResult.edges.length} 条边）`;
+
+    return { found: true, path, explanation };
   }
 
   /** Shortest path between two node labels */

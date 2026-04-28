@@ -1,27 +1,46 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import { GraphStore } from "../../../src/memory/knowledge-graph/graph-store.js";
+import { getMySQLAdapter } from "../../../src/db/mysql-adapter.js";
 
-describe("GraphStore", () => {
-  let tmpDir: string;
-  let storePath: string;
+describe.sequential("GraphStore", () => {
+  const TEST_OWNER = "graph_test_owner";
   let store: GraphStore;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "graph-store-test-"));
-    storePath = path.join(tmpDir, "graph.json");
-    store = new GraphStore(storePath);
+  beforeAll(async () => {
+    // 确保测试用户存在（满足外键约束）
+    const adapter = getMySQLAdapter();
+    try {
+      await adapter.execute(
+        `INSERT INTO users (id, username, password_hash, status) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE username = VALUES(username)`,
+        [TEST_OWNER, "graph_test_user", "test_hash", 1]
+      );
+    } catch (err: any) {
+      // 如果 users 表不存在则跳过
+      if (err.code === "ER_NO_SUCH_TABLE") {
+        console.warn("[GraphStore Test] users table not found, skipping foreign key setup");
+      } else {
+        throw err;
+      }
+    }
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  beforeEach(async () => {
+    store = new GraphStore(TEST_OWNER);
+    await store.clearGraph();
+  });
+
+  afterEach(async () => {
+    try {
+      await store.clearGraph();
+    } catch {
+      // ignore
+    }
   });
 
   describe("Node operations", () => {
-    it("adds and retrieves a node", () => {
-      const node = store.addNode({
+    it("adds and retrieves a node", async () => {
+      const node = await store.addNode({
         label: "Alice",
         type: "entity",
         tags: ["person"],
@@ -30,11 +49,13 @@ describe("GraphStore", () => {
       });
       expect(node.id).toBeDefined();
       expect(node.label).toBe("Alice");
-      expect(store.getNode(node.id)).toEqual(node);
+      const retrieved = await store.getNode(node.id);
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.label).toBe("Alice");
     });
 
-    it("accepts a provided id", () => {
-      const node = store.addNode({
+    it("accepts a provided id", async () => {
+      const node = await store.addNode({
         id: "custom-id",
         label: "Bob",
         type: "entity",
@@ -43,258 +64,266 @@ describe("GraphStore", () => {
         createdAt: Date.now(),
       });
       expect(node.id).toBe("custom-id");
-      expect(store.getNode("custom-id")).toEqual(node);
+      const retrieved = await store.getNode("custom-id");
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.label).toBe("Bob");
     });
 
-    it("returns undefined for unknown node id", () => {
-      expect(store.getNode("nope")).toBeUndefined();
+    it("returns undefined for unknown node id", async () => {
+      const result = await store.getNode("nope");
+      expect(result).toBeUndefined();
     });
 
-    it("removes a node and returns true", () => {
-      const node = store.addNode({
+    it("removes a node and returns true", async () => {
+      const node = await store.addNode({
         label: "Temp",
         type: "concept",
         tags: [],
         properties: {},
         createdAt: Date.now(),
       });
-      expect(store.removeNode(node.id)).toBe(true);
-      expect(store.getNode(node.id)).toBeUndefined();
+      const removed = await store.removeNode(node.id);
+      expect(removed).toBe(true);
+      const retrieved = await store.getNode(node.id);
+      expect(retrieved).toBeUndefined();
     });
 
-    it("returns false when removing non-existent node", () => {
-      expect(store.removeNode("ghost")).toBe(false);
+    it("returns false when removing non-existent node", async () => {
+      const result = await store.removeNode("ghost");
+      expect(result).toBe(false);
     });
 
-    it("findNodeByLabel returns matching node", () => {
-      store.addNode({ label: "Concept A", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      const found = store.findNodeByLabel("Concept A");
+    it("findNodeByLabel returns matching node", async () => {
+      await store.addNode({ label: "Concept A", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      const found = await store.findNodeByLabel("Concept A");
       expect(found).toBeDefined();
       expect(found!.label).toBe("Concept A");
     });
 
-    it("findNodeByLabel returns undefined when no match", () => {
-      expect(store.findNodeByLabel("missing")).toBeUndefined();
+    it("findNodeByLabel returns undefined when no match", async () => {
+      const result = await store.findNodeByLabel("missing");
+      expect(result).toBeUndefined();
     });
 
-    it("findNodesByType returns nodes of matching type", () => {
-      store.addNode({ label: "E1", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      store.addNode({ label: "E2", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      store.addNode({ label: "C1", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      const entities = store.findNodesByType("entity");
+    it("findNodesByType returns nodes of matching type", async () => {
+      await store.addNode({ label: "E1", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "E2", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "C1", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      const entities = await store.findNodesByType("entity");
       expect(entities).toHaveLength(2);
       expect(entities.every(n => n.type === "entity")).toBe(true);
     });
 
-    it("getAllNodes returns all nodes", () => {
-      store.addNode({ label: "N1", type: "ltm", tags: [], properties: {}, createdAt: Date.now() });
-      store.addNode({ label: "N2", type: "kb_document", tags: [], properties: {}, createdAt: Date.now() });
-      expect(store.getAllNodes()).toHaveLength(2);
+    it("getAllNodes returns all nodes", async () => {
+      await store.addNode({ label: "N1", type: "ltm", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "N2", type: "kb_document", tags: [], properties: {}, createdAt: Date.now() });
+      const nodes = await store.getAllNodes();
+      expect(nodes).toHaveLength(2);
+    });
+  });
+
+  describe("updateNode", () => {
+    it("updates node label and type", async () => {
+      const node = await store.addNode({ label: "Old", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const updated = await store.updateNode(node.id, { label: "New", type: "concept" });
+      expect(updated).toBe(true);
+      const retrieved = await store.getNode(node.id);
+      expect(retrieved!.label).toBe("New");
+      expect(retrieved!.type).toBe("concept");
+    });
+
+    it("updates communityId", async () => {
+      const node = await store.addNode({ label: "Node", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.updateNode(node.id, { communityId: 5 });
+      const retrieved = await store.getNode(node.id);
+      expect(retrieved!.communityId).toBe(5);
+    });
+
+    it("returns false for non-existent node", async () => {
+      const result = await store.updateNode("ghost", { label: "X" });
+      expect(result).toBe(false);
     });
   });
 
   describe("nodeCount and edgeCount", () => {
-    it("nodeCount is accurate", () => {
-      expect(store.nodeCount).toBe(0);
-      store.addNode({ label: "X", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      expect(store.nodeCount).toBe(1);
-      store.addNode({ label: "Y", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      expect(store.nodeCount).toBe(2);
+    it("nodeCount is accurate", async () => {
+      expect(await store.countNodes()).toBe(0);
+      await store.addNode({ label: "X", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      expect(await store.countNodes()).toBe(1);
+      await store.addNode({ label: "Y", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      expect(await store.countNodes()).toBe(2);
     });
 
-    it("edgeCount is accurate", () => {
-      expect(store.edgeCount).toBe(0);
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(a.id, b.id, "EXTRACTED", "relates");
-      expect(store.edgeCount).toBe(1);
+    it("edgeCount is accurate", async () => {
+      expect(await store.countEdges()).toBe(0);
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addEdge(a.id, b.id, "EXTRACTED", "relates");
+      expect(await store.countEdges()).toBe(1);
     });
   });
 
   describe("Edge operations", () => {
-    let nodeA: ReturnType<GraphStore["addNode"]>;
-    let nodeB: ReturnType<GraphStore["addNode"]>;
-
-    beforeEach(() => {
-      nodeA = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      nodeB = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-    });
-
-    it("adds and retrieves an edge", () => {
-      const edge = store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "related_to");
+    it("adds and retrieves an edge", async () => {
+      const nodeA = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const nodeB = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "related_to");
       expect(edge.id).toBeDefined();
       expect(edge.source).toBe(nodeA.id);
       expect(edge.target).toBe(nodeB.id);
       expect(edge.type).toBe("EXTRACTED");
       expect(edge.label).toBe("related_to");
-      expect(store.getEdge(edge.id)).toEqual(edge);
+      const retrieved = await store.getEdge(edge.id);
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.id).toBe(edge.id);
     });
 
-    it("defaults weight to 1.0", () => {
-      const edge = store.addEdge(nodeA.id, nodeB.id, "INFERRED", "inferred_link");
+    it("defaults weight to 1.0", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "INFERRED", "inferred_link");
       expect(edge.weight).toBe(1.0);
     });
 
-    it("accepts custom weight", () => {
-      const edge = store.addEdge(nodeA.id, nodeB.id, "TEMPORAL", "before", 0.5);
+    it("accepts custom weight", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "TEMPORAL", "before", 0.5);
       expect(edge.weight).toBe(0.5);
     });
 
-    it("throws when source node does not exist", () => {
-      expect(() => store.addEdge("ghost", nodeB.id, "EXTRACTED", "bad")).toThrow();
+    it("throws when source node does not exist", async () => {
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await expect(store.addEdge("ghost", b.id, "EXTRACTED", "bad")).rejects.toThrow();
     });
 
-    it("throws when target node does not exist", () => {
-      expect(() => store.addEdge(nodeA.id, "ghost", "EXTRACTED", "bad")).toThrow();
+    it("throws when target node does not exist", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await expect(store.addEdge(a.id, "ghost", "EXTRACTED", "bad")).rejects.toThrow();
     });
 
-    it("removes an edge and returns true", () => {
-      const edge = store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "link");
-      expect(store.removeEdge(edge.id)).toBe(true);
-      expect(store.getEdge(edge.id)).toBeUndefined();
+    it("removes an edge and returns true", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "EXTRACTED", "link");
+      const removed = await store.removeEdge(edge.id);
+      expect(removed).toBe(true);
+      const retrieved = await store.getEdge(edge.id);
+      expect(retrieved).toBeUndefined();
     });
 
-    it("returns false when removing non-existent edge", () => {
-      expect(store.removeEdge("ghost-edge")).toBe(false);
+    it("returns false when removing non-existent edge", async () => {
+      const result = await store.removeEdge("ghost-edge");
+      expect(result).toBe(false);
     });
 
-    it("getEdgesOf returns edges for a node", () => {
-      const e1 = store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "link1");
-      const nodeC = store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      const e2 = store.addEdge(nodeA.id, nodeC.id, "INFERRED", "link2");
-      const edges = store.getEdgesOf(nodeA.id);
+    it("getEdgesOf returns edges for a node", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const c = await store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      const e1 = await store.addEdge(a.id, b.id, "EXTRACTED", "link1");
+      const e2 = await store.addEdge(a.id, c.id, "INFERRED", "link2");
+      const edges = await store.getEdgesOf(a.id);
       expect(edges.map(e => e.id)).toContain(e1.id);
       expect(edges.map(e => e.id)).toContain(e2.id);
     });
 
-    it("getEdgesBetween returns edges between two nodes", () => {
-      const e1 = store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "link");
-      const nodeC = store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(nodeA.id, nodeC.id, "INFERRED", "other");
-      const between = store.getEdgesBetween(nodeA.id, nodeB.id);
+    it("getEdgesBetween returns edges between two nodes", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const c = await store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      const e1 = await store.addEdge(a.id, b.id, "EXTRACTED", "link");
+      await store.addEdge(a.id, c.id, "INFERRED", "other");
+      const between = await store.getEdgesBetween(a.id, b.id);
       expect(between).toHaveLength(1);
       expect(between[0].id).toBe(e1.id);
     });
 
-    it("getAllEdges returns all edges", () => {
-      store.addEdge(nodeA.id, nodeB.id, "EXTRACTED", "e1");
-      const nodeC = store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(nodeA.id, nodeC.id, "TEMPORAL", "e2");
-      expect(store.getAllEdges()).toHaveLength(2);
+    it("getAllEdges returns all edges", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const c = await store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addEdge(a.id, b.id, "EXTRACTED", "e1");
+      await store.addEdge(a.id, c.id, "TEMPORAL", "e2");
+      const edges = await store.getAllEdges();
+      expect(edges).toHaveLength(2);
     });
   });
 
   describe("Adjacency list consistency", () => {
-    it("removing a node cleans up its edges", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const edge = store.addEdge(a.id, b.id, "EXTRACTED", "link");
-      store.removeNode(a.id);
-      expect(store.getEdge(edge.id)).toBeUndefined();
-      expect(store.getEdgesOf(b.id)).toHaveLength(0);
-      expect(store.edgeCount).toBe(0);
+    it("removing a node cleans up its edges", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "EXTRACTED", "link");
+      await store.removeNode(a.id);
+      const retrievedEdge = await store.getEdge(edge.id);
+      expect(retrievedEdge).toBeUndefined();
+      const edgesOfB = await store.getEdgesOf(b.id);
+      expect(edgesOfB).toHaveLength(0);
+      expect(await store.countEdges()).toBe(0);
     });
 
-    it("removing an edge removes it from both adjacency lists", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const edge = store.addEdge(a.id, b.id, "EXTRACTED", "link");
-      store.removeEdge(edge.id);
-      expect(store.getEdgesOf(a.id)).toHaveLength(0);
-      expect(store.getEdgesOf(b.id)).toHaveLength(0);
+    it("removing an edge removes it from both adjacency lists", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "EXTRACTED", "link");
+      await store.removeEdge(edge.id);
+      expect(await store.getEdgesOf(a.id)).toHaveLength(0);
+      expect(await store.getEdgesOf(b.id)).toHaveLength(0);
     });
   });
 
   describe("getNeighbors", () => {
-    it("returns neighboring nodes", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const c = store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(a.id, b.id, "EXTRACTED", "link1");
-      store.addEdge(a.id, c.id, "INFERRED", "link2");
-      const neighbors = store.getNeighbors(a.id);
+    it("returns neighboring nodes", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const c = await store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addEdge(a.id, b.id, "EXTRACTED", "link1");
+      await store.addEdge(a.id, c.id, "INFERRED", "link2");
+      const neighbors = await store.getNeighbors(a.id);
       const neighborIds = neighbors.map(n => n.id);
       expect(neighborIds).toContain(b.id);
       expect(neighborIds).toContain(c.id);
       expect(neighborIds).not.toContain(a.id);
     });
 
-    it("returns empty array for isolated node", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      expect(store.getNeighbors(a.id)).toHaveLength(0);
+    it("returns empty array for isolated node", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const neighbors = await store.getNeighbors(a.id);
+      expect(neighbors).toHaveLength(0);
     });
 
-    it("includes both source and target neighbors (undirected traversal)", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(b.id, a.id, "EXTRACTED", "link");
-      const neighbors = store.getNeighbors(a.id);
+    it("includes both source and target neighbors (undirected traversal)", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addEdge(b.id, a.id, "EXTRACTED", "link");
+      const neighbors = await store.getNeighbors(a.id);
       expect(neighbors.map(n => n.id)).toContain(b.id);
     });
   });
 
   describe("getDegree", () => {
-    it("returns 0 for isolated node", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      expect(store.getDegree(a.id)).toBe(0);
+    it("returns 0 for isolated node", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      expect(await store.getDegree(a.id)).toBe(0);
     });
 
-    it("counts each edge incident on the node", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const c = store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(a.id, b.id, "EXTRACTED", "e1");
-      store.addEdge(a.id, c.id, "TEMPORAL", "e2");
-      expect(store.getDegree(a.id)).toBe(2);
+    it("counts each edge incident on the node", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const c = await store.addNode({ label: "C", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addEdge(a.id, b.id, "EXTRACTED", "e1");
+      await store.addEdge(a.id, c.id, "TEMPORAL", "e2");
+      expect(await store.getDegree(a.id)).toBe(2);
     });
 
-    it("decreases after edge removal", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const edge = store.addEdge(a.id, b.id, "EXTRACTED", "link");
-      expect(store.getDegree(a.id)).toBe(1);
-      store.removeEdge(edge.id);
-      expect(store.getDegree(a.id)).toBe(0);
-    });
-  });
-
-  describe("Persistence", () => {
-    it("save and reload preserves nodes and edges", () => {
-      const a = store.addNode({ label: "Persist A", type: "entity", tags: ["x"], properties: { val: 42 }, createdAt: 1000 });
-      const b = store.addNode({ label: "Persist B", type: "concept", tags: [], properties: {}, createdAt: 2000 });
-      const edge = store.addEdge(a.id, b.id, "EXTRACTED", "relates", 0.8);
-
-      store.save();
-
-      const store2 = new GraphStore(storePath);
-      expect(store2.getNode(a.id)).toEqual(a);
-      expect(store2.getNode(b.id)).toEqual(b);
-      expect(store2.getEdge(edge.id)).toEqual(edge);
-      expect(store2.nodeCount).toBe(2);
-      expect(store2.edgeCount).toBe(1);
-    });
-
-    it("reload preserves adjacency lists", () => {
-      const a = store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      const b = store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
-      store.addEdge(a.id, b.id, "INFERRED", "link");
-      store.save();
-
-      const store2 = new GraphStore(storePath);
-      expect(store2.getNeighbors(a.id)).toHaveLength(1);
-      expect(store2.getDegree(a.id)).toBe(1);
-    });
-
-    it("starts with empty state when file does not exist", () => {
-      expect(store.nodeCount).toBe(0);
-      expect(store.edgeCount).toBe(0);
-    });
-
-    it("toJSON returns graph data", () => {
-      const n = store.addNode({ label: "N", type: "ltm", tags: [], properties: {}, createdAt: Date.now() });
-      const data = store.toJSON();
-      expect(data.version).toBe(1);
-      expect(data.nodes[n.id]).toBeDefined();
+    it("decreases after edge removal", async () => {
+      const a = await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const b = await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const edge = await store.addEdge(a.id, b.id, "EXTRACTED", "link");
+      expect(await store.getDegree(a.id)).toBe(1);
+      await store.removeEdge(edge.id);
+      expect(await store.getDegree(a.id)).toBe(0);
     });
   });
 });

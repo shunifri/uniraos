@@ -15,6 +15,8 @@ import { log } from "../utils/logger.js";
 import Database from "better-sqlite3";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
+import { getInboxService } from "../inbox/index.js";
+import { createEvolutionAdapter } from "../inbox/adapters/index.js";
 
 export interface EvolutionConfig {
   /** Skill 生成 Skill 的最大深度（默认 3） */
@@ -658,6 +660,29 @@ export class EvolutionController {
     };
     this.pendingApprovals.push(approval);
 
+    // 同步创建 InboxItem（异步，不阻塞）
+    getInboxService().createItem({
+      userId: "admin",
+      type: "approval",
+      category: "evolution_approval",
+      source: "evolution",
+      sourceId: id,
+      title: `Skill 生成审批: ${name}`,
+      description: description || "",
+      priority: "high",
+      payload: {
+        content: code?.slice(0, 500),
+        metadata: { capabilities, generatedBy, depth: approval.depth },
+        actions: [
+          { action: "approve", label: "允许上线", primary: true },
+          { action: "reject", label: "拒绝", danger: true },
+          { action: "review", label: "需要修改" },
+        ],
+      },
+    }).catch((err: any) => {
+      log("warn", "evolution.inbox_create_failed", { error: err.message });
+    });
+
     // 持久化到数据库
     if (this.db) {
       try {
@@ -692,6 +717,10 @@ export class EvolutionController {
       }
     }
     log("info", "skill.approved", { id, name: item.name });
+
+    // 完成对应的 InboxItem
+    getInboxService().completeBySource("evolution", id, { action: "approve" }).catch(() => {});
+
     return item;
   }
 
@@ -712,6 +741,10 @@ export class EvolutionController {
       }
     }
     log("info", "skill.rejected", { id, name: item.name, reason });
+
+    // 完成对应的 InboxItem
+    getInboxService().completeBySource("evolution", id, { action: "reject", reason }).catch(() => {});
+
     return true;
   }
 
@@ -783,6 +816,17 @@ export class EvolutionController {
       }
     }
   }
+}
+
+// 全局单例引用（供 Inbox callback 使用）
+let globalEvolutionController: EvolutionController | null = null;
+
+export function setGlobalEvolutionController(ctrl: EvolutionController): void {
+  globalEvolutionController = ctrl;
+}
+
+export function getGlobalEvolutionController(): EvolutionController | null {
+  return globalEvolutionController;
 }
 
 function matchCapability(cap: string, pattern: string): boolean {

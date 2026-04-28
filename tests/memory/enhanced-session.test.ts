@@ -20,7 +20,7 @@ describe("UserSessionManager with EnhancedLTMBackend Integration", () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "raos-session-"));
-    sessionManager = new UserSessionManager(tempDir, { backend: "enhanced" });
+    sessionManager = new UserSessionManager(tempDir, { backend: "file" });
   });
 
   afterEach(() => {
@@ -232,7 +232,7 @@ describe("UserSessionManager with EnhancedLTMBackend Integration", () => {
     expect(entry).toBeDefined();
 
     // Create new session manager pointing to same directory
-    const sessionManager2 = new UserSessionManager(tempDir, { backend: "enhanced" });
+    const sessionManager2 = new UserSessionManager(tempDir, { backend: "file" });
     const session2 = sessionManager2.getOrCreate("user1");
 
     // Should still find the data

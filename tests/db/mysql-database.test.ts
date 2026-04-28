@@ -34,11 +34,11 @@ describeIfMySQL("MySQL Database Migrations", () => {
   });
 
   it("should have migrations defined", () => {
-    expect(MIGRATIONS).toHaveLength(2);
+    expect(MIGRATIONS).toHaveLength(9);
     expect(MIGRATIONS[0].version).toBe(1);
-    expect(MIGRATIONS[0].name).toBe("init");
+    expect(MIGRATIONS[0].name).toBe("init_complete_schema");
     expect(MIGRATIONS[1].version).toBe(2);
-    expect(MIGRATIONS[1].name).toBe("add_kb_keywords_and_fulltext");
+    expect(MIGRATIONS[1].name).toBe("add_custom_skills_table");
   });
 
   it("should initialize database with all migrations", async () => {
@@ -50,11 +50,9 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const versions = await adapter.query<{ version: number; name: string }>(
       "SELECT * FROM schema_version ORDER BY version"
     );
-    expect(versions.length).toBe(2);
+    expect(versions.length).toBe(9);
     expect(versions[0].version).toBe(1);
-    expect(versions[0].name).toBe("init");
-    expect(versions[1].version).toBe(2);
-    expect(versions[1].name).toBe("add_kb_keywords_and_fulltext");
+    expect(versions[0].name).toBe("init_complete_schema");
   });
 
   it("should create all required tables", async () => {
@@ -66,7 +64,7 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const tables = await adapter.query<{ TABLE_NAME: string }>(
       `SELECT TABLE_NAME FROM information_schema.tables 
        WHERE table_schema = DATABASE() 
-       AND table_name IN ('users', 'departments', 'kb_documents', 'kb_chunks', 'wal_entries', 'kb_versions', 'kb_keywords')`
+       AND table_name IN ('users', 'departments', 'kb_documents', 'kb_chunks', 'wal_entries', 'kb_versions', 'kb_keywords', 'kb_tags', 'kb_graph_nodes', 'kb_graph_edges', 'kb_ltm_entries', 'custom_skills')`
     );
     
     const tableNames = tables.map(t => t.TABLE_NAME);
@@ -77,6 +75,11 @@ describeIfMySQL("MySQL Database Migrations", () => {
     expect(tableNames).toContain("wal_entries");
     expect(tableNames).toContain("kb_versions");
     expect(tableNames).toContain("kb_keywords");
+    expect(tableNames).toContain("kb_tags");
+    expect(tableNames).toContain("kb_graph_nodes");
+    expect(tableNames).toContain("kb_graph_edges");
+    expect(tableNames).toContain("kb_ltm_entries");
+    expect(tableNames).toContain("custom_skills");
   });
 
   it("should have correct table structure for users", async () => {
@@ -363,19 +366,21 @@ describeIfMySQL("MySQL Database Migrations", () => {
     
     const status = await getMigrationStatus();
     
-    expect(status.currentVersion).toBe(2);
-    expect(status.latestVersion).toBe(2);
+    expect(status.currentVersion).toBe(9);
+    expect(status.latestVersion).toBe(9);
     expect(status.pendingMigrations).toHaveLength(0);
   });
 
   it("should detect database initialization status", async () => {
+    await initMySQLDatabase();
+
     // Database should be initialized after init
     let initialized = await isDatabaseInitialized();
     expect(initialized).toBe(true);
-    
+
     // Reset to version 0
     await migrateToVersion(0);
-    
+
     initialized = await isDatabaseInitialized();
     expect(initialized).toBe(false);
   });
@@ -389,24 +394,24 @@ describeIfMySQL("MySQL Database Migrations", () => {
     const status1 = await getMigrationStatus();
     expect(status1.currentVersion).toBe(1);
     
-    // Check that kb_keywords table is dropped
+    // Check that custom_skills table (added in v2) is dropped when down to v1
     const adapter = getMySQLAdapter();
     const tables = await adapter.query<{ TABLE_NAME: string }>(
       `SELECT TABLE_NAME FROM information_schema.tables 
-       WHERE table_schema = DATABASE() AND table_name = 'kb_keywords'`
+       WHERE table_schema = DATABASE() AND table_name = 'custom_skills'`
     );
     expect(tables).toHaveLength(0);
-    
+
     // Migrate back up to version 2
     await migrateToVersion(2);
-    
+
     const status2 = await getMigrationStatus();
     expect(status2.currentVersion).toBe(2);
-    
-    // Check that kb_keywords table is recreated
+
+    // Check that custom_skills table is recreated
     const tables2 = await adapter.query<{ TABLE_NAME: string }>(
       `SELECT TABLE_NAME FROM information_schema.tables 
-       WHERE table_schema = DATABASE() AND table_name = 'kb_keywords'`
+       WHERE table_schema = DATABASE() AND table_name = 'custom_skills'`
     );
     expect(tables2).toHaveLength(1);
   });
@@ -536,32 +541,33 @@ describeIfMySQL("MySQL Database Migrations", () => {
 describeIfMySQL("MySQL Database Reset", () => {
   it("should reset database completely", async () => {
     await initMySQLDatabase();
-    
+
     const adapter = getMySQLAdapter();
-    
+
     // Insert some data
     await adapter.execute(
-      `INSERT INTO departments (id, name, parent_id, path, level) 
+      `INSERT INTO departments (id, name, parent_id, path, level)
        VALUES (?, ?, ?, ?, ?)`,
       ['dept_reset', 'Reset Test', null, '/Reset Test', 0]
     );
-    
+
     await adapter.execute(
-      `INSERT INTO users (id, username, password_hash) 
+      `INSERT INTO users (id, username, password_hash)
        VALUES (?, ?, ?)`,
       ['user_reset', 'resetuser', 'hash']
     );
-    
+
     // Reset database
     await resetMySQLDatabase();
-    
-    // Verify data is gone but tables exist
+    await initMySQLDatabase();
+
+    // Verify data is gone
     const users = await adapter.query('SELECT * FROM users WHERE id = ?', ['user_reset']);
     expect(users).toHaveLength(0);
-    
-    // Verify schema_version is reset
+
+    // Verify schema_version is restored
     const status = await getMigrationStatus();
-    expect(status.currentVersion).toBe(2);
+    expect(status.currentVersion).toBe(9);
     expect(status.pendingMigrations).toHaveLength(0);
   });
 });

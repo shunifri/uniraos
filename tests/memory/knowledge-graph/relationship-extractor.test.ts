@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { extractRelationships, extractTagRelationships } from "../../../src/memory/knowledge-graph/relationship-extractor.js";
 
-describe("RelationshipExtractor", () => {
+describe.sequential("RelationshipExtractor", () => {
   describe("extractRelationships (LLM)", () => {
     it("should extract relations from LLM response", async () => {
       const mockLlm = {

@@ -15,7 +15,7 @@ function createTestPlugin(
   mkdirSync(pluginDir, { recursive: true });
 
   const version = opts?.version ?? "1.0.0";
-  const entry = opts?.entry ?? "handler.js";
+  const entry = opts?.entry ?? "handler.mjs";
   const visible = opts?.visible ?? true;
 
   writeFileSync(
@@ -36,7 +36,7 @@ describe("PluginLoader", () => {
   let registry: SkillRegistry;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "raos-plugin-"));
+    tmpDir = mkdtempSync(join(process.cwd(), "tests", ".tmp-plugin-"));
     registry = new SkillRegistry();
   });
 
@@ -150,7 +150,7 @@ describe("PluginLoader", () => {
 
     // 修改handler
     writeFileSync(
-      join(tmpDir, "reloadable", "handler.js"),
+      join(tmpDir, "reloadable", "handler.mjs"),
       `export default async function() { return { success: true, data: { v: 2 } }; }`,
     );
 

@@ -8,6 +8,7 @@ interface NodeRow {
   type: NodeType;
   tags: string;
   properties: string;
+  community_id: number | null;
   created_at: number;
 }
 
@@ -141,9 +142,51 @@ export class GraphStore {
       properties: this.parseProperties(row.properties),
       createdAt: row.created_at,
     };
+    if (row.community_id !== null && row.community_id !== undefined) {
+      node.communityId = row.community_id;
+    }
 
     this.cache.set(id, node);
     return node;
+  }
+
+  /** 更新节点属性（增量更新） */
+  async updateNode(id: string, updates: Partial<Pick<GraphNode, 'label' | 'type' | 'tags' | 'properties' | 'communityId'>>): Promise<boolean> {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (updates.label !== undefined) {
+      sets.push('label = ?');
+      values.push(updates.label);
+    }
+    if (updates.type !== undefined) {
+      sets.push('type = ?');
+      values.push(updates.type);
+    }
+    if (updates.tags !== undefined) {
+      sets.push('tags = ?');
+      values.push(JSON.stringify(updates.tags));
+    }
+    if (updates.properties !== undefined) {
+      sets.push('properties = ?');
+      values.push(JSON.stringify(updates.properties));
+    }
+    if (updates.communityId !== undefined) {
+      sets.push('community_id = ?');
+      values.push(updates.communityId);
+    }
+
+    if (sets.length === 0) return false;
+
+    values.push(id, this.owner);
+    const result = await this.adapter.execute(
+      `UPDATE kb_graph_nodes SET ${sets.join(', ')} WHERE id = ? AND owner_id = ?`,
+      values
+    );
+
+    // 清除缓存，下次读取时重新加载
+    this.cache.delete(id);
+    return result.affectedRows > 0;
   }
 
   async findNodeByLabel(label: string): Promise<GraphNode | undefined> {
@@ -388,6 +431,9 @@ export class GraphStore {
         properties: this.parseProperties(row.properties),
         createdAt: row.created_at,
       };
+      if (row.community_id !== null && row.community_id !== undefined) {
+        node.communityId = row.community_id;
+      }
       this.cache.set(node.id, node);
       neighbors.push(node);
     }
@@ -590,11 +636,9 @@ export class GraphStore {
     const nodeCount = (nodeResult[0] as any)?.count || 0;
     const edgeCount = (edgeResult[0] as any)?.count || 0;
 
-    // 删除所有边和节点
-    await Promise.all([
-      this.adapter.execute(`DELETE FROM kb_graph_edges WHERE owner_id = ?`, [this.owner]),
-      this.adapter.execute(`DELETE FROM kb_graph_nodes WHERE owner_id = ?`, [this.owner])
-    ]);
+    // 删除所有边和节点（串行执行避免外键死锁）
+    await this.adapter.execute(`DELETE FROM kb_graph_edges WHERE owner_id = ?`, [this.owner]);
+    await this.adapter.execute(`DELETE FROM kb_graph_nodes WHERE owner_id = ?`, [this.owner]);
 
     // 清除内存缓存
     this.clearCache();
