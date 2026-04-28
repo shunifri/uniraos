@@ -9,7 +9,7 @@ export { CapabilityChecker } from "./capability-checker.js";
 export type { CapabilityViolation } from "./capability-checker.js";
 export { runInSandbox } from "./worker-sandbox.js";
 export type { SandboxConfig, SandboxResult } from "./worker-sandbox.js";
-export { EvolutionController } from "./evolution-controller.js";
+export { EvolutionController, setGlobalEvolutionController, getGlobalEvolutionController } from "./evolution-controller.js";
 export type { EvolutionConfig } from "./evolution-controller.js";
 export type { RedLineConstraint, RedLineContext, RedLineViolation, GenealogyNode, GenealogyStats } from "./evolution-controller.js";
 export { SkillLifecycleManager } from "./skill-lifecycle.js";

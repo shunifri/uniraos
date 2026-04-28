@@ -5,7 +5,12 @@
  * 支持 CPU 时间限制、内存限制，以及 context.callSkill 代理。
  */
 import { Worker } from "node:worker_threads";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { log } from "../utils/logger.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export interface SandboxConfig {
   /** 最大执行时间（ms），默认 30000 */
@@ -57,43 +62,8 @@ export function runInSandbox(
   return new Promise((resolve) => {
     const startTime = Date.now();
 
-    // Worker 内联代码
-    const workerCode = `
-const { parentPort, workerData } = require('node:worker_threads');
-
-// 创建 context 代理（如果主线程提供了 context）
-const context = workerData.hasContext ? {
-  callSkill: async (name, params) => {
-    return new Promise((resolve, reject) => {
-      const callId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-      const handler = (msg) => {
-        if (msg && msg.type === 'callSkillResult' && msg.callId === callId) {
-          parentPort.off('message', handler);
-          if (msg.error) reject(new Error(msg.error));
-          else resolve(msg.result);
-        }
-      };
-      parentPort.on('message', handler);
-      parentPort.postMessage({ type: 'callSkill', callId, name, params });
-    });
-  }
-} : undefined;
-
-(async () => {
-  try {
-    const params = workerData.params;
-    // 使用 async IIFE 包裹代码，使生成的代码可以使用 await
-    const fn = new Function('params', 'context', 'return (async () => {\n' + workerData.code + '\n})();');
-    const result = await fn(params, { ...context, user: workerData.user });
-    parentPort.postMessage({ success: true, data: result });
-  } catch (err) {
-    parentPort.postMessage({ success: false, error: err.message || String(err) });
-  }
-})();
-`;
-
-    const worker = new Worker(workerCode, {
-      eval: true,
+    const workerPath = join(__dirname, "worker-sandbox-worker.ts");
+    const worker = new Worker(workerPath, {
       workerData: { code, params, hasContext: !!context, user: context?.user },
       resourceLimits: {
         maxOldGenerationSizeMb: cfg.maxMemoryMB,
