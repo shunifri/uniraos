@@ -30,6 +30,8 @@ import type {
 } from "./types.js";
 import { getWorkflowRepository } from "./repository.js";
 import { getUserById, getUsersByRole, getUsersByDepartment, getUserRoles, getUserDepartment } from "../db/user-repository.js";
+import { getInboxService } from "../inbox/index.js";
+import { createWorkflowAdapter } from "../inbox/adapters/workflow-adapter.js";
 
 /** 守卫表达式引擎（简化版 SpEL） */
 export class SimpleGuardEngine {
@@ -249,6 +251,15 @@ export class WorkflowEngine {
       formData: options.formData,
       comment: options.comment,
       completedAt: now,
+    });
+
+    // 完成对应的 InboxItem（异步，不阻塞流程推进）
+    getInboxService().completeBySource("workflow", String(taskId), {
+      action: options.action,
+      formData: options.formData,
+      comment: options.comment,
+    }).catch((err: any) => {
+      console.error("[WorkflowEngine] Failed to complete inbox item:", err.message);
     });
 
     // 会签处理
@@ -511,6 +522,7 @@ export class WorkflowEngine {
         status: "pending",
         dueDate: node.dueDuration ? this.parseDuration(node.dueDuration) : undefined,
       });
+      await this.createInboxItemForTask(task, node, instance);
       return { success: true, instance, task };
     }
 
@@ -527,6 +539,7 @@ export class WorkflowEngine {
         status: "pending",
         dueDate: node.dueDuration ? this.parseDuration(node.dueDuration) : undefined,
       });
+      await this.createInboxItemForTask(task, node, instance);
       return { success: true, instance, task };
     }
 
@@ -557,8 +570,30 @@ export class WorkflowEngine {
       tasks.push(task);
     }
 
+    // 为会签组创建统一的 InboxItem（只创建一次，关联到整个会签组）
+    if (tasks.length > 0) {
+      await this.createInboxItemForTask(tasks[0], node, instance);
+    }
+
     // 返回第一个任务作为代表
     return { success: true, instance, task: tasks[0] };
+  }
+
+  /**
+   * 为 Workflow Task 创建对应的 InboxItem
+   */
+  private async createInboxItemForTask(
+    task: WorkflowTask,
+    node: UserTaskNode,
+    instance: WorkflowInstance,
+  ): Promise<void> {
+    try {
+      const adapter = createWorkflowAdapter();
+      const input = await adapter.toInboxItem(task, node, instance);
+      await getInboxService().createItem(input);
+    } catch (err: any) {
+      console.error("[WorkflowEngine] Failed to create inbox item for task:", err.message);
+    }
   }
 
   private async handleServiceTask(

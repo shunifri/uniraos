@@ -406,11 +406,12 @@ export class AgentLoop {
 
     // 自动检索相关记忆，注入系统提示
     const memoryContext = await this.recallMemories(userMessage);
+    const timeContext = `\n\n【当前系统时间】${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`;
 
     const conversationHistory = this.getHistory(chatOptions?.conversationId);
 
     const messages: Message[] = [
-      { role: "system", content: this.config.systemPrompt + memoryContext },
+      { role: "system", content: this.config.systemPrompt + memoryContext + timeContext },
       ...conversationHistory,
       { role: "user", content: userMessage },
     ];
@@ -708,12 +709,13 @@ export class AgentLoop {
 
     // 自动检索相关记忆，注入系统提示
     const memoryContext = await this.recallMemories(userMessage);
+    const timeContext = `\n\n【当前系统时间】${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`;
 
     const conversationHistory = this.getHistory(chatOptions?.conversationId);
 
     // 构建消息列表：system + 历史 + 新消息
     const messages: Message[] = [
-      { role: "system", content: this.config.systemPrompt + memoryContext },
+      { role: "system", content: this.config.systemPrompt + memoryContext + timeContext },
       ...conversationHistory,
       { role: "user", content: userMessage },
     ];

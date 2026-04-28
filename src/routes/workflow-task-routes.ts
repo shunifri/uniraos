@@ -87,7 +87,8 @@ router.get('/workflow/tasks', requireAuth, async (req, res) => {
  */
 router.post('/workflow/tasks/:taskId/complete', requireAuth, async (req, res) => {
   try {
-    const taskId = parseInt(req.params.taskId, 10);
+    const rawTaskId = Array.isArray(req.params.taskId) ? req.params.taskId[0] : req.params.taskId;
+    const taskId = parseInt(rawTaskId, 10);
     if (isNaN(taskId)) {
       return res.status(400).json({ success: false, error: 'Invalid taskId' });
     }

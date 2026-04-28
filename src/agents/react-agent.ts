@@ -223,15 +223,16 @@ export class ReactAgent implements Agent {
             const confirmData = result.data as any;
             // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
             yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
-            // 发送 tool_result 事件，确保工具状态更新
-            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
             // 等待用户确认（通过 confirmQueue）
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {
               const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
             }).catch((err: any) => ({ cancelled: true, message: err.message }));
-            // 将用户回复作为 tool result
+            // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
+            const userResult = { success: true, data: { userResponse } };
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
+            // 将用户回复作为 tool result 加入对话上下文
             messages.push({ role: "tool", content: JSON.stringify({ userResponse, confirmed: true }), toolCallId: toolCall.id });
           } else {
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
@@ -273,12 +274,14 @@ export class ReactAgent implements Agent {
             const confirmData = result.data as any;
             // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
             yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
-            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {
               const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
             }).catch((err: any) => ({ cancelled: true, message: err.message }));
+            // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
+            const userResult = { success: true, data: { userResponse } };
+            yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
             messages.push({ role: "tool", content: JSON.stringify({ userResponse, confirmed: true }), toolCallId: toolCall.id });
           } else {
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result } };

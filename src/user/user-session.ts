@@ -4,7 +4,7 @@
 import { join } from "path";
 import { existsSync, renameSync, mkdirSync } from "fs";
 import { ShortTermMemory } from "../memory/stm.js";
-import { MySQLLTMBackend } from "../memory/ltm.js";
+import { MySQLLTMBackend, FileLTMBackend } from "../memory/ltm.js";
 import { EnhancedLTMBackend } from "../memory/enhanced/enhanced-ltm-backend.js";
 import type { LTMBackend } from "../memory/ltm-backend.js";
 import type { EmbeddingProvider } from "../memory/embedding-provider.js";
@@ -84,13 +84,26 @@ export class UserSessionManager {
 
   /** 根据配置创建对应的 LTM 后端 */
   private createLTMBackend(userId: string): LTMBackend {
-    // 创建 MySQL LTM 后端
+    if (this.memoryConfig.backend === 'file') {
+      // 文件后端（测试/开发环境）
+      const fileBackend = new FileLTMBackend({
+        storePath: join(this.baseLtmPath, userId),
+        archiveIntervalMs: 60 * 60 * 1000,
+        embeddingProvider: this.embeddingProvider ?? undefined,
+      });
+      return new EnhancedLTMBackend(
+        { storePath: join(this.baseLtmPath, userId) },
+        this.llmProvider ?? undefined,
+        fileBackend,
+      );
+    }
+
+    // 增强后端：使用 MySQL LTM 后端
     const mysqlBackend = new MySQLLTMBackend(userId, {
       archiveIntervalMs: 60 * 60 * 1000,
       embeddingProvider: this.embeddingProvider ?? undefined,
     });
-    
-    // 使用 EnhancedLTMBackend 包装 MySQLLTMBackend，自动获得版本链、遗忘管理、冲突检测能力
+
     return new EnhancedLTMBackend(
       {
         storePath: join(this.baseLtmPath, userId),

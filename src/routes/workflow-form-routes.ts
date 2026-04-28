@@ -62,7 +62,8 @@ router.delete('/workflow/form-bindings/:id', requireAuth, (req, res) => {
 
 router.get('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
   try {
-    const taskId = parseInt(req.params.taskId, 10);
+    const rawTaskId = Array.isArray(req.params.taskId) ? req.params.taskId[0] : req.params.taskId;
+    const taskId = parseInt(rawTaskId, 10);
     if (isNaN(taskId)) {
       return res.status(400).json({ success: false, error: 'Invalid taskId' });
     }
@@ -75,7 +76,8 @@ router.get('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
 
 router.post('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
   try {
-    const taskId = parseInt(req.params.taskId, 10);
+    const rawTaskId = Array.isArray(req.params.taskId) ? req.params.taskId[0] : req.params.taskId;
+    const taskId = parseInt(rawTaskId, 10);
     if (isNaN(taskId)) {
       return res.status(400).json({ success: false, error: 'Invalid taskId' });
     }
