@@ -72,6 +72,8 @@ const Layout: React.FC = () => {
     evolution: 'menu:evolution.read',
     federation: 'menu:federation.read',
     connections: 'connection.read',
+    approvals: 'workflow:task.read',
+    forms: 'form:definition.read',
     admin: 'menu:admin.read',
   };
 
