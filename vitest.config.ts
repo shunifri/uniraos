@@ -10,11 +10,21 @@ export default defineConfig({
       "react/jsx-dev-runtime": resolve(__dirname, "web/node_modules/react/jsx-dev-runtime.js"),
     },
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+    mainFields: ["module", "main"],
+    conditions: ["import", "module", "default"],
+  },
+  optimizeDeps: {
+    include: ["react", "react-dom", "react-dom/client", "react-dom/test-utils"],
   },
   test: {
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     environment: "jsdom",
     setupFiles: ["tests/setup.ts"],
+    server: {
+      deps: {
+        inline: [/^(react|react-dom)/],
+      },
+    },
     env: {
       // Qdrant 端口配置 - 与 docker-compose.local.yml 保持一致
       QDRANT_URL: "http://localhost:6334",
