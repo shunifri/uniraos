@@ -29,10 +29,15 @@ import {
   ApartmentOutlined,
   LinkOutlined,
   AuditOutlined,
+  CheckSquareOutlined,
+  FormOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
 import { useAuthStore } from '@/store/auth';
+import { useInboxStore } from '@/store/inbox-store';
+import InboxBadge from '@/components/inbox/InboxBadge';
+import { useEffect } from 'react';
 
 const { Header, Content } = AntLayout;
 const { Text } = Typography;
@@ -67,7 +72,6 @@ const Layout: React.FC = () => {
     evolution: 'menu:evolution.read',
     federation: 'menu:federation.read',
     connections: 'connection.read',
-    approvals: 'menu:approvals.read',
     admin: 'menu:admin.read',
   };
 
@@ -125,9 +129,15 @@ const Layout: React.FC = () => {
     },
     {
       key: 'approvals',
-      icon: <AuditOutlined />,
-      label: t('nav_approvals'),
+      icon: <CheckSquareOutlined />,
+      label: '审批中心',
     },
+    {
+      key: 'forms',
+      icon: <FormOutlined />,
+      label: '表单中心',
+    },
+
     {
       key: 'admin',
       icon: <CrownOutlined />,
@@ -160,6 +170,16 @@ const Layout: React.FC = () => {
   const toggleLocale = () => {
     setLang(lang === 'zh' ? 'en' : 'zh');
   };
+
+  // 连接 Inbox SSE（应用启动时）
+  useEffect(() => {
+    if (user) {
+      useInboxStore.getState().connectSSE();
+    }
+    return () => {
+      useInboxStore.getState().disconnectSSE();
+    };
+  }, [user]);
 
   const userMenuItems = [
     {
@@ -234,6 +254,7 @@ const Layout: React.FC = () => {
         />
 
         <Space size={8} style={{ flexShrink: 0 }}>
+          <InboxBadge />
           <Button
             type="text"
             icon={isDark ? <SunOutlined /> : <MoonOutlined />}

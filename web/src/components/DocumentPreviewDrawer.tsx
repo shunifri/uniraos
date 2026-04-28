@@ -224,7 +224,7 @@ export function DocumentPreviewDrawer({
       open={open}
       onClose={onClose}
       width={900}
-      bodyStyle={{ padding: 0 }}
+      styles={{ body: { padding: 0 } }}
     >
       <div style={{ display: "flex", height: "100%" }}>
         {/* 左侧树形结构 */}

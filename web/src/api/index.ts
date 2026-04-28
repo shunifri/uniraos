@@ -288,3 +288,16 @@ export const deleteConnection = (id: number) =>
 
 export const testConnection = (id: number) =>
   api.post<{ success: boolean; data: { success: boolean; message: string } }>(`/api/connections/${id}/test`);
+
+// ---------------------------------------------------------------------------
+// Workflow Tasks (审批中心)
+// ---------------------------------------------------------------------------
+
+export const getWorkflowTasks = (params?: { page?: number; pageSize?: number; status?: string }) =>
+  api.get<{ success: boolean; data: any[]; pagination: { total: number } }>(`/api/workflow/tasks?page=${params?.page || 1}&pageSize=${params?.pageSize || 20}`);
+
+export const getWorkflowTaskForm = (taskId: number) =>
+  api.get<{ success: boolean; data: any }>(`/api/workflow/tasks/${taskId}/form`);
+
+export const completeWorkflowTask = (taskId: number, body: { action: string; comment?: string; formData?: any }) =>
+  api.post<{ success: boolean; data: any }>(`/api/workflow/tasks/${taskId}/complete`, body);

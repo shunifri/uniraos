@@ -33,6 +33,8 @@ import {
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
+import { useInboxStore } from "@/store/inbox-store";
+import InboxPanel from "@/components/inbox/InboxPanel";
 import { apiFetch, pageImageUrl, apiCreateConversation } from "@/api";
 import ConfirmCard from "@/components/ConfirmCard";
 import { getFileIcon, formatFileSize, HighlightedPageImage } from "@/components/chat/utils";
@@ -163,7 +165,7 @@ function preprocessVideos(md: string): string {
 
 // ---- API helpers ----
 function parseMsg(m: any): ChatMsg {
-  return {
+  const parsed: ChatMsg = {
     id: m.id,
     role: m.role,
     content: m.content,
@@ -176,6 +178,13 @@ function parseMsg(m: any): ChatMsg {
     webReferences: m.extra?.webReferences || undefined,
     resultData: m.extra?.resultData ?? undefined,
   };
+  // 预解析 user_confirm 数据，避免每次渲染 JSON.parse 产生新对象引用
+  if (parsed.role === "user_confirm") {
+    try {
+      parsed.parsedData = JSON.parse(m.content);
+    } catch {}
+  }
+  return parsed;
 }
 
 interface ChatPageProps {
@@ -185,6 +194,7 @@ interface ChatPageProps {
 export default function ChatPage({ embedded = false }: ChatPageProps) {
   const t = useI18nStore((s) => s.t);
   const embeddedRole = useAuthStore((s) => s.embeddedRole);
+  const panelOpen = useInboxStore((s) => s.panelOpen);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convStates, setConvStates] = useState<Map<string, ConversationState>>(new Map());
@@ -198,6 +208,7 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
   // 全局状态（不随对话切换而清空）
   const [mdPreviews, setMdPreviews] = useState<Record<string, string>>({});
   const [confirmedCards, setConfirmedCards] = useState<Set<string>>(new Set());
+  const [confirmedDataMap, setConfirmedDataMap] = useState<Record<string, any>>({});
   const [pptxThemes, setPptxThemes] = useState<Array<{ name: string; label: string; custom: boolean; sourceFile?: string; preview: { bg: string; title: string; accent: string } }>>([]);
   const pptxThemesFetched = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -325,9 +336,10 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
     }
   };
 
-  // 从历史消息中推断哪些 user_confirm 卡片已经被处理过
+  // 从历史消息中推断哪些 user_confirm 卡片已经被处理过，并提取已提交的数据
   const syncConfirmedCards = (messages: ChatMsg[]) => {
     const toDisable: string[] = [];
+    const newDataMap: Record<string, any> = {};
     messages.forEach((msg, i) => {
       if (msg.role === "user_confirm") {
         // 如果 user_confirm 后面有 assistant/tool/user 等实际跟进消息，说明已处理
@@ -336,9 +348,36 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
         );
         if (hasFollowUp) {
           try {
-            const data = JSON.parse(msg.content);
-            if (data.confirmId) toDisable.push(data.confirmId);
-          } catch {}
+            const data = msg.parsedData || JSON.parse(msg.content);
+            if (data.confirmId) {
+              toDisable.push(data.confirmId);
+              // 查找后续 tool 消息，优先找包含 userResponse 的（新格式），fallback 到第一个
+              const toolMsgs = messages.slice(i + 1).filter(m => m.role === "tool");
+              const userResponseMsg = toolMsgs.find(m => m.resultData?.userResponse !== undefined);
+              const toolMsg = userResponseMsg || toolMsgs[0];
+              if (toolMsg) {
+                // 防御性处理：extra 可能是字符串（旧数据）或对象
+                let extra = (toolMsg as any).extra;
+                if (typeof extra === "string") {
+                  try { extra = JSON.parse(extra); } catch { extra = undefined; }
+                }
+                const submitted = (toolMsg as any).resultData || extra?.resultData;
+                // tool result data 包装在 { userResponse: formData } 中，需要解包
+                let formData = submitted?.userResponse ?? submitted;
+                // 过滤空对象/空值，避免错误恢复
+                if (formData && typeof formData === "object" && !Array.isArray(formData)) {
+                  if (Object.keys(formData).length > 0) {
+                    newDataMap[data.confirmId] = formData;
+                  }
+                } else if (formData !== undefined && formData !== null) {
+                  // 非对象值（如字符串、数字）也保存
+                  newDataMap[data.confirmId] = formData;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[syncConfirmedCards] parse error:", e);
+          }
         }
       }
     });
@@ -348,6 +387,9 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
         toDisable.forEach(id => next.add(id));
         return next;
       });
+    }
+    if (Object.keys(newDataMap).length > 0) {
+      setConfirmedDataMap(prev => ({ ...prev, ...newDataMap }));
     }
   };
 
@@ -845,7 +887,7 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
                   ...currentState,
                   messages: removeTyping(currentState.messages).map(msg =>
                     msg.status === "streaming" ? { ...msg, status: undefined } : msg
-                  ).concat([{ role: "user_confirm", content: JSON.stringify(data) }]),
+                  ).concat([{ role: "user_confirm", content: JSON.stringify(data), parsedData: data }]),
                 });
               });
               needNewBubble = true;
@@ -1085,23 +1127,23 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
           {activeState.messages.map((msg, i) => {
             // 渲染用户确认卡片
             if (msg.role === "user_confirm") {
-              let data: any;
-              try { data = JSON.parse(msg.content); } catch { data = {}; }
-              const isDisabled = confirmedCards.has(data.confirmId);
+              const data = msg.parsedData || {};
+              const isDisabled = confirmedCards.has(data.confirmId as string);
               return (
                 <div key={msg.id ?? `m${i}`} style={{ marginLeft: 46 }}>
                   <ConfirmCard
-                    confirmId={data.confirmId}
-                    type={data.type}
-                    title={data.title}
-                    description={data.description}
-                    options={data.options}
-                    multiSelect={data.multiSelect}
-                    fields={data.fields}
-                    schema={data.schema}
-                    confirmText={data.confirmText ?? "确定"}
-                    cancelText={data.cancelText ?? "取消"}
+                    confirmId={data.confirmId as string}
+                    type={data.type as any}
+                    title={data.title as string}
+                    description={data.description as string}
+                    options={data.options as any}
+                    multiSelect={data.multiSelect as boolean}
+                    fields={data.fields as any}
+                    schema={data.schema as any}
+                    confirmText={(data.confirmText as string) ?? "确定"}
+                    cancelText={(data.cancelText as string) ?? "取消"}
                     disabled={isDisabled}
+                    submittedData={confirmedDataMap[data.confirmId as string]}
                     onConfirm={async (confirmId, response) => {
                       try {
                         await apiFetch("/api/agent/chat/confirm", {
@@ -1546,6 +1588,9 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
           </div>
         )}
       </Flex>
+
+      {/* Inbox Panel — 右侧待处理事项面板 */}
+      {panelOpen && <InboxPanel />}
 
       {/* 附件解析内容查看 Drawer */}
       <Drawer

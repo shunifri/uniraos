@@ -19,7 +19,10 @@ import FilesPage from "@/pages/Files";
 import EvolutionPage from "@/pages/Evolution";
 import FederationPage from "@/pages/Federation";
 import ConnectionsPage from "@/pages/Connections";
-import ApprovalCenter from "@/pages/ApprovalCenter";
+import ApprovalsPage from "@/pages/Approvals";
+import WorkflowTaskPage from "@/pages/WorkflowTaskPage";
+import FormsPage from "@/pages/FormsPage";
+
 import EmbedChat from "@/pages/EmbedChat";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -83,7 +86,9 @@ export default function App() {
               <Route path="evolution" element={<EvolutionPage />} />
               <Route path="federation" element={<FederationPage />} />
               <Route path="connections" element={<ConnectionsPage />} />
-              <Route path="approvals" element={<ApprovalCenter />} />
+              <Route path="approvals" element={<ApprovalsPage />} />
+              <Route path="workflow/tasks/:id" element={<WorkflowTaskPage />} />
+              <Route path="forms" element={<FormsPage />} />
             </Route>
             <Route path="/embed" element={<EmbedChat />} />
           </Routes>

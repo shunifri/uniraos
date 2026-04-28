@@ -48,6 +48,8 @@ export interface ChatMsg {
   kbReferences?: KbReference[];
   webReferences?: WebReference[];
   resultData?: Record<string, unknown>;
+  /** 预解析的 user_confirm 数据（避免每次渲染 JSON.parse） */
+  parsedData?: Record<string, unknown>;
 }
 
 export interface Conversation {
