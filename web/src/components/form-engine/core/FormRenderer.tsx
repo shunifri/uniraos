@@ -22,7 +22,12 @@ import { useAuthStore } from "../../../store/auth";
 
 export interface AutoSaveConfig {
   debounce?: number;
-  onSave: (formData: Record<string, any>) => void | Promise<void>;
+  /** 后端保存回调 */
+  onSave?: (formData: Record<string, any>) => void | Promise<void>;
+  /** localStorage 草稿 key，设置后自动保存到 localStorage */
+  localStorageKey?: string;
+  /** 是否显示保存状态提示 */
+  showStatus?: boolean;
 }
 
 export interface FormRendererProps {
@@ -166,25 +171,48 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   autoSave,
 }) => {
   const { token } = theme.useToken();
+
+  // ───────────────────────────────────────────────────────────────
+  // 草稿恢复：从 localStorage 加载草稿数据
+  // ───────────────────────────────────────────────────────────────
+  const resolvedInitialData = React.useMemo(() => {
+    if (!autoSave?.localStorageKey) return initialData;
+    try {
+      const draft = localStorage.getItem(autoSave.localStorageKey);
+      if (draft) {
+        const parsed = JSON.parse(draft);
+        // 检查草稿是否是今天的（可选：根据需求调整）
+        if (parsed._timestamp && Date.now() - parsed._timestamp < 7 * 24 * 60 * 60 * 1000) {
+          const { _timestamp, ...data } = parsed;
+          return { ...initialData, ...data };
+        }
+      }
+    } catch {
+      // ignore parse error
+    }
+    return initialData;
+  }, [autoSave?.localStorageKey, initialData]);
+
   // 使用 useState lazy initializer 创建 store，避免 StrictMode 双渲染问题
-  const [store] = useState(() => createFormStore({ schema, initialData, readOnly }));
+  const [store] = useState(() => createFormStore({ schema, initialData: resolvedInitialData, readOnly }));
 
   // 当 schema 或 initialData 变化时重置 store
   useEffect(() => {
     store.getState().reset(readOnly);
-    if (initialData) {
-      store.getState().setFieldValues(initialData);
+    if (resolvedInitialData) {
+      store.getState().setFieldValues(resolvedInitialData);
     }
     applyLinkageToAllFields(store, schema);
-  }, [schema, initialData, store, readOnly]);
+  }, [schema, resolvedInitialData, store, readOnly]);
 
   // 防抖定时器管理
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // 自动保存防抖
+  // 自动保存状态
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRef = useRef(autoSave);
   autoSaveRef.current = autoSave;
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // 强制重渲染机制
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
@@ -265,9 +293,41 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
         if (autoSaveTimerRef.current) {
           clearTimeout(autoSaveTimerRef.current);
         }
-        const debounceMs = autoSaveRef.current.debounce ?? 3000;
+
+        const config = autoSaveRef.current;
+        const debounceMs = config.debounce ?? 3000;
+
+        if (config.showStatus) {
+          setSaveStatus('saving');
+        }
+
         autoSaveTimerRef.current = setTimeout(() => {
-          autoSaveRef.current?.onSave(state.formData);
+          // 在回调中重新获取最新 state，避免闭包引用旧值
+          const currentState = store.getState();
+          const currentData = currentState.formData;
+
+          // localStorage 草稿保存
+          if (config.localStorageKey) {
+            try {
+              localStorage.setItem(config.localStorageKey, JSON.stringify({
+                ...currentData,
+                _timestamp: Date.now(),
+              }));
+            } catch {
+              // ignore storage error (e.g. quota exceeded)
+            }
+          }
+
+          // 后端保存回调
+          if (config.onSave) {
+            config.onSave(currentData);
+          }
+
+          if (config.showStatus) {
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 2000);
+          }
+
           autoSaveTimerRef.current = null;
         }, debounceMs);
       }
@@ -528,6 +588,11 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
       onSubmitCapture={handleSubmit}
     >
       {renderLayout()}
+      {autoSave?.showStatus && saveStatus !== 'idle' && (
+        <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
+          {saveStatus === 'saving' ? '保存中...' : '已自动保存'}
+        </div>
+      )}
     </Form>
   );
 };
