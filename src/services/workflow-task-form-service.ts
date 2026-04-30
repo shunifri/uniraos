@@ -1,5 +1,6 @@
 import { getDb } from '../db/database.js';
 import { getWorkflowRepository } from '../workflow/repository.js';
+import { getTaskFormSchema } from '../workflow/engine.js';
 import { getFormDefinition, getFormDefinitionByKey } from './form-service.js';
 import { getWorkflowFormBindingByNode } from './workflow-form-service.js';
 import type { TaskAction } from '../workflow/types.js';
@@ -53,13 +54,12 @@ export async function saveTaskForm(
   const instance = await repo.getInstanceById(task.instanceId);
   if (!instance) throw new Error(`Instance ${task.instanceId} not found`);
 
-  // 3. 获取 definitionKey
-  const db = getDb();
-  const defRow = db.prepare('SELECT key FROM workflow_definitions WHERE id = ?').get(instance.definitionId) as { key: string } | undefined;
-  if (!defRow) throw new Error(`Definition ${instance.definitionId} not found`);
-  const definitionKey = defRow.key;
+  // 3. 获取流程定义
+  const def = await repo.getDefinitionById(instance.definitionId);
+  if (!def) throw new Error(`Definition ${instance.definitionId} not found`);
+  const definitionKey = def.key;
 
-  // 4. 获取节点绑定
+  // 4. 获取节点绑定（用于向后兼容）
   const binding = getWorkflowFormBindingByNode(definitionKey, task.nodeId);
 
   // 5. 保存到 task
@@ -115,24 +115,42 @@ export async function loadTaskForm(taskId: number): Promise<TaskFormPayload> {
   const instance = await repo.getInstanceById(task.instanceId);
   if (!instance) throw new Error(`Instance ${task.instanceId} not found`);
 
-  // 3. 获取 definition_key
-  const db = getDb();
-  const defRow = db.prepare('SELECT key FROM workflow_definitions WHERE id = ?').get(instance.definitionId) as { key: string } | undefined;
-  if (!defRow) throw new Error(`Definition ${instance.definitionId} not found`);
-  const definitionKey = defRow.key;
+  // 3. 获取流程定义
+  const def = await repo.getDefinitionById(instance.definitionId);
+  if (!def) throw new Error(`Definition ${instance.definitionId} not found`);
+  const definitionKey = def.key;
 
-  // 4. 获取节点绑定
-  const binding = getWorkflowFormBindingByNode(definitionKey, task.nodeId);
-  if (!binding) {
-    throw new Error(`No form binding for node ${task.nodeId} in workflow ${definitionKey}`);
+  // 4. 获取表单定义（优先从流程定义节点中解析，支持表单中心引用和内嵌表单）
+  let formSchema: any = null;
+  const instanceDef = def.definition;
+  if (instanceDef) {
+    const formResult = await getTaskFormSchema(task, instanceDef);
+    if (formResult) {
+      formSchema = formResult.schema;
+      // 字段权限可返回给前端
+      // formResult.fieldPermissions
+    }
   }
 
-  // 5. 获取表单定义（优先按 ID 查询， fallback 按 key）
-  let formDef = getFormDefinition(binding.form_id);
-  if (!formDef) {
-    formDef = getFormDefinitionByKey(binding.form_id);
+  let binding: any = null;
+
+  // 如果没有从节点获取到 schema，保持原有逻辑（用于向后兼容）
+  if (!formSchema) {
+    // 4.1 获取节点绑定
+    binding = getWorkflowFormBindingByNode(definitionKey, task.nodeId);
+    if (!binding) {
+      throw new Error(`No form binding for node ${task.nodeId} in workflow ${definitionKey}`);
+    }
+
+    // 4.2 获取表单定义（优先按 ID 查询， fallback 按 key）
+    let formDef = getFormDefinition(binding.form_id);
+    if (!formDef) {
+      formDef = getFormDefinitionByKey(binding.form_id);
+    }
+    if (!formDef) throw new Error(`Form ${binding.form_id} not found`);
+
+    formSchema = typeof formDef.schema_json === 'string' ? JSON.parse(formDef.schema_json) : formDef.schema_json;
   }
-  if (!formDef) throw new Error(`Form ${binding.form_id} not found`);
 
   // 6. 获取流程变量
   const variables = await repo.getVariables(task.instanceId);
@@ -169,7 +187,7 @@ export async function loadTaskForm(taskId: number): Promise<TaskFormPayload> {
 
   return {
     taskId,
-    schema: typeof formDef.schema_json === 'string' ? JSON.parse(formDef.schema_json) : formDef.schema_json,
+    schema: formSchema,
     initialData,
     binding,
     mappingApplied,
