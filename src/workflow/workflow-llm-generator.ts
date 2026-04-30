@@ -8,8 +8,9 @@
  */
 
 import type { LLMProvider, Message } from "../llm/types.js";
-import type { WorkflowDefinition, WorkflowSpec, FormSchema, WorkflowNode } from "./types.js";
+import type { WorkflowDefinition, WorkflowSpec, FormSchema, WorkflowNode, UserTaskNode } from "./types.js";
 import { getWorkflowRepository } from "./repository.js";
+import { createFormDefinition, getFormDefinition } from "../services/form-service.js";
 
 export interface GenerateWorkflowInput {
   /** 自然语言描述 */
@@ -67,7 +68,8 @@ function buildSystemPrompt(): string {
   "id": "节点id",
   "type": "user_task",
   "name": "节点显示名称",
-  "form": { /* 可选，表单定义 */ },
+  "formDefinitionId": "form-uuid-or-key",  // 优先使用，引用表单中心的定义
+  "form": { /* 内嵌表单定义（不推荐，优先使用 formDefinitionId） */ },
   "approvers": [
     { "type": "role", "value": "role_manager" },
     { "type": "role_dept", "value": "role_employee", "deptId": "dept_001" },
@@ -79,6 +81,8 @@ function buildSystemPrompt(): string {
   "next": "下一个节点id"
 }
 \`\`\`
+- **推荐使用 formDefinitionId** 引用表单中心已有的表单定义，复用表单引擎的完整能力（联动、数据源、权限等）
+- form 字段保留用于简单场景或快速原型
 - approvers 是新策略（优先于旧 assignee/assigneePolicy），支持多种审批人查找方式：
   - type="user" value="user_123" → 指定用户
   - type="role" value="role_manager" → 按角色查找所有用户
@@ -371,6 +375,73 @@ function validateWorkflowJson(json: unknown): { valid: boolean; error?: string }
 }
 
 /**
+ * 为流程中的每个用户任务节点自动生成并关联表单
+ */
+async function autoCreateFormsForWorkflow(
+  workflowSpec: WorkflowSpec,
+  workflowKey: string,
+  workflowName: string,
+  getProvider: () => LLMProvider | null
+): Promise<WorkflowSpec> {
+  const updatedNodes = [...workflowSpec.nodes];
+
+  for (let i = 0; i < updatedNodes.length; i++) {
+    const node = updatedNodes[i];
+    if (node.type === "user_task") {
+      const userTask = node as UserTaskNode;
+
+      // 如果节点有 form 但没有 formDefinitionId，
+      // 自动将 form 保存为独立的表单定义并关联
+      if (userTask.form && !userTask.formDefinitionId) {
+        const formKey = `${workflowKey}_${node.id}_form`;
+        const formName = `${workflowName} - ${userTask.name || node.id}`;
+
+        try {
+          // 将 FormSchema 转换为 RaosFormSchema 格式
+          const raosSchema: any = {
+            type: "object",
+            title: formName,
+            properties: {},
+            required: [],
+          };
+
+          for (const field of userTask.form.fields) {
+            raosSchema.properties[field.key] = {
+              type: field.type === "number" ? "number" : "string",
+              title: field.label,
+              default: field.defaultValue,
+            };
+            if (field.required) {
+              raosSchema.required.push(field.key);
+            }
+            if (field.options) {
+              raosSchema.properties[field.key].enum = field.options.map((o: any) => o.id);
+              raosSchema.properties[field.key].enumNames = field.options.map((o: any) => o.label);
+            }
+          }
+
+          const formDef = await createFormDefinition({
+            key: formKey,
+            name: formName,
+            schemaJson: raosSchema,
+            createdBy: "workflow_llm_generator",
+          });
+
+          // 替换为 formDefinitionId 引用
+          (updatedNodes[i] as UserTaskNode).formDefinitionId = formDef.id;
+          delete (updatedNodes[i] as UserTaskNode).form;  // 移除内嵌表单
+        } catch (e) {
+          console.warn(`[WorkflowLLM] Failed to auto-create form for node ${node.id}:`, e);
+          // 失败时保留原 form，不阻塞流程创建
+        }
+      }
+    }
+  }
+
+  return { ...workflowSpec, nodes: updatedNodes };
+}
+
+/**
  * 使用 LLM 生成工作流定义
  */
 export async function generateWorkflow(
@@ -471,6 +542,9 @@ export async function generateWorkflow(
       nodes: generated.nodes,
     };
 
+    // ✅ 自动为用户任务节点创建并关联表单
+    const specWithForms = await autoCreateFormsForWorkflow(spec, finalKey, generated.name, getProvider);
+
     // 提取 formSchema（对应第一个 fill_form 的 form）
     let formSchema: FormSchema | undefined;
     if (generated.formSchema && typeof generated.formSchema === "object" && generated.formSchema !== null) {
@@ -492,7 +566,7 @@ export async function generateWorkflow(
       await repo.updateDefinition(existingDef.id, {
         name: generated.name,
         category: generated.category ?? existingDef.category,
-        definition: spec,
+        definition: specWithForms,
         formSchema,
       });
       // 防御性处理：如果 getDefinitionByKey 因脏数据失败，直接构造返回对象
@@ -500,7 +574,7 @@ export async function generateWorkflow(
         definition = (await repo.getDefinitionByKey(finalKey))!;
       } catch (e) {
         console.error(`[WorkflowLLM] getDefinitionByKey failed after update for key=${finalKey}: ${e instanceof Error ? e.message : String(e)}`);
-        definition = { ...existingDef, name: generated.name, category: generated.category ?? existingDef.category, definition: spec, formSchema };
+        definition = { ...existingDef, name: generated.name, category: generated.category ?? existingDef.category, definition: specWithForms, formSchema };
       }
     } else {
       // 创建新定义
@@ -509,7 +583,7 @@ export async function generateWorkflow(
         key: finalKey,
         version: 1,
         category: generated.category ?? input.category ?? "general",
-        definition: spec,
+        definition: specWithForms,
         formSchema,
         createdBy: "llm_generator",
       });
