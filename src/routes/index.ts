@@ -34,7 +34,7 @@ import { createFileRoutes } from "./file-routes.js";
 import { createGraphRoutes } from "./graph-routes.js";
 import { createShareRoutes } from "./share-routes.js";
 import connectionsRoutes from "./connections-routes.js";
-import formRoutes from "./form-routes.js";
+import { createFormRoutes } from "./form-routes.js";
 import workflowFormRoutes from "./workflow-form-routes.js";
 import workflowTaskRoutes from "./workflow-task-routes.js";
 import formValidationRoutes from "./form-validation-routes.js";
@@ -92,7 +92,7 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
     app.use("/api", createShareRoutes({ ...deps, shareRepository: deps.shareRepository }));
   }
   app.use("/api/connections", connectionsRoutes);
-  app.use("/api", formRoutes);
+  app.use("/api", createFormRoutes(deps));
   app.use("/api", workflowFormRoutes);
   app.use("/api", workflowTaskRoutes);
   app.use("/api", formValidationRoutes);
