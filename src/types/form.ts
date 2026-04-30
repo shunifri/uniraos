@@ -91,6 +91,8 @@ export interface RaosFieldSchema {
   "x-condition"?: ConditionalSchemaRule[];
   properties?: Record<string, RaosFieldSchema>; // type: 'object' 时
   items?: RaosFieldSchema; // type: 'array' 时
+  enum?: any[];
+  enumNames?: string[];
 }
 
 export interface ConditionalSchemaRule {
@@ -245,4 +247,26 @@ export interface FieldState {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+}
+
+// Legacy Form Schema (for workflow inline forms)
+export interface FormFieldValidation {
+  type: "required" | "min" | "max" | "pattern" | "email";
+  value?: unknown;
+  message?: string;
+}
+
+export interface FormField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "select" | "radio" | "checkbox" | "textarea" | "date" | "file" | "user" | "department";
+  required?: boolean;
+  options?: Array<{ id: string; label: string }>;
+  placeholder?: string;
+  defaultValue?: unknown;
+  validation?: FormFieldValidation[];
+}
+
+export interface FormSchema {
+  fields: FormField[];
 }
