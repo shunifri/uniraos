@@ -30,6 +30,7 @@ import type {
 } from "./types.js";
 import { getWorkflowRepository } from "./repository.js";
 import { getUserById, getUsersByRole, getUsersByDepartment, getUserRoles, getUserDepartment } from "../db/user-repository.js";
+import { getFormDefinition } from "../services/form-service.js";
 
 /** 守卫表达式引擎（简化版 SpEL） */
 export class SimpleGuardEngine {
@@ -868,6 +869,43 @@ export class WorkflowEngine {
     const seconds = parseInt(match[3] ?? "0") * 1000;
     return Date.now() + hours + minutes + seconds;
   }
+}
+
+/**
+ * 获取任务的表单定义
+ * 优先使用 formDefinitionId 引用表单中心的定义，fallback 到内嵌 form
+ */
+export async function getTaskFormSchema(task: WorkflowTask, workflowSpec: WorkflowSpec): Promise<any | null> {
+  const node = workflowSpec.nodes.find((n) => n.id === task.nodeId);
+  if (!node || node.type !== "user_task") {
+    return null;
+  }
+
+  const userTaskNode = node as UserTaskNode;
+
+  // 优先使用 formDefinitionId 引用
+  if (userTaskNode.formDefinitionId) {
+    const formDef = await getFormDefinition(userTaskNode.formDefinitionId);
+    if (formDef) {
+      return {
+        schema: formDef.schema_json,
+        fieldPermissions: userTaskNode.formFieldPermissions,
+        source: "form_center",
+        formId: formDef.id,
+      };
+    }
+  }
+
+  // Fallback 到内嵌 form
+  if (userTaskNode.form) {
+    return {
+      schema: userTaskNode.form,
+      fieldPermissions: userTaskNode.formFieldPermissions,
+      source: "inline",
+    };
+  }
+
+  return null;
 }
 
 // ===== 单例 =====
