@@ -10,6 +10,12 @@
 // 根级 Schema
 // ───────────────────────────────────────────────────────────────
 
+export interface CrossFieldValidationRule {
+  expr: string;
+  message: string;
+  targetFields?: string[];
+}
+
 export interface RaosFormSchema {
   type: "object";
   title?: string;
@@ -18,6 +24,7 @@ export interface RaosFormSchema {
   required?: string[];
   layout?: FormLayout;
   actions?: FormAction[];
+  "x-crossFieldValidation"?: CrossFieldValidationRule[];
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -81,8 +88,15 @@ export interface RaosFieldSchema {
     write?: string[];
   };
   "x-asyncValidator"?: AsyncValidatorConfig;
+  "x-condition"?: ConditionalSchemaRule[];
   properties?: Record<string, RaosFieldSchema>; // type: 'object' 时
   items?: RaosFieldSchema; // type: 'array' 时
+}
+
+export interface ConditionalSchemaRule {
+  when: string;
+  then: Partial<RaosFieldSchema>;
+  else?: Partial<RaosFieldSchema>;
 }
 
 export interface AsyncValidatorConfig {
