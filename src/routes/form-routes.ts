@@ -7,8 +7,12 @@ import {
 } from '../services/form-service.js';
 import { resolveDataSource } from '../services/data-source-service.js';
 import { testConnection, testConnectionConfig } from '../services/database-connector.js';
+import { generateForm } from '../services/form-llm-generator.js';
+import type { RouteDependencies } from './index.js';
 
-const router = Router();
+export function createFormRoutes(deps: RouteDependencies): Router {
+  const { getCurrentProvider } = deps;
+  const router = Router();
 
 // Form Definitions
 router.post('/form/definitions', requireAuth, (req, res) => {
@@ -134,4 +138,29 @@ router.post('/form/data-source/test-connection', requireAuth, async (req, res) =
   }
 });
 
-export default router;
+// Generate form from natural language
+router.post('/form/generate', requireAuth, async (req, res) => {
+  try {
+    const { key, name, description, category, existingId } = req.body;
+    if (!key || !name) {
+      return res.status(400).json({ success: false, error: 'key and name are required' });
+    }
+
+    const result = await generateForm(
+      { key, name, description, category, existingId },
+      () => getCurrentProvider()
+    );
+
+    if (result.success) {
+      res.json({ success: true, data: result.definition });
+    } else {
+      res.status(400).json({ success: false, error: result.error });
+    }
+  } catch (error: any) {
+    console.error('[FORM_GENERATE_ERROR]', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+  return router;
+}

@@ -83,7 +83,9 @@ export interface StarterConstraint {
 /** 用户任务（需要人工处理） */
 export interface UserTaskNode extends BaseNode {
   type: "user_task";
-  form?: FormSchema;
+  form?: FormSchema;                // 保留做向后兼容
+  formDefinitionId?: string;        // 新增：引用表单中心的定义 ID
+  formFieldPermissions?: Record<string, "read" | "write" | "hidden">;  // 新增：节点级字段权限
   assigneePolicy?: string;          // 兼容旧策略："starter", "starter.manager", "starter.director", 或具体用户ID
   assignee?: string;                // 兼容旧策略：固定分配人
   approvers?: ApproverConfig[];     // 新策略：审批人配置（优先于 assignee/assigneePolicy）
