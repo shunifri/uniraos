@@ -1,4 +1,5 @@
 // src/services/form-llm-generator.ts
+import { getFormDefinition, createFormDefinition, updateFormDefinition } from "./form-service.js";
 import type { LLMProvider, Message } from "../llm/types.js";
 import type { RaosFormSchema } from "../types/form.js";
 
@@ -200,8 +201,122 @@ export function validateFormSchema(json: unknown): { valid: boolean; error?: str
   return { valid: true };
 }
 
+/** 构建 user prompt */
+function buildUserPrompt(input: GenerateFormInput, existing?: any): string {
+  let prompt = `请根据以下描述设计一个表单：\n\n`;
+  prompt += `【表单名称】${input.name}\n`;
+  prompt += `【表单标识】${input.key}\n`;
+  if (input.category) {
+    prompt += `【分类】${input.category}\n`;
+  }
+  prompt += `\n【需求描述】\n${input.description}\n\n`;
+
+  if (existing) {
+    prompt += `【现有表单定义】\n请基于以下现有表单进行修改：\n`;
+    prompt += JSON.stringify(existing.schema_json || existing.definition, null, 2);
+    prompt += `\n\n请根据上面的需求描述修改这个表单。\n`;
+  }
+
+  prompt += `请直接输出 JSON，不要包含任何解释文字。`;
+  return prompt;
+}
+
+/**
+ * 使用 LLM 生成表单定义
+ */
+export async function generateForm(
+  input: GenerateFormInput,
+  getProvider: () => LLMProvider | null
+): Promise<GenerateFormResult> {
+  const provider = getProvider();
+  if (!provider) {
+    return { success: false, error: "LLM 未配置，请先配置模型" };
+  }
+
+  // 如果提供了 existingId，获取现有表单
+  let existing: any;
+  if (input.existingId) {
+    existing = await getFormDefinition(input.existingId);
+    if (!existing) {
+      return { success: false, error: `未找到现有表单: ${input.existingId}` };
+    }
+  }
+
+  const messages: Message[] = [
+    { role: "system", content: buildSystemPrompt() },
+    { role: "user", content: buildUserPrompt(input, existing) },
+  ];
+
+  try {
+    const response = await provider.chat(messages);
+
+    if (response.finishReason === "error" || !response.content) {
+      return { success: false, error: "LLM 生成失败: " + (response.content || "未知错误") };
+    }
+
+    let contentStr = typeof response.content === "string" ? response.content : "";
+    if (typeof response.content !== "string" && response.content !== null && response.content !== undefined) {
+      try {
+        contentStr = JSON.stringify(response.content);
+      } catch {
+        contentStr = String(response.content);
+      }
+    }
+
+    const rawJson = extractJson(contentStr);
+    if (!rawJson) {
+      return { success: false, error: "无法从 LLM 响应中提取 JSON", rawJson: contentStr };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch (e) {
+      return { success: false, error: `JSON 解析失败: ${e instanceof Error ? e.message : String(e)}`, rawJson };
+    }
+
+    const validation = validateFormSchema(parsed);
+    if (!validation.valid) {
+      return { success: false, error: `验证失败: ${validation.error}`, rawJson };
+    }
+
+    const schema = parsed as RaosFormSchema;
+
+    // 保存到数据库
+    try {
+      if (existing) {
+        // 更新现有表单
+        await updateFormDefinition(existing.id, {
+          key: existing.key,
+          name: schema.title || input.name,
+          description: schema.description,
+          schemaJson: schema,
+        });
+        const updated = await getFormDefinition(existing.id);
+        return { success: true, definition: updated, rawJson };
+      } else {
+        // 创建新表单
+        const newDef = await createFormDefinition({
+          key: input.key,
+          name: schema.title || input.name,
+          description: schema.description,
+          schemaJson: schema,
+          createdBy: "llm_generator",
+        });
+        return { success: true, definition: newDef, rawJson };
+      }
+    } catch (e) {
+      return { success: false, error: `保存失败: ${e instanceof Error ? e.message : String(e)}`, rawJson };
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: `生成过程出错: ${errMsg}` };
+  }
+}
+
 export const __test__ = {
   extractJson,
   buildSystemPrompt,
+  buildUserPrompt,
   validateFormSchema,
 };
