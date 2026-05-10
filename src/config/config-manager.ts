@@ -162,13 +162,13 @@ export class ConfigManager {
     this.config = this.load();
   }
 
-  /** 从文件加载配置，不存在则用默认值 */
+  /** 从文件加载配置，不存在则用默认值；敏感字段优先从环境变量读取 */
   private load(): RAOSConfig {
     try {
       if (existsSync(this.configPath)) {
         const raw = readFileSync(this.configPath, "utf-8");
         const saved = JSON.parse(raw) as Partial<RAOSConfig>;
-        return {
+        const merged: RAOSConfig = {
           llm: saved.llm ?? DEFAULT_CONFIG.llm,
           multimodal: { ...DEFAULT_CONFIG.multimodal, ...saved.multimodal },
           engine: { ...DEFAULT_CONFIG.engine, ...saved.engine },
@@ -179,11 +179,49 @@ export class ConfigManager {
           modelCards: (saved as any).modelCards ?? {},
           docMind: { ...DEFAULT_CONFIG.docMind, ...(saved as any).docMind },
         };
+        // 敏感字段优先从环境变量读取，覆盖配置文件中的值
+        this.applyEnvOverrides(merged);
+        return merged;
       }
     } catch {
       // 文件损坏则用默认值
     }
-    return { ...DEFAULT_CONFIG };
+    const config = { ...DEFAULT_CONFIG };
+    this.applyEnvOverrides(config);
+    return config;
+  }
+
+  /** 从环境变量覆盖敏感配置字段（环境变量优先于配置文件） */
+  private applyEnvOverrides(config: RAOSConfig): void {
+    // LLM API Key (支持 LLM_API_KEY 或 OPENAI_API_KEY 作为回退)
+    const llmApiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
+    if (llmApiKey && config.llm) {
+      config.llm.apiKey = llmApiKey;
+    }
+    // LLM Base URL
+    const llmBaseUrl = process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL;
+    if (llmBaseUrl && config.llm) {
+      config.llm.baseUrl = llmBaseUrl;
+    }
+    // Embedding API Key
+    const emb = config.modelCards?.embedding;
+    if (process.env.EMBEDDING_API_KEY && emb) {
+      emb.apiKey = process.env.EMBEDDING_API_KEY;
+    }
+    if (process.env.EMBEDDING_BASE_URL && emb) {
+      emb.baseUrl = process.env.EMBEDDING_BASE_URL;
+    }
+    // DocMind credentials
+    if (process.env.DOCMIND_ACCESS_KEY_ID && config.docMind) {
+      config.docMind.accessKeyId = process.env.DOCMIND_ACCESS_KEY_ID;
+    }
+    if (process.env.DOCMIND_ACCESS_KEY_SECRET && config.docMind) {
+      config.docMind.accessKeySecret = process.env.DOCMIND_ACCESS_KEY_SECRET;
+    }
+    // Federation key
+    if (process.env.FEDERATION_KEY && config.federation) {
+      config.federation.federationKey = process.env.FEDERATION_KEY;
+    }
   }
 
   /** 持久化到文件 */

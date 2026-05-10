@@ -726,7 +726,7 @@ ${skillListText || "（无）"}
     const historySummary = this.getRecentHistorySummary(userId, undefined, 4);
 
     // 在正确的用户上下文中执行异步分析
-    requestContext.run({ userId }, async () => {
+    void requestContext.run({ userId }, async () => {
       try {
         const prompt = `分析对话，提取值得记忆的用户信息。
 
@@ -795,7 +795,7 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
     const followUpPatterns = [
       /^继续.*$|^.*继续$/, // 继续之前的任务
       /^详细.*$|^.*详细$/, // 详细分析
-      /^再.*一下$|^.*再.*$/, // 再次查询
+      /^再.*一下$|^再.*一次$|^再来.*$/, // 再次查询
       /^深入.*$|^.*深入$/, // 深入分析
       /^接下来.*$|^.*接下来$/, // 接下来的步骤
     ];

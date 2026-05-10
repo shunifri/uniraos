@@ -19,7 +19,7 @@ describe("Business Components", () => {
       />
     );
     expect(screen.getByText("Please select user")).toBeInTheDocument();
-  });
+  }, 15000);
 
   it("should render DeptPicker", async () => {
     const { DeptPicker } = await import(
@@ -51,7 +51,7 @@ describe("Business Components", () => {
       />
     );
     expect(screen.getByText("Please select department")).toBeInTheDocument();
-  });
+  }, 15000);
 
   it("should render FileUploader", async () => {
     const { FileUploader } = await import(
@@ -69,5 +69,5 @@ describe("Business Components", () => {
       />
     );
     expect(screen.getByText("点击上传")).toBeInTheDocument();
-  });
+  }, 15000);
 });

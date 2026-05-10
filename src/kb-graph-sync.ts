@@ -8,7 +8,7 @@
 import { join } from "path";
 import type { KnowledgeGraphManager } from "./memory/knowledge-graph/index.js";
 import type { UserSessionManager } from "./user/user-session.js";
-import { getAllTenants } from "./skills/knowledge-skills.js";
+import { getAllTenants } from "./db/kb-tenants.js";
 import { log } from "./utils/logger.js";
 
 /**

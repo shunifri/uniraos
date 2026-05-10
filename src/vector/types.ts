@@ -80,3 +80,26 @@ export interface QdrantConfig {
   /** Replication factor (default: 2) */
   replicationFactor?: number;
 }
+
+export interface VectorDocument {
+  id: string;
+  vector: number[];
+  payload: VectorPayload;
+}
+
+export interface VectorSearchOptions {
+  embedding?: number[];
+  limit?: number;
+  filter?: VectorFilter;
+  docIds?: string[];
+  contentTypes?: string[];
+}
+
+export interface VectorSearchProvider {
+  health(): Promise<boolean>;
+  upsert(documents: VectorDocument[]): Promise<void>;
+  delete(documentId: string): Promise<void>;
+  search(query: string, options: VectorSearchOptions): Promise<SearchResult[]>;
+  getDocumentCount?(): number;
+  clear?(): void;
+}

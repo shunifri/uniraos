@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type { GraphNode, GraphEdge, NodeType, EdgeType } from "./types.js";
 import { getMySQLAdapter, type MySQLAdapter } from "../../db/mysql-adapter.js";
+import { LRUCache } from "../../utils/lru-cache.js";
 
 interface NodeRow {
   id: string;
@@ -29,13 +30,16 @@ interface CountRow {
 export class GraphStore {
   private adapter: MySQLAdapter;
   private owner: string;
-  // 内存缓存
-  private cache: Map<string, GraphNode> = new Map();
-  private cacheEdges: Map<string, GraphEdge> = new Map();
+  // 内存缓存 — P1 修复：LRU + TTL 防止 OOM
+  private cache: LRUCache<GraphNode>;
+  private cacheEdges: LRUCache<GraphEdge>;
 
   constructor(owner: string) {
     this.adapter = getMySQLAdapter();
     this.owner = owner;
+    // P1 修复：LRU 缓存上限 10000 + TTL 5 分钟，防止 OOM
+    this.cache = new LRUCache<GraphNode>(10_000, 5 * 60 * 1000);
+    this.cacheEdges = new LRUCache<GraphEdge>(10_000, 5 * 60 * 1000);
   }
 
   // 辅助方法：解析 tags（兼容旧格式）
@@ -63,8 +67,9 @@ export class GraphStore {
   }
 
   // 辅助方法：解析 properties（兼容旧格式）
-  private parseProperties(propsStr: string | null): Record<string, unknown> {
+  private parseProperties(propsStr: string | null | Record<string, unknown>): Record<string, unknown> {
     if (!propsStr) return {};
+    if (typeof propsStr === 'object') return propsStr;
     try {
       return JSON.parse(propsStr);
     } catch {
@@ -86,7 +91,11 @@ export class GraphStore {
     // 进一步过滤掉空字符串
     const filteredTags = tags.map((t: string) => t.trim()).filter(Boolean);
 
-    const full: GraphNode = { ...node, id, tags: filteredTags, createdAt: node.createdAt ?? Date.now() };
+    const properties = { ...(node.properties ?? {}) };
+    if (node.communityId !== undefined) {
+      properties._communityId = node.communityId;
+    }
+    const full: GraphNode = { ...node, id, tags: filteredTags, createdAt: node.createdAt ?? Date.now(), properties };
 
     await this.adapter.execute(
       `INSERT INTO kb_graph_nodes (id, owner_id, label, type, tags, properties, created_at)
@@ -144,6 +153,9 @@ export class GraphStore {
     };
     if (row.community_id !== null && row.community_id !== undefined) {
       node.communityId = row.community_id;
+    }
+    if (node.communityId === undefined && node.properties?._communityId !== undefined) {
+      node.communityId = node.properties._communityId as number;
     }
 
     this.cache.set(id, node);
@@ -433,6 +445,9 @@ export class GraphStore {
       };
       if (row.community_id !== null && row.community_id !== undefined) {
         node.communityId = row.community_id;
+      }
+      if (node.communityId === undefined && node.properties?._communityId !== undefined) {
+        node.communityId = node.properties._communityId as number;
       }
       this.cache.set(node.id, node);
       neighbors.push(node);

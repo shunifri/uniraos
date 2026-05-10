@@ -25,7 +25,9 @@ describe("SAGA Compensation", () => {
         autonomy: Autonomy.AUTO_PRE,
         visible: false,
         handler: async () => ({ success: true, data: "step1_done" }),
-        compensate: async (_params, _result) => {
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+        compensate: async (___params, ___result) => {
           compensated.push("step1");
         },
       }),

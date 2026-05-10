@@ -27,6 +27,8 @@ export interface SkillManifest {
   author?: string;
   /** 标签 */
   tags?: string[];
+  /** 文件完整性校验和 (SHA-256) */
+  checksum?: string;
 }
 
 /** 插件加载器配置 */

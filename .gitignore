@@ -5,3 +5,29 @@ src/ui/assets/
 .worktrees/
 uploads/
 *.tsbuildinfo
+
+# Logs
+*.log
+backend.log
+frontend.log
+
+# Coverage
+coverage/
+web/coverage/
+
+# Test reports
+playwright-report/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Claude/Kimi plans
+.claude/
+.kimi/
+
+# Temp
+*.bak

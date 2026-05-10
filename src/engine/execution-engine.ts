@@ -82,7 +82,7 @@ export class ExecutionEngine {
   ): Promise<ExecutionResult> {
     const store = requestContext.getStore();
     const context: ExecutionContext = {
-      traceId: crypto.randomUUID(),
+      traceId: store?.requestId || crypto.randomUUID(),
       callStack: [],
       depth: 0,
       maxDepth: this.config.maxDepth,
@@ -240,13 +240,13 @@ export class ExecutionEngine {
       traceEntry.success = result.success;
       context.trace.push(traceEntry);
 
+      const duration = traceEntry.endTime - traceEntry.startTime;
       this.wal.complete(walId, result.data);
 
-      // 熔断器记录成功
-      this.circuitBreakers.recordSuccess(skillName, skill.circuitBreaker);
+      // 熔断器记录成功（P2：传入 latency 支持慢调用熔断）
+      this.circuitBreakers.recordSuccess(skillName, skill.circuitBreaker, duration);
 
       // 记录指标
-      const duration = traceEntry.endTime - traceEntry.startTime;
       this.metrics.record(skillName, duration, true);
 
       // 涌现检测
@@ -273,13 +273,13 @@ export class ExecutionEngine {
     } catch (err) {
       traceEntry.endTime = Date.now();
       traceEntry.success = false;
-      traceEntry.error = err instanceof Error ? err.message : String(err);
+      traceEntry.error = err instanceof Error ? (err as Error).message : String(err);
       context.trace.push(traceEntry);
 
       const duration = traceEntry.endTime - traceEntry.startTime;
 
-      // 熔断器记录失败
-      this.circuitBreakers.recordFailure(skillName, skill.circuitBreaker);
+      // 熔断器记录失败（P2：传入 latency 支持慢调用熔断）
+      this.circuitBreakers.recordFailure(skillName, skill.circuitBreaker, duration);
 
       // 记录失败指标
       this.metrics.record(
@@ -479,4 +479,15 @@ export class ExecutionEngine {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+// 全局单例引用（供 Inbox / Scheduler 等模块使用）
+let globalExecutionEngine: ExecutionEngine | null = null;
+
+export function setGlobalExecutionEngine(engine: ExecutionEngine): void {
+  globalExecutionEngine = engine;
+}
+
+export function getGlobalExecutionEngine(): ExecutionEngine | null {
+  return globalExecutionEngine;
 }

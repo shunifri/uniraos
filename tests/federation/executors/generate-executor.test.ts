@@ -113,7 +113,8 @@ describe("GenerateActionExecutor", () => {
   it("passes correct args to submitForApproval", async () => {
     await executor.execute(makeAction({ requiresApproval: true }), { registry, metrics });
 
-    const [name, description, _code, capabilities, generatedBy] =
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [name, description, ___code, capabilities, generatedBy] =
       (controller.submitForApproval as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(name).toBe("new_skill");
     expect(description).toBe("A skill that greets users");

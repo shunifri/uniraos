@@ -103,6 +103,7 @@ describe("Cascade DataSource", () => {
           type: "string",
           title: "员工",
           "ui:widget": "select",
+          "ui:props": { variant: "dropdown" },
           "x-dataSource": {
             type: "remote",
             url: "/api/employees",
@@ -129,9 +130,11 @@ describe("Cascade DataSource", () => {
     );
 
     // After fetch resolves, employee value should be cleared because old-value is not in new options
-    const employeeSelect = screen.getByText("员工").closest(".ant-form-item")?.querySelector(".ant-select") as HTMLElement;
-    // The select should show placeholder because value was cleared
-    expect(employeeSelect).toBeTruthy();
+    await waitFor(() => {
+      const employeeSelect = screen.getByText("员工").closest(".ant-form-item")?.querySelector(".ant-select") as HTMLElement;
+      // The select should show placeholder because value was cleared
+      expect(employeeSelect).toBeTruthy();
+    });
   });
 
   it("should not fetch when executeWhen is allFilled and dependencies are empty", async () => {

@@ -5,6 +5,7 @@ import {
   getChain,
   getRelated,
   type EnhancedLTMEntry,
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
   type VersionRelation,
 } from "../../../src/memory/enhanced/version-chain.js";
 

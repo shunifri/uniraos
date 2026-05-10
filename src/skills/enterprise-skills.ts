@@ -12,6 +12,7 @@
 
 import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import { getWorkflowRepository } from "../workflow/repository.js";
 
 // ===== 连接配置辅助 =====
@@ -258,10 +259,11 @@ function createIMBotSkills(registry: SkillRegistry): void {
           return { success: false, error: new Error(`不支持的 IM 平台: ${cfg.platform}`) };
         }
 
-        const response = await fetch(cfg.webhook, {
+        const response = await fetchWithTimeout(cfg.webhook, {
           method: "POST",
           headers,
           body: JSON.stringify(body),
+          retries: 1,
         });
 
         const result = await response.json() as Record<string, unknown>;
@@ -460,7 +462,7 @@ async function createCalendarSkills(registry: SkillRegistry): Promise<void> {
           url.searchParams.set("endDateTime", endDate);
           url.searchParams.set("$top", String(limit));
 
-          const response = await fetch(url.toString(), {
+          const response = await fetchWithTimeout(url.toString(), {
             headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
           });
           const data = (await response.json()) as { value?: Array<Record<string, unknown>> };
@@ -529,10 +531,11 @@ async function createCalendarSkills(registry: SkillRegistry): Promise<void> {
           attendees: attendees?.length ? attendees : undefined,
         };
 
-        const response = await fetch(`${cfg.baseUrl}/me/events`, {
+        const response = await fetchWithTimeout(`${cfg.baseUrl}/me/events`, {
           method: "POST",
           headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          retries: 1,
         });
 
         const data = (await response.json()) as Record<string, unknown>;

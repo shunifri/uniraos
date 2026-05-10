@@ -93,7 +93,7 @@ export class WALManager {
    * 按拓扑顺序执行：先重放没有 parentEntryId 的顶层条目，
    * 子条目在父条目重放时会由递归引擎自动处理，因此跳过。
    */
-  async replay(engine: { execute: (skillName: string, params: Record<string, unknown>) => Promise<any> }): Promise<RecoveryResult> {
+  async replay(engine: { execute: (skillName: string, params: Record<string, unknown>) => Promise<unknown> }): Promise<RecoveryResult> {
     const startTime = Date.now();
     const plan = this.recover();
     const results: ReplayResult[] = [];
@@ -134,7 +134,7 @@ export class WALManager {
           durationMs: Date.now() - entryStart,
         });
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = err instanceof Error ? (err as Error).message : String(err);
         this.store.markFailed(entry.id, `replay failed: ${errorMsg}`);
         failed++;
         results.push({

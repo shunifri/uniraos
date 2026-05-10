@@ -4,8 +4,9 @@
  * 提供网页抓取、搜索引擎查询、URL 内容提取等能力，
  * 让智能体能够从互联网获取信息。
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 // ===== 网页抓取 =====
 
@@ -116,7 +117,7 @@ function createWebFetchSkills(registry: SkillRegistry): void {
         if (!url) return { success: false, error: new Error("url 参数必填") };
 
         try {
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             headers: { "User-Agent": "RAOS-Bot/1.0" },
           });
           const html = await response.text();
@@ -150,7 +151,7 @@ function createWebFetchSkills(registry: SkillRegistry): void {
         if (!url) return { success: false, error: new Error("url 参数必填") };
 
         try {
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             headers: { "User-Agent": "RAOS-Bot/1.0" },
           });
           const html = await response.text();
@@ -330,9 +331,9 @@ async function searchBaidu(query: string, count: number): Promise<Array<{ title:
     }
 
     return results;
-  } catch (e: any) {
+  } catch (e: unknown) {
     clearTimeout(timer);
-    if (e.name === "AbortError") {
+    if ((e as Error).name === "AbortError") {
       return [{ title: "搜索超时", url: "", snippet: "百度搜索请求超时，请稍后重试" }];
     }
     throw e;
@@ -469,9 +470,9 @@ function createBrowserSkills(registry: SkillRegistry): void {
               ...(screenshotBase64 ? { screenshot: screenshotBase64 } : {}),
             },
           };
-        } catch (err: any) {
+        } catch (err: unknown) {
           if (browser) await browser.close().catch(() => {});
-          return { success: false, error: new Error(`浏览器渲染失败: ${err.message}`) };
+          return { success: false, error: new Error(`浏览器渲染失败: ${(err as Error).message}`) };
         }
       },
     })

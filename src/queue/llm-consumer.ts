@@ -76,7 +76,7 @@ export class LLMConsumer {
     }
   }
 
-  private async callLLM(request: LLMRequest): Promise<any> {
+  private async callLLM(request: LLMRequest): Promise<unknown> {
     // TODO: Integrate with actual LLM provider
     // This is a placeholder implementation
     await new Promise(resolve => setTimeout(resolve, 1000));

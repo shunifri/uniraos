@@ -57,7 +57,7 @@ export class UserSessionManager {
 
   /** 获取当前记忆后端类型 */
   getMemoryBackend(): string {
-    return this.memoryConfig.backend;
+    return "enhanced";
   }
 
   /** 获取或创建用户 session */

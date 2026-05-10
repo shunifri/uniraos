@@ -10,7 +10,7 @@ import type { LLMProvider } from "../../llm/types.js";
 import type { SkillRegistry } from "../../registry/index.js";
 import type { MetricsCollector } from "../../engine/metrics.js";
 import type { SkillLifecycleManager } from "../../engine/skill-lifecycle.js";
-import type { ActionExecutor } from "../evolution-engine.js";
+import type { ActionExecutor } from "../types.js";
 import type { EvolutionAction } from "../types.js";
 import { runInSandbox } from "../../engine/worker-sandbox.js";
 import { Autonomy } from "../../types/index.js";
@@ -86,7 +86,7 @@ Focus on fixing the performance issue described above.`;
     try {
       llmResponse = await this.llm.chat([{ role: "user", content: prompt }]);
     } catch (err) {
-      return { success: false, message: `LLM call failed: ${err instanceof Error ? err.message : String(err)}` };
+      return { success: false, message: `LLM call failed: ${err instanceof Error ? (err as Error).message : String(err)}` };
     }
 
     const generatedCode = llmResponse.content;
@@ -133,7 +133,7 @@ Focus on fixing the performance issue described above.`;
     try {
       ctx.registry.registerVersion(optimizedSkill);
     } catch (err) {
-      return { success: false, message: `Failed to register optimized skill: ${err instanceof Error ? err.message : String(err)}` };
+      return { success: false, message: `Failed to register optimized skill: ${err instanceof Error ? (err as Error).message : String(err)}` };
     }
 
     // 7. Start canary deployment

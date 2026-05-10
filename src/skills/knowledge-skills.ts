@@ -34,6 +34,7 @@ import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from 
 import fs from "fs";
 import { createHash } from "crypto";
 import { syncSharedKBToGraphs, removeKBFromAllGraphs, getSharedKBTargetUsers, removeKBFromUserGraph } from "../kb-graph-sync.js";
+import { getAllTenants } from "../db/kb-tenants.js";
 import { configManager } from "../config/config-manager.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserById, getUserDepartment } from "../db/user-repository.js";
@@ -164,6 +165,78 @@ interface Segment {
   searchableText?: string;
 }
 
+/** 知识库搜索结果项 */
+interface KBSearchResultItem {
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  content: string;
+  score: number;
+  matchType: string;
+  shared: boolean;
+  pageNumber: number | null;
+  bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null;
+  docMindTaskId: string | null;
+}
+
+/** 扩展搜索结果项（可能包含图谱上下文或所有者） */
+type KBSearchResultExtra = KBSearchResultItem & { graphContext?: unknown; owner?: string };
+
+/** 共享搜索结果项 */
+interface SharedSearchResultItem extends KBSearchResultItem {
+  owner: string;
+}
+
+/** 搜索结果数据项（keyword / semantic 共用） */
+interface SearchResultData {
+  id: number;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  content: string;
+  shared: number;
+  page_number: number | null;
+  bbox_data: string;
+  pageNumber?: number | null;
+  bboxData?: string;
+}
+
+/** 结果融合项（供 mergeAndRescoreResults 使用） */
+interface MergeableResult {
+  docId: string;
+  chunkIndex: number;
+  graphContext?: unknown;
+}
+
+/** 融合后结果 */
+interface MergeResult extends MergeableResult {
+  score: number;
+  matchType: string;
+}
+
+/** 文档列表项 */
+interface DocListItem {
+  docId: string;
+  id: string;
+  name: string;
+  source: string;
+  chunkCount: number;
+  totalTokens: number;
+  ingestedAt: number;
+  updatedAt: number | null;
+  version: number;
+  tags: string[];
+  shared: boolean;
+  vectorized: number;
+  vectorTotal: number;
+  format: string;
+  parsingStatus: string;
+  parsingProgress: number;
+  docMindTaskId: string | null;
+  mediaType: string;
+  durationMs: number | null;
+}
+
 // ===== 查询分类器类型 =====
 type QueryType = 'factual' | 'relational' | 'discovery' | 'hybrid';
 
@@ -175,8 +248,17 @@ interface ClassifiedQuery {
   relations: string[];
 }
 
-/** 查询分类器 */
-function classifyQuery(query: string): ClassifiedQuery {
+/** 查询分类缓存 */
+const classifyQueryCache = new Map<string, ClassifiedQuery>();
+
+/** 查询分类器（规则引擎 + 可选 LLM 回退） */
+export async function classifyQuery(query: string, llm?: LLMProvider): Promise<ClassifiedQuery> {
+  // 检查缓存
+  const cached = classifyQueryCache.get(query);
+  if (cached) {
+    return cached;
+  }
+
   // 规则引擎 + 关键词匹配
   const queryLower = query.toLowerCase();
   const indicators = {
@@ -211,13 +293,39 @@ function classifyQuery(query: string): ClassifiedQuery {
   // 简单的关键词提取
   const keywords = queryLower.match(/[\u4e00-\u9fff]+|[a-zA-Z]+/g)?.filter(w => w.length >= 2) || [];
 
-  return {
+  let confidence = maxScore > 0 ? (maxScore / Math.max(...Object.values(indicators).map(i => i.length))) : 0.5;
+
+  // 如果没有明确匹配且提供了 LLM，尝试 LLM 回退
+  if (type === 'hybrid' && confidence <= 0.5 && llm && query.length > 0) {
+    try {
+      const response = await llm.chat([
+        { role: 'user', content: ` classify this query into one of: factual, relational, discovery, hybrid. Return JSON like {"type":"factual","confidence":0.9}. Query: "${query}"` },
+      ]);
+      const content = response.content?.trim() ?? '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.type && ['factual', 'relational', 'discovery', 'hybrid'].includes(parsed.type)) {
+          type = parsed.type as QueryType;
+          confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0.5;
+        }
+      }
+    } catch {
+      // LLM 失败时保持 hybrid
+    }
+  }
+
+  const result: ClassifiedQuery = {
     type,
-    confidence: maxScore > 0 ? (maxScore / Math.max(...Object.values(indicators).map(i => i.length))) : 0.5,
+    confidence,
     keywords,
     entities: [],
     relations: [],
   };
+
+  // 缓存结果
+  classifyQueryCache.set(query, result);
+  return result;
 }
 
 // ===== 知识库核心 =====
@@ -555,7 +663,7 @@ export class KnowledgeBase {
   async search(
     query: string,
     opts?: { limit?: number; threshold?: number; docIds?: string[]; tags?: string[]; includeShared?: boolean },
-  ): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; pageNumber: number | null; bboxes: Array<{ page: number; bbox: [number, number, number, number] }> | null; docMindTaskId: string | null }>> {
+  ): Promise<KBSearchResultItem[]> {
     const limit = opts?.limit ?? 10;
     // threshold 为相对阈值 (0-1)，表示结果至少达到最高分的该比例才保留，默认 0.4
     const threshold = opts?.threshold ?? 0.4;
@@ -565,7 +673,7 @@ export class KnowledgeBase {
     const semanticResults = await this.semanticSearch(query, candidateCount, opts?.docIds);
 
     // RRF 混合评分 — k=60，keyword 权重 0.4 / semantic 权重 0.6
-    const scoreMap = new Map<number, { score: number; matchType: string; data: any }>();
+    const scoreMap = new Map<number, { score: number; matchType: string; data: SearchResultData }>();
 
     for (let i = 0; i < keywordResults.length; i++) {
       const r = keywordResults[i];
@@ -1148,12 +1256,12 @@ export class KnowledgeBase {
 
   /** 结果融合与重评分（RRF + 图谱增强）—— 保留供后续扩展使用 */
   private mergeAndRescoreResults(
-    keywordResults: any[],
-    semanticResults: any[],
-    graphResults: any[],
+    keywordResults: MergeableResult[],
+    semanticResults: MergeableResult[],
+    graphResults: MergeableResult[],
     queryType: QueryType
-  ): any[] {
-    const scoreMap = new Map<string, { score: number; sources: Set<string>; item: any }>();
+  ): MergeResult[] {
+    const scoreMap = new Map<string, { score: number; sources: Set<string>; item: MergeableResult }>();
 
     // 1. RRF 融合
     const k = 60;
@@ -1206,7 +1314,7 @@ export class KnowledgeBase {
       .map(({ item, score, sources }) => ({
         ...item,
         score,
-        matchType: [...sources].join('+') as any,
+        matchType: [...sources].join('+'),
       }));
   }
 
@@ -1736,19 +1844,6 @@ export function getKnowledgeBase(owner: string): KnowledgeBase {
   return kb;
 }
 
-/** 获取所有租户列表 */
-export async function getAllTenants(): Promise<string[]> {
-  try {
-    const adapter = getMySQLAdapter();
-    const rows = await adapter.query<{ owner_id: string }>(
-      "SELECT DISTINCT owner_id FROM kb_documents"
-    );
-    return rows.map((r) => r.owner_id);
-  } catch {
-    return [];
-  }
-}
-
 /** 获取知识库文档的页面图片存储目录 */
 function getKBImageDir(owner: string, docId: string): string {
   return join(KB_BASE, owner, "page-images", docId);
@@ -1795,8 +1890,8 @@ async function searchShared(
   currentUser: string,
   limit: number,
   allowedDocIds?: string[],
-): Promise<Array<{ docId: string; docName: string; chunkIndex: number; content: string; score: number; matchType: string; shared: boolean; owner: string; source: "shared" }>> {
-  const allResults: any[] = [];
+): Promise<SharedSearchResultItem[]> {
+  const allResults: SharedSearchResultItem[] = [];
 
   if (allowedDocIds) {
     // 使用 share-repository 过滤，先按 owner 分组
@@ -1906,7 +2001,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             const { getParsingQueue } = await import("../services/parsing-queue.js");
             const queue = getParsingQueue();
             const binaryExts = [".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".pdf"];
-            const skipQueue = (params as any)._skipQueue;
+            const skipQueue = (params as IngestParamsExtension)._skipQueue;
 
             // 音视频文档必须启用 Document Mind 解析，不允许直接本地解析
             const mediaExts = [".mp3", ".wav", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4a", ".aac", ".ogg"];
@@ -1949,8 +2044,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                    message: "文档已加入 Document Mind 解析队列",
                  },
                };
-             } catch (queueError: any) {
-               console.warn(`[kb_ingest] Document Mind 队列处理失败，降级到本地解析: ${queueError.message}`);
+             } catch (queueError: unknown) {
+               console.warn(`[kb_ingest] Document Mind 队列处理失败，降级到本地解析: ${queueError instanceof Error ? queueError.message : String(queueError)}`);
                // Fall through to local parsing
              }
            }
@@ -2197,7 +2292,7 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                   let createdCount = 0;
 
                   // 节点跟踪 - 使用归一化标签避免重复创建
-                  const nodeCache = new Map<string, any>();
+                  const nodeCache = new Map<string, { id: string }>();
 
                   // 先尝试查找或创建文档节点作为锚点
                   const docAnchorId = `kb_doc_${result.docId}`;
@@ -2595,14 +2690,14 @@ interface ClassifiedQuery {
 
         try {
           // P3: 查询分类
-          const classified = classifyQuery(query);
+          const classified = await classifyQuery(query);
           console.log(`[kb_search] 查询分类: ${classified.type}, 置信度: ${classified.confidence.toFixed(2)}, 关键词: ${classified.keywords.join(', ')}`);
 
-          let ownResults: any[] = [];
+          let ownResults: KBSearchResultExtra[] = [];
           let graphUsed = false;
 
           // 获取图谱管理器（如果可用）
-          let graphManager: any = null;
+          let graphManager: SessionWithGraphManager["graphManager"] = undefined;
           if (sessionManager) {
             const session = sessionManager.getOrCreate(owner);
             const sessionWithGraph = session as unknown as SessionWithGraphManager;
@@ -2626,7 +2721,7 @@ interface ClassifiedQuery {
               });
 
               if (graphResults.length > 0) {
-                const docIds = graphResults.map((r: any) => r.docId);
+                const docIds = graphResults.map((r) => r.docId);
                 console.log(`[kb_search] 从知识图谱找到相关文档: ${docIds.length} 个`);
 
                 // 使用图谱相关的文档 ID 进行知识库检索
@@ -2637,9 +2732,9 @@ interface ClassifiedQuery {
                 });
 
                 // 为结果添加图谱上下文和增强评分
-                const graphResultMap = new Map(graphResults.map((r: any) => [r.docId, r]));
-                ownResults = ownResults.map((result: any) => {
-                  const graphResult: any = graphResultMap.get(result.docId);
+                const graphResultMap = new Map(graphResults.map((r) => [r.docId, r]));
+                ownResults = ownResults.map((result) => {
+                  const graphResult = graphResultMap.get(result.docId);
                   const graphBoost = graphResult ? graphResult.score * 0.2 : 0;
                   return {
                     ...result,
@@ -2677,7 +2772,7 @@ interface ClassifiedQuery {
           }
 
           // 处理共享文档（如果需要）
-          let sharedResults: any[] = [];
+          let sharedResults: KBSearchResultExtra[] = [];
           if (includeShared) {
             try {
               const shareRepo = ShareRepository.getInstance();
@@ -2702,7 +2797,7 @@ interface ClassifiedQuery {
                 }
               }
 
-              const tempResults: any[] = [];
+              const tempResults: KBSearchResultExtra[] = [];
 
               for (const [docOwner, docIds] of ownerToDocIds.entries()) {
                 if (docOwner !== owner) {
@@ -2857,9 +2952,9 @@ interface ClassifiedQuery {
          if (deleted && sessionManager) {
            try {
              await removeKBFromAllGraphs(docId, docName, owner, sessionManager);
-           } catch (err: any) {
+           } catch (err: unknown) {
              // Ignore error if knowledge graph tables don't exist
-             console.warn(`[kb_delete] Failed to remove from knowledge graph (ignored): ${err.message}`);
+             console.warn(`[kb_delete] Failed to remove from knowledge graph (ignored): ${err instanceof Error ? err.message : String(err)}`);
            }
          }
         
@@ -2913,8 +3008,8 @@ interface ClassifiedQuery {
                   await removeKBFromUserGraph(docId, doc.name, userId, sessionManager);
                 }
               }
-            } catch (err: any) {
-              console.warn(`[kb_share] Failed to remove from knowledge graph (ignored): ${err.message}`);
+            } catch (err: unknown) {
+              console.warn(`[kb_share] Failed to remove from knowledge graph (ignored): ${err instanceof Error ? err.message : String(err)}`);
             }
           }
 
@@ -2952,8 +3047,8 @@ interface ClassifiedQuery {
             // 获取目标用户列表
             const targetUsers = await getSharedKBTargetUsers(owner, scope, targetId);
             await syncSharedKBToGraphs(docId, doc.name, owner, targetUsers, sessionManager);
-          } catch (err: any) {
-            console.warn(`[kb_share] Failed to sync to knowledge graph (ignored): ${err.message}`);
+          } catch (err: unknown) {
+            console.warn(`[kb_share] Failed to sync to knowledge graph (ignored): ${err instanceof Error ? err.message : String(err)}`);
           }
         }
 
@@ -2994,7 +3089,7 @@ interface ClassifiedQuery {
         }
 
         // 列出所有有权访问的共享文档
-        const allShared: any[] = [];
+        const allShared: Array<DocListItem & { owner: string }> = [];
         const processedOwners = new Set<string>();
 
         for (const rule of kbRules) {
@@ -3116,6 +3211,7 @@ interface SessionWithGraphManager {
       relation?: string;
       type?: "ltm" | "kb_document" | "entity" | "concept";
     }) => Promise<void>;
+    graphSearch: (query: string, opts: { limit?: number; maxDepth?: number; maxNodes?: number; allowedDocIds?: string[] }) => Promise<Array<{ docId: string; score: number; graphContext?: unknown }>>;
     getStore: () => {
       findNodeByLabel: (label: string) => { id: string } | undefined;
       addNode: (node: {

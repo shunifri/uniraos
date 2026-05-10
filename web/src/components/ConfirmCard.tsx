@@ -73,6 +73,123 @@ function GlassCardHeader({ icon, title }: { icon: React.ReactNode; title: string
   );
 }
 
+interface FormConfirmCardProps {
+  confirmId: string;
+  title: string;
+  description?: string;
+  fields: FormField[];
+  confirmText: string;
+  cancelText: string;
+  onConfirm: (confirmId: string, response: unknown) => void;
+  onCancel: (confirmId: string) => void;
+  disabled?: boolean;
+}
+
+function FormConfirmCard({
+  confirmId, title, description, fields,
+  confirmText, cancelText, onConfirm, onCancel, disabled = false,
+}: FormConfirmCardProps) {
+  const [form] = Form.useForm();
+
+  const renderField = (field: FormField) => {
+    switch (field.type) {
+      case "text": return <Input placeholder={field.placeholder} />;
+      case "number": return <InputNumber placeholder={field.placeholder} style={{ width: "100%" }} />;
+      case "textarea": return <TextArea placeholder={field.placeholder} rows={3} />;
+      case "select": {
+        const chipStyle = (isSelected: boolean): React.CSSProperties => ({
+          padding: "8px 18px",
+          borderRadius: 20,
+          fontSize: 14,
+          fontWeight: 500,
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.6 : 1,
+          transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+          background: isSelected ? "linear-gradient(135deg, #8B5CF6, #EC4899)" : "rgba(139, 92, 246, 0.06)",
+          color: isSelected ? "white" : "#475569",
+          border: `1px solid ${isSelected ? "transparent" : "rgba(139, 92, 246, 0.15)"}`,
+          boxShadow: isSelected ? "0 2px 12px rgba(139, 92, 246, 0.3)" : "none",
+          whiteSpace: "nowrap" as const,
+        });
+
+        const [selectedId, setSelectedId] = useState<string | null>(null);
+
+        return (
+          <div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {(field.options ?? []).map(opt => {
+                const isSelected = selectedId === opt.id;
+                return (
+                  <div
+                    key={opt.id}
+                    onClick={() => { if (disabled) return; setSelectedId(opt.id); form.setFieldValue(field.key, opt.id); }}
+                    style={chipStyle(isSelected)}
+                    onMouseEnter={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.12)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.3)"; } }}
+                    onMouseLeave={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.06)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.15)"; } }}
+                  >
+                    {opt.label}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+      case "radio": return (
+        <Radio.Group>
+          {(field.options ?? []).map(opt => <Radio key={opt.id} value={opt.id}>{opt.label}</Radio>)}
+        </Radio.Group>
+      );
+      case "checkbox": return (
+        <Checkbox.Group options={(field.options ?? []).map(opt => ({ label: opt.label, value: opt.id }))} />
+      );
+      case "date": return <DatePicker style={{ width: "100%" }} />;
+      default: return <Input placeholder={field.placeholder} />;
+    }
+  };
+
+  return (
+    <div className="glass-card" style={{ ...glassCardStyle, maxWidth: 520 }}>
+      <GlassCardHeader
+        icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
+        title={title}
+      />
+      {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
+      <Form form={form} layout="vertical" disabled={disabled} size="small"
+        initialValues={fields.reduce((acc, f) => {
+          if (f.defaultValue !== undefined) acc[f.key] = f.defaultValue;
+          return acc;
+        }, {} as Record<string, unknown>)}>
+        {fields.map((field) => (
+          <Form.Item key={field.key} name={field.key} label={field.label}
+            rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : []}>
+            {renderField(field)}
+          </Form.Item>
+        ))}
+      </Form>
+      <Space>
+        <Button
+          type="primary"
+          disabled={disabled}
+          style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10, boxShadow: "0 4px 14px rgba(139, 92, 246, 0.3)" }}
+          onClick={async () => {
+            try {
+              const values = await form.validateFields();
+              onConfirm(confirmId, values);
+            } catch { /* validation failed */ }
+          }}>{confirmText}</Button>
+        <Button style={{ borderRadius: 10 }} disabled={disabled} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
+      </Space>
+      {disabled && (
+        <Flex align="center" gap={4} style={{ marginTop: 12 }}>
+          <CheckCircleOutlined style={{ color: "#10B981" }} />
+          <Text style={{ color: "#10B981", fontSize: 12 }}>已提交</Text>
+        </Flex>
+      )}
+    </div>
+  );
+}
+
 export default function ConfirmCard({
   confirmId, type, title, description,
   options = [], multiSelect = false, fields = [],
@@ -84,7 +201,6 @@ export default function ConfirmCard({
   const [selectedSingle, setSelectedSingle] = useState<string | null>(null);
   const [selectedMulti, setSelectedMulti] = useState<string[]>([]);
   const [submittedData, setSubmittedData] = useState<any>(externalSubmittedData ?? null);
-  const [form] = Form.useForm();
 
   // 当外部 submittedData 变化时更新内部状态（用于刷新后恢复）
   useEffect(() => {
@@ -242,102 +358,18 @@ export default function ConfirmCard({
 
   // --- FORM MODE ---
   if (type === "form") {
-    const renderField = (field: FormField) => {
-      switch (field.type) {
-        case "text": return <Input placeholder={field.placeholder} />;
-        case "number": return <InputNumber placeholder={field.placeholder} style={{ width: "100%" }} />;
-        case "textarea": return <TextArea placeholder={field.placeholder} rows={3} />;
-        case "select": {
-          const chipStyle = (isSelected: boolean): React.CSSProperties => ({
-            padding: "8px 18px",
-            borderRadius: 20,
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: disabled ? "default" : "pointer",
-            opacity: disabled ? 0.6 : 1,
-            transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
-            background: isSelected ? "linear-gradient(135deg, #8B5CF6, #EC4899)" : "rgba(139, 92, 246, 0.06)",
-            color: isSelected ? "white" : "#475569",
-            border: `1px solid ${isSelected ? "transparent" : "rgba(139, 92, 246, 0.15)"}`,
-            boxShadow: isSelected ? "0 2px 12px rgba(139, 92, 246, 0.3)" : "none",
-            whiteSpace: "nowrap" as const,
-          });
-
-          const [selectedId, setSelectedId] = useState<string | null>(null);
-
-          return (
-            <div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {(field.options ?? []).map(opt => {
-                  const isSelected = selectedId === opt.id;
-                  return (
-                    <div
-                      key={opt.id}
-                      onClick={() => { if (disabled) return; setSelectedId(opt.id); form.setFieldValue(field.key, opt.id); }}
-                      style={chipStyle(isSelected)}
-                      onMouseEnter={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.12)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.3)"; } }}
-                      onMouseLeave={(e) => { if (!disabled && !isSelected) { e.currentTarget.style.background = "rgba(139, 92, 246, 0.06)"; e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.15)"; } }}
-                    >
-                      {opt.label}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        }
-        case "radio": return (
-          <Radio.Group>
-            {(field.options ?? []).map(opt => <Radio key={opt.id} value={opt.id}>{opt.label}</Radio>)}
-          </Radio.Group>
-        );
-        case "checkbox": return (
-          <Checkbox.Group options={(field.options ?? []).map(opt => ({ label: opt.label, value: opt.id }))} />
-        );
-        case "date": return <DatePicker style={{ width: "100%" }} />;
-        default: return <Input placeholder={field.placeholder} />;
-      }
-    };
-
     return (
-      <div className="glass-card" style={{ ...glassCardStyle, maxWidth: 520 }}>
-        <GlassCardHeader
-          icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
-          title={title}
-        />
-        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
-        <Form form={form} layout="vertical" disabled={disabled} size="small"
-          initialValues={fields.reduce((acc, f) => {
-            if (f.defaultValue !== undefined) acc[f.key] = f.defaultValue;
-            return acc;
-          }, {} as Record<string, unknown>)}>
-          {fields.map((field) => (
-            <Form.Item key={field.key} name={field.key} label={field.label}
-              rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : []}>
-              {renderField(field)}
-            </Form.Item>
-          ))}
-        </Form>
-        <Space>
-          <Button
-            type="primary"
-            disabled={disabled}
-            style={{ background: "linear-gradient(135deg, #8B5CF6, #EC4899)", border: "none", borderRadius: 10, boxShadow: "0 4px 14px rgba(139, 92, 246, 0.3)" }}
-            onClick={async () => {
-              try {
-                const values = await form.validateFields();
-                onConfirm(confirmId, values);
-              } catch { /* validation failed */ }
-            }}>{confirmText}</Button>
-          <Button style={{ borderRadius: 10 }} disabled={disabled} onClick={() => onCancel(confirmId)}>{cancelText}</Button>
-        </Space>
-        {disabled && (
-          <Flex align="center" gap={4} style={{ marginTop: 12 }}>
-            <CheckCircleOutlined style={{ color: "#10B981" }} />
-            <Text style={{ color: "#10B981", fontSize: 12 }}>已提交</Text>
-          </Flex>
-        )}
-      </div>
+      <FormConfirmCard
+        confirmId={confirmId}
+        title={title}
+        description={description}
+        fields={fields}
+        confirmText={confirmText}
+        cancelText={cancelText}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+        disabled={disabled}
+      />
     );
   }
 

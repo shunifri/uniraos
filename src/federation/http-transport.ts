@@ -73,7 +73,7 @@ export class HttpFederationTransport implements FederationTransport {
       } catch (err) {
         results.push({
           instanceId,
-          result: { error: err instanceof Error ? err.message : String(err) },
+          result: { error: err instanceof Error ? (err as Error).message : String(err) },
         });
       }
     });

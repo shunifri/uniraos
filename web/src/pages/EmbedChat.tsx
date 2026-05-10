@@ -154,7 +154,7 @@ export default function EmbedChat() {
           background: "#f8fafc",
         }}
       >
-        <Spin tip="加载中..." />
+        <Spin />
       </div>
     );
   }

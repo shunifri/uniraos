@@ -1,9 +1,9 @@
 import { Router } from "express";
 import express from "express";
-import { requireAuth, requireAdmin, requirePermission } from "../db/auth-middleware.js";
+import { requireAuth, requireAdmin, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { defineSkill } from "../types/index.js";
 import { resolveParams, createTransformSkill, createValidateSkill, createAggregateSkill } from "../skills/meta-skills.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createEvolutionRoutes(deps: RouteDependencies): Router {
   const {
@@ -514,10 +514,11 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.post("/federation/:action", express.json(), async (req, res) => {
+  router.post("/federation/:action", requireAuth, requireAdmin, express.json(), async (req, res) => {
     try {
-      const action = req.params.action;
-      const from = (req.headers["x-raos-instance"] as string) ?? "unknown";
+      const action = Array.isArray(req.params.action) ? req.params.action[0] : req.params.action;
+      const rawFrom = req.headers["x-raos-instance"];
+      const from = (typeof rawFrom === "string" ? rawFrom : Array.isArray(rawFrom) ? rawFrom[0] : "unknown") ?? "unknown";
       const result = await federationTransport.handleRequest(action, req.body, from);
       res.json(result);
     } catch (err) {

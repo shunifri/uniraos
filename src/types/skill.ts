@@ -43,6 +43,8 @@ export interface CircuitBreakerConfig {
   recoveryTimeMs: number;
   /** HALF_OPEN 状态允许的试探请求数 */
   halfOpenRequests: number;
+  /** P2：慢调用阈值（ms），超过视为失败 */
+  slowCallThresholdMs?: number;
 }
 
 /** 异步任务状态 */

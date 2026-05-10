@@ -8,7 +8,7 @@
  * - ltm_version_history API 返回完整版本链
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { UserSessionManager, type UserSession } from "../../src/user/user-session.js";
+import { UserSessionManager } from "../../src/user/user-session.js";
 import { EnhancedLTMBackend } from "../../src/memory/enhanced/enhanced-ltm-backend.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";

@@ -1,20 +1,72 @@
 import 'dotenv/config';
+import { initTracing } from "./tracing.js";
+initTracing(); // P1-21 OpenTelemetry 必须在其他模块之前初始化
 import express from "express";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { authMiddleware } from "./db/auth-middleware.js";
+import { validateEnvOrExit } from "./server/env-validation.js";
+import { authMiddleware } from "./permissions/middleware/auth-middleware.js";
+import { requestIdMiddleware } from "./middleware/request-id.js";
+import { register } from "prom-client";
 import { initDatabaseAsync } from "./db/database.js";
 import * as userRepo from "./db/user-repository.js";
 import { cleanExpiredSessions } from "./db/auth.js";
 import { requestContext } from "./user/request-context.js";
 import { bootstrap } from "./server/bootstrap.js";
 import { startServer } from "./server/lifecycle.js";
+import { generalRateLimit, authRateLimit, llmRateLimit, uploadRateLimit, securityHeaders, corsMiddleware, auditMiddleware, requestTimeoutMiddleware } from "./routes/security-middleware.js";
+import { globalErrorHandler } from "./routes/middleware.js";
+import { idempotencyMiddleware } from "./middleware/idempotency.js";
+import { batchLimitMiddleware } from "./middleware/batch-limit.js";
+import { jsonDepthLimitMiddleware } from "./middleware/json-depth-limit.js";
+import { urlLengthLimitMiddleware } from "./middleware/url-length-limit.js";
+import { hppProtectionMiddleware } from "./middleware/hpp-protection.js";
+
+// 启动前验证环境变量（P0 安全修复：防止弱密码/默认配置启动）
+validateEnvOrExit();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
+
+// 生产安全中间件：Helmet 安全头（必须在最前面）
+app.use(securityHeaders);
+
+// Prometheus metrics 端点（独立路径，避免与 skill-routes 冲突）
+app.get("/metrics", async (_req, res) => {
+  res.setHeader("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
+
+// CORS 中间件
+app.use(corsMiddleware);
+
+// 链路追踪 ID（必须在 auditMiddleware 之前，以便审计日志复用）
+app.use(requestIdMiddleware);
+
+// 请求审计
+app.use(auditMiddleware);
+
+// P2 修复：幂等性中间件（防止重复提交）
+app.use(idempotencyMiddleware);
+
+// 入站请求超时
+app.use(requestTimeoutMiddleware);
+
 app.use(express.json({ limit: "50mb" }));
+
+// P2 修复：批量操作限流（防止超大数组耗尽资源）
+app.use(batchLimitMiddleware());
+
+// P2 修复：JSON 嵌套深度限制（防止原型污染 / 嵌套炸弹）
+app.use(jsonDepthLimitMiddleware());
+
+// P2 修复：URL 长度限制（防止超长 URL 拒绝服务）
+app.use(urlLengthLimitMiddleware());
+
+// P2 修复：HTTP 参数污染防护
+app.use(hppProtectionMiddleware());
 
 // 初始化数据库（异步）
 await initDatabaseAsync();
@@ -34,6 +86,7 @@ app.use((req, _res, next) => {
     userName: user?.username,
     userDisplayName: user?.displayName,
     departmentId: user?.departmentId ?? undefined,
+    requestId: (req as any).requestId,
   }, () => next());
 });
 
@@ -68,6 +121,17 @@ app.use((req, res, next) => {
     next();
   }
 });
+
+// 生产安全中间件：速率限制
+app.use(generalRateLimit);
+app.use("/api/auth/login", authRateLimit);
+app.use("/api/auth/register", authRateLimit);
+app.use("/api/llm", llmRateLimit);
+app.use("/api/chat", llmRateLimit);
+app.use("/api/upload", uploadRateLimit);
+
+// 全局错误处理（必须放在所有路由之后）
+app.use(globalErrorHandler);
 
 // 启动服务器生命周期（挂载路由、WAL 恢复、Inbox/Scheduler、监听端口）
 startServer(app, deps);

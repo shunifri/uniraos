@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../db/auth-middleware.js';
+import { requireAuth } from '../permissions/middleware/auth-middleware.js';
 import {
   createWorkflowFormBinding,
   getWorkflowFormBinding,
@@ -11,52 +11,52 @@ import { loadTaskForm, saveTaskForm } from '../services/workflow-task-form-servi
 
 const router = Router();
 
-router.post('/workflow/form-bindings', requireAuth, (req, res) => {
+router.post('/workflow/form-bindings', requireAuth, async (req, res) => {
   try {
-    const binding = createWorkflowFormBinding(req.body);
+    const binding = await createWorkflowFormBinding(req.body);
     res.json({ success: true, data: binding });
-  } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ success: false, error: (error as Error).message });
   }
 });
 
-router.get('/workflow/form-bindings', requireAuth, (req, res) => {
+router.get('/workflow/form-bindings', requireAuth, async (req, res) => {
   try {
-    const bindings = listWorkflowFormBindings(req.query.definitionKey as string);
+    const bindings = await listWorkflowFormBindings(req.query.definitionKey as string);
     res.json({ success: true, data: bindings });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
-router.get('/workflow/form-bindings/:id', requireAuth, (req, res) => {
+router.get('/workflow/form-bindings/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const binding = getWorkflowFormBinding(id);
+    const binding = await getWorkflowFormBinding(id);
     if (!binding) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data: binding });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
-router.put('/workflow/form-bindings/:id', requireAuth, (req, res) => {
+router.put('/workflow/form-bindings/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const binding = updateWorkflowFormBinding(id, req.body);
+    const binding = await updateWorkflowFormBinding(id, req.body);
     res.json({ success: true, data: binding });
-  } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ success: false, error: (error as Error).message });
   }
 });
 
-router.delete('/workflow/form-bindings/:id', requireAuth, (req, res) => {
+router.delete('/workflow/form-bindings/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    deleteWorkflowFormBinding(id);
+    await deleteWorkflowFormBinding(id);
     res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -69,8 +69,8 @@ router.get('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
     }
     const payload = await loadTaskForm(taskId);
     res.json({ success: true, data: payload });
-  } catch (error: any) {
-    res.status(404).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(404).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -81,17 +81,10 @@ router.post('/workflow/tasks/:taskId/form', requireAuth, async (req, res) => {
     if (isNaN(taskId)) {
       return res.status(400).json({ success: false, error: 'Invalid taskId' });
     }
-    const { formData, comment, action } = req.body;
-    if (!formData || typeof formData !== 'object') {
-      return res.status(400).json({ success: false, error: 'formData is required' });
-    }
-    const payload = await saveTaskForm(taskId, { formData, comment, action });
+    const payload = await saveTaskForm(taskId, req.body);
     res.json({ success: true, data: payload });
-  } catch (error: any) {
-    if (error.message?.includes('not found')) {
-      return res.status(404).json({ success: false, error: error.message });
-    }
-    res.status(400).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ success: false, error: (error as Error).message });
   }
 });
 

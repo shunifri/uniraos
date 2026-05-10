@@ -25,7 +25,7 @@ export class QueryCache {
   /**
    * Generate cache key from SQL and params
    */
-  private generateKey(sql: string, params: any[]): string {
+  private generateKey(sql: string, params: unknown[]): string {
     const hash = createHash('md5')
       .update(sql)
       .update(JSON.stringify(params))
@@ -36,7 +36,7 @@ export class QueryCache {
   /**
    * Get cached query results
    */
-  async get<T>(sql: string, params: any[]): Promise<T[] | null> {
+  async get<T>(sql: string, params: unknown[]): Promise<T[] | null> {
     if (!this.config.enabled) return null;
 
     const key = this.generateKey(sql, params);
@@ -53,7 +53,7 @@ export class QueryCache {
   /**
    * Set query results in cache
    */
-  async set<T>(sql: string, params: any[], data: T[]): Promise<void> {
+  async set<T>(sql: string, params: unknown[], data: T[]): Promise<void> {
     if (!this.config.enabled) return;
     if (data.length > this.config.maxResults) {
       log('warn', 'Query result too large for cache', { 
@@ -74,24 +74,82 @@ export class QueryCache {
   }
 
   /**
-   * Execute query with caching
+   * P2 修复：缓存击穿/穿透防护
+   * - 击穿：热点 key 过期时用分布式锁保证只有一个请求查库
+   * - 穿透：空结果也缓存（标记 __EMPTY__，TTL 30s）
    */
   async getOrSet<T>(
     sql: string,
-    params: any[],
-    fetchFn: () => Promise<T[]>
+    params: unknown[],
+    fetchFn: () => Promise<T[]>,
+    emptyTtlSeconds: number = 30
   ): Promise<T[]> {
-    // Try cache first
-    const cached = await this.get<T>(sql, params);
-    if (cached) return cached;
+    const key = this.generateKey(sql, params);
 
-    // Fetch from database
-    const data = await fetchFn();
+    // 1. Try cache first
+    const cached = await this.redis.get<{ data: T[]; empty?: boolean }>(key);
+    if (cached) {
+      if (cached.empty) return [];
+      log('info', 'Query cache hit', { key: key.slice(0, 20) });
+      return cached.data;
+    }
 
-    // Cache the results
-    await this.set(sql, params, data);
+    // 2. Cache miss — try distributed lock to prevent stampede
+    const lockKey = `${key}:lock`;
+    const lockToken = `${Date.now()}-${Math.random()}`;
+    const lockTtl = 10; // seconds
+    const rawRedis = this.redis.getClient();
 
-    return data;
+    const acquired = await rawRedis.set(
+      this.redis.getPrefixedKey(lockKey),
+      lockToken,
+      'EX',
+      lockTtl,
+      'NX'
+    );
+
+    if (acquired === 'OK') {
+      try {
+        // Double-check after acquiring lock
+        const doubleCheck = await this.redis.get<{ data: T[]; empty?: boolean }>(key);
+        if (doubleCheck) {
+          if (doubleCheck.empty) return [];
+          return doubleCheck.data;
+        }
+
+        // Fetch from database
+        const data = await fetchFn();
+
+        if (data.length === 0) {
+          // Cache empty result to prevent penetration
+          await this.redis.set(key, { data: [], empty: true }, emptyTtlSeconds);
+        } else {
+          await this.set(sql, params, data);
+        }
+
+        return data;
+      } finally {
+        // Release lock (best-effort delete only if token matches)
+        const current = await rawRedis.get(this.redis.getPrefixedKey(lockKey));
+        if (current === lockToken) {
+          await rawRedis.del(this.redis.getPrefixedKey(lockKey));
+        }
+      }
+    }
+
+    // 3. Another instance is fetching — wait and retry
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      const retry = await this.redis.get<{ data: T[]; empty?: boolean }>(key);
+      if (retry) {
+        if (retry.empty) return [];
+        return retry.data;
+      }
+    }
+
+    // Fallback: fetch directly (lock may have timed out)
+    log('warn', 'Cache lock timeout, fetching directly', { key: key.slice(0, 20) });
+    return fetchFn();
   }
 
   /**

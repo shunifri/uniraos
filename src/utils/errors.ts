@@ -62,3 +62,10 @@ export class SkillTimeoutError extends RAOSError {
     this.name = "SkillTimeoutError";
   }
 }
+
+export class AgentTimeoutError extends RAOSError {
+  constructor(context: string, ms: number) {
+    super(`Agent timeout in ${context} after ${ms}ms`);
+    this.name = "AgentTimeoutError";
+  }
+}

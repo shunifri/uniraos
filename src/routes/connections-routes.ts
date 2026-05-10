@@ -5,7 +5,7 @@
  */
 
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth } from "../permissions/middleware/auth-middleware.js";
 import { getWorkflowRepository } from "../workflow/repository.js";
 import type { Connection } from "../workflow/types.js";
 
@@ -175,7 +175,7 @@ router.post("/:id/test", async (req, res) => {
         await transporter.verify();
         testResult = { success: true, message: "SMTP 连接测试成功" };
       } catch (e) {
-        testResult = { success: false, message: `SMTP 连接测试失败: ${e instanceof Error ? e.message : String(e)}` };
+        testResult = { success: false, message: `SMTP 连接测试失败: ${e instanceof Error ? (e as Error).message : String(e)}` };
       }
     } else if (conn.type === "ldap") {
       try {
@@ -191,7 +191,7 @@ router.post("/:id/test", async (req, res) => {
         client.unbind();
         testResult = { success: true, message: "LDAP 连接测试成功" };
       } catch (e) {
-        testResult = { success: false, message: `LDAP 连接测试失败: ${e instanceof Error ? e.message : String(e)}` };
+        testResult = { success: false, message: `LDAP 连接测试失败: ${e instanceof Error ? (e as Error).message : String(e)}` };
       }
     }
 

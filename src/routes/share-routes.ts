@@ -6,7 +6,7 @@ import { permissions } from "../permissions/index.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
 import type { ShareRepository } from "../db/share-repository.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createShareRoutes(deps: RouteDependencies & { shareRepository: ShareRepository }): Router {
   const router = Router();
@@ -94,7 +94,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       });
       res.json({ success: true, data: rule });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -115,7 +115,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       await repo.delete(id);
       res.json({ success: true });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -125,7 +125,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const rules = await repo.getByOwner(req.user!.id);
       res.json({ success: true, data: rules });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -139,7 +139,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const rules = await repo.getSharedToUser(userId, roleIds, deptPath);
       res.json({ success: true, data: rules });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -165,7 +165,7 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const updatedRule = await repo.getById(id);
       res.json({ success: true, data: updatedRule });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 

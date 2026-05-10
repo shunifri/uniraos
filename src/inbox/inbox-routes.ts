@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth } from "../permissions/middleware/auth-middleware.js";
 import { getInboxService } from "./inbox-service.js";
 import { inboxEventBus } from "./inbox-events.js";
 

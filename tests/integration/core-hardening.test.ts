@@ -4,7 +4,7 @@ import { ExecutionEngine } from "../../src/engine/execution-engine.js";
 import { WALManager } from "../../src/wal/index.js";
 import { skillsToTools } from "../../src/llm/tool-bridge.js";
 import { defineSkill } from "../../src/types/index.js";
-import { parseHandoffJson, parseTransferJson } from "../../src/agents/protocols/parse-helpers.js";
+import { parseHandoffJson } from "../../src/agents/protocols/parse-helpers.js";
 import { RecallContextSkill } from "../../src/memory/recall-context.js";
 import { MemoryGarbageCollector } from "../../src/memory/gc-collect.js";
 import { ShortTermMemory } from "../../src/memory/stm.js";

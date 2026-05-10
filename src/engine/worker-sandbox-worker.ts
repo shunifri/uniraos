@@ -1,4 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { runInNewContext } from "node:vm";
 
 interface WorkerData {
   code: string;
@@ -9,7 +10,7 @@ interface WorkerData {
 
 const data = workerData as WorkerData;
 
-const context = data.hasContext ? {
+const skillContext = data.hasContext ? {
   callSkill: async (name: string, params: Record<string, unknown>) => {
     return new Promise((resolve, reject) => {
       const callId = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -28,9 +29,58 @@ const context = data.hasContext ? {
 
 (async () => {
   try {
-    const params = data.params;
-    const fn = new Function("params", "context", "return (async () => {\n" + data.code + "\n})();");
-    const result = await fn(params, { ...context, user: data.user });
+    const sandbox: Record<string, unknown> = {
+      params: data.params,
+      context: { ...skillContext, user: data.user },
+      console,
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      Promise,
+      Math,
+      Date,
+      JSON,
+      Array,
+      Object,
+      String,
+      Number,
+      Boolean,
+      RegExp,
+      Error,
+      Map,
+      Set,
+      WeakMap,
+      WeakSet,
+      Symbol,
+      parseInt,
+      parseFloat,
+      isNaN,
+      isFinite,
+      encodeURI,
+      encodeURIComponent,
+      decodeURI,
+      decodeURIComponent,
+      escape: undefined,
+      unescape: undefined,
+      require: undefined,
+      module: undefined,
+      exports: undefined,
+      process: undefined,
+      __dirname: undefined,
+      __filename: undefined,
+    };
+
+    const wrappedCode = `
+      (async () => {
+        ${data.code}
+      })()
+    `;
+
+    const result = await runInNewContext(wrappedCode, sandbox, {
+      timeout: 30000,
+      displayErrors: true,
+    });
     parentPort!.postMessage({ success: true, data: result });
   } catch (err: any) {
     parentPort!.postMessage({ success: false, error: err.message || String(err) });

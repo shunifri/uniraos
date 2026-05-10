@@ -181,7 +181,7 @@ export class DocMindParser {
     
     // SDK 初始化是异步的，但构造函数不能是 async
     // 在第一次使用 client 时会等待 SDK 加载完成
-    this.initClientAsync();
+    void this.initClientAsync();
   }
 
   /**

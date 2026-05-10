@@ -604,7 +604,7 @@ const WorkflowTaskList: React.FC = () => {
 
             {/* Form section */}
             {formLoading ? (
-              <Spin tip="加载表单中..." />
+              <Spin />
             ) : formPayload?.schema ? (
               <>
                 <Divider orientation="left">

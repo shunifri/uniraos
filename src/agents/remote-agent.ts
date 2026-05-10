@@ -111,7 +111,7 @@ export class RemoteAgent implements Agent {
       yield {
         event: "error",
         agentRole: this.profile.role,
-        data: { error: err instanceof Error ? err.message : String(err) },
+        data: { error: err instanceof Error ? (err as Error).message : String(err) },
       };
     }
   }

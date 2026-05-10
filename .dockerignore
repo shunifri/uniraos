@@ -1,0 +1,53 @@
+# Dependencies
+node_modules
+web/node_modules
+
+# Environment & secrets
+.env
+.env.local
+.env.dev
+.env.prod
+.env.docker
+
+# Local data
+.raos
+uploads
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Build outputs
+dist
+web/dist
+.vite
+*.tsbuildinfo
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage
+.nyc_output
+
+# Docker itself
+docker-compose*.yml
+Dockerfile*
+.docker

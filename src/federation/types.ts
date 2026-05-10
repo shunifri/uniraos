@@ -170,6 +170,7 @@ export interface FederationTransport {
 
 export type FederationEventType =
   | "skill:migrated"
+  | "skill:migration_rejected"
   | "skill:adopted"
   | "skill:optimized"
   | "skill:retired"
@@ -187,3 +188,14 @@ export interface FederationEvent {
 }
 
 export type FederationEventHandler = (event: FederationEvent) => void;
+
+// ===== 进化执行器接口 =====
+
+import type { SkillRegistry } from "../registry/index.js";
+import type { MetricsCollector } from "../engine/metrics.js";
+
+/** 动作执行器接口 — 可注册自定义执行器 */
+export interface ActionExecutor {
+  readonly actionType: string;
+  execute(action: EvolutionAction, ctx: { registry: SkillRegistry; metrics: MetricsCollector }): Promise<{ success: boolean; message: string }>;
+}

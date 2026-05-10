@@ -2,8 +2,9 @@ import { Router } from "express";
 import { permissions } from "../permissions/index.js";
 import { OpenAIEmbeddingProvider } from "../memory/embedding-provider.js";
 import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig } from "../skills/knowledge-skills.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import type { LLMProviderConfig } from "../llm/types.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createConfigRoutes(deps: RouteDependencies): Router {
   const {
@@ -368,7 +369,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       switch (cardType) {
         case "vision": {
           // Vision 模型测试 - 尝试一个简单的图像描述请求（不带图片）
-          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/chat/completions", {
+          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -394,7 +395,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "imageGen": {
           // Image Gen 测试 - 尝试一个简单请求（不实际生成图片）
-          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/images/generations", {
+          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/images/generations", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -428,7 +429,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "tts": {
           // TTS 测试 - 检查 API 可达性
-          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/audio/speech", {
+          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/audio/speech", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -461,7 +462,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "stt": {
           // STT 测试 - 检查 API 可达性
-          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/audio/transcriptions", {
+          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/audio/transcriptions", {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${config.apiKey}`,
@@ -490,7 +491,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "embedding": {
           // Embedding 测试
-          const response = await fetch(config.baseUrl || "https://api.openai.com/v1/embeddings", {
+          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/embeddings", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -537,7 +538,7 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       const url = `https://${endpoint}/?Action=GetDocParserResult&Version=2022-07-11`;
 
       // 尝试获取一个不存在的任务，验证凭证
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

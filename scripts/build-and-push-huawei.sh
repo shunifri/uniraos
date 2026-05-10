@@ -16,10 +16,12 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 华为云 SWR 配置
+# ⚠️ WARNING: SWR_USERNAME and SWR_PASSWORD must be set via environment variables or CI secrets.
+# Do NOT hardcode credentials in this file.
 SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
 SWR_ORG="kavin"
-SWR_USERNAME="cn-north-4@HPUATFLDVQ30DWEOVMBZ"
-SWR_PASSWORD="c047c1f5ca9490b8fa37d139a10a81f94edd2c148067fd11b912118dbcf9afa3"
+SWR_USERNAME="${SWR_USERNAME:?SWR_USERNAME is required}"
+SWR_PASSWORD="${SWR_PASSWORD:?SWR_PASSWORD is required}"
 
 # 版本号
 VERSION=${1:-latest}

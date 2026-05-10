@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { permissions } from "../permissions/index.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createMemoryRoutes(deps: RouteDependencies): Router {
   const { engine, sessionManager } = deps;

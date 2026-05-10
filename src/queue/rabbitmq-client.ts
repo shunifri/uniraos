@@ -385,7 +385,7 @@ export class RabbitMQClient extends EventEmitter {
     if (!this.connection) return;
 
     this.connection.on('error', (error) => {
-      log('error', 'rabbitmq_connection_error', { error: error.message });
+      log('error', 'rabbitmq_connection_error', { error: (error as Error).message });
       this.emit('error', error);
     });
 
@@ -394,13 +394,13 @@ export class RabbitMQClient extends EventEmitter {
         log('warn', 'rabbitmq_connection_closed_unexpectedly');
         this.state = 'disconnected';
         this.emit('disconnected');
-        this.scheduleReconnect();
+        void this.scheduleReconnect();
       }
     });
 
     if (this.channel) {
       this.channel.on('error', (error) => {
-        log('error', 'rabbitmq_channel_error', { error: error.message });
+        log('error', 'rabbitmq_channel_error', { error: (error as Error).message });
         this.emit('error', error);
       });
 

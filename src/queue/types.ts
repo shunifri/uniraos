@@ -7,7 +7,7 @@
  * Queue message interface
  * Represents a message in the queue system
  */
-export interface QueueMessage<T = any> {
+export interface QueueMessage<T = unknown> {
   /** Unique message identifier */
   id: string;
   /** Message type/category */
@@ -29,7 +29,7 @@ export interface QueueOptions {
   /** Whether the queue is deleted when last consumer unsubscribes */
   autoDelete?: boolean;
   /** Queue arguments (e.g., for dead letter exchange) */
-  arguments?: Record<string, any>;
+  arguments?: Record<string, unknown>;
   /** Message TTL in milliseconds */
   messageTtl?: number;
   /** Maximum number of messages in queue */
@@ -77,7 +77,7 @@ export interface PublishOptions {
   /** Application ID */
   appId?: string;
   /** Headers */
-  headers?: Record<string, any>;
+  headers?: Record<string, unknown>;
 }
 
 /**
@@ -132,4 +132,4 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'rec
 /**
  * Message handler type
  */
-export type MessageHandler<T = any> = (message: QueueMessage<T>) => Promise<void>;
+export type MessageHandler<T = unknown> = (message: QueueMessage<T>) => Promise<void>;

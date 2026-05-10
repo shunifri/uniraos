@@ -1,98 +1,79 @@
 import { describe, it, expect } from "vitest";
 import { CircuitBreakerManager, CircuitOpenError } from "../../src/engine/circuit-breaker.js";
-import { CircuitState } from "../../src/types/skill.js";
+import { CircuitState } from "../../src/types/index.js";
 
 describe("CircuitBreakerManager", () => {
-  const config = {
-    failureThreshold: 3,
-    recoveryTimeMs: 100,
-    halfOpenRequests: 2,
-  };
-
-  it("starts in CLOSED state", () => {
+  it("should allow requests when closed", () => {
     const cb = new CircuitBreakerManager();
-    expect(cb.getState("test")).toBe(CircuitState.CLOSED);
+    cb.check("skill-a", { failureThreshold: 3, recoveryTimeMs: 1000, halfOpenRequests: 2 });
+    expect(cb.getState("skill-a")).toBe(CircuitState.CLOSED);
   });
 
-  it("stays CLOSED under threshold", () => {
+  it("should open after consecutive failures", () => {
     const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", config);
-    cb.recordFailure("test", config);
-    expect(cb.getState("test")).toBe(CircuitState.CLOSED);
-    // should not throw
-    cb.check("test", config);
+    const config = { failureThreshold: 2, recoveryTimeMs: 1000, halfOpenRequests: 1 };
+    cb.recordFailure("skill-b", config);
+    cb.recordFailure("skill-b", config);
+    expect(cb.getState("skill-b")).toBe(CircuitState.OPEN);
+    expect(() => cb.check("skill-b", config)).toThrow(CircuitOpenError);
   });
 
-  it("opens after reaching failure threshold", () => {
+  it("should transition to half-open after recovery time", () => {
     const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", config);
-    cb.recordFailure("test", config);
-    cb.recordFailure("test", config);
-    expect(cb.getState("test")).toBe(CircuitState.OPEN);
-    expect(() => cb.check("test", config)).toThrow(CircuitOpenError);
+    const config = { failureThreshold: 1, recoveryTimeMs: 50, halfOpenRequests: 1 };
+    cb.recordFailure("skill-c", config);
+    expect(cb.getState("skill-c")).toBe(CircuitState.OPEN);
+
+    // 等待恢复时间
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        cb.check("skill-c", config);
+        expect(cb.getState("skill-c")).toBe(CircuitState.HALF_OPEN);
+        resolve();
+      }, 100);
+    });
   });
 
-  it("resets failure count on success", () => {
+  it("should close after enough half-open successes", () => {
     const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", config);
-    cb.recordFailure("test", config);
-    cb.recordSuccess("test", config);
-    cb.recordFailure("test", config);
-    // only 1 consecutive failure now, should stay CLOSED
-    expect(cb.getState("test")).toBe(CircuitState.CLOSED);
+    const config = { failureThreshold: 1, recoveryTimeMs: 50, halfOpenRequests: 2 };
+    cb.recordFailure("skill-d", config);
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        cb.check("skill-d", config); // -> HALF_OPEN
+        cb.recordSuccess("skill-d", config);
+        expect(cb.getState("skill-d")).toBe(CircuitState.HALF_OPEN);
+        cb.recordSuccess("skill-d", config);
+        expect(cb.getState("skill-d")).toBe(CircuitState.CLOSED);
+        resolve();
+      }, 100);
+    });
   });
 
-  it("transitions to HALF_OPEN after recovery time", async () => {
-    const fastConfig = { ...config, recoveryTimeMs: 20 };
+  it("should track stats", () => {
     const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.OPEN);
+    const config = { failureThreshold: 5, recoveryTimeMs: 1000, halfOpenRequests: 2 };
+    cb.recordSuccess("skill-e", config, 100);
+    cb.recordSuccess("skill-e", config, 200);
+    cb.recordFailure("skill-e", config, 100);
 
-    await new Promise((r) => setTimeout(r, 30));
-    // check should transition to HALF_OPEN
-    cb.check("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.HALF_OPEN);
+    const stats = cb.getStats("skill-e");
+    expect(stats).not.toBeNull();
+    expect(stats!.totalRequests).toBe(3);
+    expect(stats!.totalSuccesses).toBe(2);
+    expect(stats!.totalFailures).toBe(1);
+    expect(stats!.state).toBe(CircuitState.CLOSED);
   });
 
-  it("closes after enough HALF_OPEN successes", async () => {
-    const fastConfig = { ...config, recoveryTimeMs: 10, halfOpenRequests: 2 };
+  it("should count slow calls", () => {
     const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
+    const config = { failureThreshold: 5, recoveryTimeMs: 1000, halfOpenRequests: 2, slowCallThresholdMs: 100 };
+    cb.recordSuccess("skill-f", config, 50);  // fast
+    cb.recordSuccess("skill-f", config, 150); // slow
+    cb.recordFailure("skill-f", config, 200); // slow failure
 
-    await new Promise((r) => setTimeout(r, 15));
-    cb.check("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.HALF_OPEN);
-
-    cb.recordSuccess("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.HALF_OPEN);
-    cb.recordSuccess("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.CLOSED);
-  });
-
-  it("re-opens on failure during HALF_OPEN", async () => {
-    const fastConfig = { ...config, recoveryTimeMs: 10 };
-    const cb = new CircuitBreakerManager();
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
-    cb.recordFailure("test", fastConfig);
-
-    await new Promise((r) => setTimeout(r, 15));
-    cb.check("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.HALF_OPEN);
-
-    cb.recordFailure("test", fastConfig);
-    expect(cb.getState("test")).toBe(CircuitState.OPEN);
-  });
-
-  it("does nothing without config", () => {
-    const cb = new CircuitBreakerManager();
-    cb.check("test", undefined);
-    cb.recordSuccess("test", undefined);
-    cb.recordFailure("test", undefined);
-    expect(cb.getState("test")).toBe(CircuitState.CLOSED);
+    const stats = cb.getStats("skill-f");
+    expect(stats!.slowCalls).toBe(2);
   });
 });

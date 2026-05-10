@@ -1,8 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { validateFieldAsync, debouncedAsyncValidate } from "../ValidationEngine";
 import type { RaosFieldSchema } from "../../types";
 
 describe("Async Validation", () => {
+  let originalLang: string;
+
+  beforeAll(() => {
+    originalLang = navigator.language;
+    Object.defineProperty(navigator, "language", { value: "zh-CN", configurable: true });
+  });
+
+  afterAll(() => {
+    Object.defineProperty(navigator, "language", { value: originalLang, configurable: true });
+  });
+
   const schema: RaosFieldSchema = {
     type: "string",
     title: "Username",

@@ -1,4 +1,19 @@
-import { getDb } from '../db/database.js';
+import { getDb, isMySQL } from '../db/database.js';
+
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
+  return getAdapter();
+}
+
+async function getConnectionConfig(connectionId: string): Promise<{ db_config: any; test_query?: string } | null> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query('SELECT db_config, test_query FROM connections WHERE id = ?', [connectionId]);
+    return (rows[0] as any) || null;
+  }
+  const db = getDb();
+  return db.prepare('SELECT db_config, test_query FROM connections WHERE id = ?').get(connectionId) as any;
+}
 
 export interface DBConnectionConfig {
   id?: string;
@@ -59,8 +74,7 @@ export async function getConnection(connectionId: string): Promise<any> {
   }
 
   // 2. 从 connections 表读取配置
-  const mainDb = getDb();
-  const row = mainDb.prepare('SELECT * FROM connections WHERE id = ?').get(connectionId) as any;
+  const row = await getConnectionConfig(connectionId);
   if (!row) {
     throw new Error(`Connection "${connectionId}" not found`);
   }
@@ -165,12 +179,11 @@ export async function executeQuery(
   if (entry) entry.lastUsedAt = Date.now();
 
   // 获取连接类型
-  const mainDb = getDb();
-  const row = mainDb.prepare('SELECT db_config FROM connections WHERE id = ?').get(connectionId) as any;
+  const row = await getConnectionConfig(connectionId);
   const dbConfig: DBConnectionConfig =
-    typeof row.db_config === 'string' ? JSON.parse(row.db_config) : row.db_config;
+    typeof row?.db_config === 'string' ? JSON.parse(row.db_config) : row?.db_config;
 
-  switch (dbConfig.type) {
+  switch (dbConfig?.type) {
     case 'mysql': {
       const mysqlResult = (await withTimeout(connection.execute(query, params), timeout, 'MySQL query')) as [any, any];
       const [rows] = mysqlResult;
@@ -188,7 +201,7 @@ export async function executeQuery(
     }
 
     default:
-      throw new Error(`Query execution not supported for type: ${dbConfig.type}`);
+      throw new Error(`Query execution not supported for type: ${dbConfig?.type}`);
   }
 }
 
@@ -198,10 +211,9 @@ export async function closeConnection(connectionId: string): Promise<void> {
   if (!poolEntry) return;
   const connection = poolEntry.connection;
 
-  const mainDb = getDb();
-  const row = mainDb.prepare('SELECT db_config FROM connections WHERE id = ?').get(connectionId) as any;
+  const row = await getConnectionConfig(connectionId);
   const dbConfig: DBConnectionConfig =
-    typeof row.db_config === 'string' ? JSON.parse(row.db_config) : row.db_config;
+    typeof row?.db_config === 'string' ? JSON.parse(row.db_config) : row?.db_config;
 
   try {
     switch (dbConfig?.type) {
@@ -230,8 +242,7 @@ export async function testConnection(
     const connection = await getConnection(connectionId);
 
     // 执行测试查询
-    const mainDb = getDb();
-    const row = mainDb.prepare('SELECT test_query FROM connections WHERE id = ?').get(connectionId) as any;
+    const row = await getConnectionConfig(connectionId);
     const testQuery = row?.test_query || 'SELECT 1';
 
     await executeQuery(connectionId, testQuery);

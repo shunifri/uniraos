@@ -22,5 +22,7 @@ export default defineConfig({
   build: {
     outDir: "../src/ui",
     emptyOutDir: true,
+    // P2 修复：显式禁用 Source Map，防止生产环境源码泄露
+    sourcemap: false,
   },
 });

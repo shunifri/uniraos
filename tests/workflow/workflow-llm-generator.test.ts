@@ -5,7 +5,7 @@ import {
   __test__,
 } from "../../src/workflow/workflow-llm-generator.js";
 import { SQLiteWorkflowRepository, setWorkflowRepository, resetWorkflowRepository } from "../../src/workflow/repository.js";
-import type { LLMProvider, LLMResponse } from "../../src/llm/types.js";
+import type { LLMProvider } from "../../src/llm/types.js";
 
 function createMemoryDb(): Database.Database {
   const db = new Database(":memory:");
@@ -359,7 +359,7 @@ describe("WorkflowLLMGenerator", () => {
     it("returns error for invalid LLM output", async () => {
       const result = await generateWorkflow(
         { description: "test", name: "测试", key: "test" },
-        () => createMockProvider('not json at all'),
+        () => createMockProvider("not json at all"),
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("JSON");
@@ -394,7 +394,7 @@ describe("WorkflowLLMGenerator", () => {
     it("returns error when existingKey not found", async () => {
       const result = await generateWorkflow(
         { description: "test", name: "测试", key: "test", existingKey: "non_existent" },
-        () => createMockProvider('{}'),
+        () => createMockProvider("{}"),
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain("未找到");

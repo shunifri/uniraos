@@ -2,15 +2,16 @@ import crypto from "crypto";
 import type { GraphNode, GraphEdge, NodeType, EdgeType } from "./types.js";
 import neo4j, { Driver, Session } from "neo4j-driver";
 import { GraphStore } from "./graph-store.js";
+import { LRUCache } from "../../utils/lru-cache.js";
 
 export class Neo4jGraphStore {
   private driver: Driver;
   private owner: string;
   private database: string;
 
-  // 内存缓存
-  private cache: Map<string, GraphNode> = new Map();
-  private cacheEdges: Map<string, GraphEdge> = new Map();
+  // 内存缓存 — P1 修复：LRU + TTL 防止 OOM
+  private cache: LRUCache<GraphNode>;
+  private cacheEdges: LRUCache<GraphEdge>;
 
   constructor(
     owner: string,
@@ -22,6 +23,8 @@ export class Neo4jGraphStore {
     this.owner = owner;
     this.database = database;
     this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password));
+    this.cache = new LRUCache<GraphNode>(10_000, 5 * 60 * 1000);
+    this.cacheEdges = new LRUCache<GraphEdge>(10_000, 5 * 60 * 1000);
   }
 
   // 关闭连接
@@ -731,7 +734,7 @@ export class Neo4jGraphStore {
 export function getGraphStore(
   owner: string,
   backend: string = process.env.GRAPH_STORE_BACKEND || "mysql"
-): any {
+): unknown {
   if (backend === "neo4j") {
     return new Neo4jGraphStore(owner);
   } else {

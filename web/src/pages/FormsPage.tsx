@@ -378,6 +378,7 @@ const FormsPage: React.FC = () => {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         width={720}
+        forceRender
         extra={
           drawerMode !== 'view' && (
             <Button type="primary" onClick={handleSave}>

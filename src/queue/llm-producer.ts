@@ -16,7 +16,7 @@ export interface LLMRequest {
 export interface TaskStatus {
   taskId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
-  result?: any;
+  result?: unknown;
   error?: string;
   createdAt: number;
   updatedAt: number;

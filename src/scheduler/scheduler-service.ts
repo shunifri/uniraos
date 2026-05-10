@@ -9,6 +9,8 @@
 
 import Bull from "bull";
 import { randomUUID } from "crypto";
+import cronParser from "cron-parser";
+const { parseExpression } = cronParser;
 import { dbConfig } from "../config/db-config.js";
 import { log } from "../utils/logger.js";
 import type {
@@ -301,7 +303,7 @@ export class SchedulerService {
     };
   }
 
-  private computeDelay(trigger: { mode: string; at?: number; delayMs?: number }): number | null {
+  private computeDelay(trigger: { mode: string; at?: number; delayMs?: number; cron?: string }): number | null {
     switch (trigger.mode) {
       case "absolute":
         if (!trigger.at) return null;
@@ -310,10 +312,17 @@ export class SchedulerService {
       case "delayed":
         if (!trigger.delayMs && trigger.delayMs !== 0) return null;
         return Math.max(0, trigger.delayMs);
-      case "cron":
-        // cron 需要 cron-parser 计算下次执行时间
-        // 简化：先返回 null，后续扩展
-        return null;
+      case "cron": {
+        if (!trigger.cron) return null;
+        try {
+          const interval = parseExpression(trigger.cron);
+          const next = interval.next().getTime();
+          return Math.max(0, next - Date.now());
+        } catch (err: any) {
+          log("error", "schedule_cron_parse_failed", { cron: trigger.cron, error: err.message });
+          return null;
+        }
+      }
       case "conditional":
         return null;
       default:

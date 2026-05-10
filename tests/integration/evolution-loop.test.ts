@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { EvolutionEngine, BottleneckDetectionStrategy, RetireActionExecutor } from "../../src/federation/evolution-engine.js";
+import { EvolutionEngine } from "../../src/federation/evolution-engine.js";
 import { EvolutionController } from "../../src/engine/evolution-controller.js";
 import { SkillLifecycleManager } from "../../src/engine/skill-lifecycle.js";
 import { SkillRegistry } from "../../src/registry/index.js";

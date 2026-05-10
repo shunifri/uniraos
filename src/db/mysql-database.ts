@@ -316,6 +316,7 @@ export const MIGRATIONS: Migration[] = [
         extra JSON COMMENT '扩展数据（JSON，如chartOptions等）',
         created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
         INDEX idx_chat_messages_conv (conversation_id) COMMENT '会话索引',
+        INDEX idx_chat_messages_conv_created (conversation_id, created_at DESC) COMMENT '会话时间复合索引',
         FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='对话消息表';
 
@@ -628,72 +629,10 @@ export const MIGRATIONS: Migration[] = [
     version: 3,
     name: 'add_graph_and_ltm_tables',
     up: `
-      -- ============================================
-      -- 知识图谱节点表
-      -- ============================================
-      CREATE TABLE IF NOT EXISTS kb_graph_nodes (
-        id VARCHAR(64) PRIMARY KEY COMMENT '节点ID',
-        owner_id VARCHAR(64) NOT NULL COMMENT '所有者用户ID',
-        label VARCHAR(500) NOT NULL COMMENT '节点标签',
-        type VARCHAR(50) NOT NULL COMMENT '节点类型',
-        tags JSON COMMENT '标签数组（JSON）',
-        properties JSON COMMENT '节点属性（JSON）',
-        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
-        INDEX idx_kb_graph_nodes_owner (owner_id) COMMENT '所有者索引',
-        INDEX idx_kb_graph_nodes_label (owner_id, label) COMMENT '标签查询索引',
-        INDEX idx_kb_graph_nodes_type (owner_id, type) COMMENT '类型索引',
-        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识图谱节点表';
-
-      -- ============================================
-      -- 知识图谱边表
-      -- ============================================
-      CREATE TABLE IF NOT EXISTS kb_graph_edges (
-        id VARCHAR(64) PRIMARY KEY COMMENT '边ID',
-        owner_id VARCHAR(64) NOT NULL COMMENT '所有者用户ID',
-        source_id VARCHAR(64) NOT NULL COMMENT '源节点ID',
-        target_id VARCHAR(64) NOT NULL COMMENT '目标节点ID',
-        type VARCHAR(50) NOT NULL COMMENT '边类型',
-        label VARCHAR(200) COMMENT '边标签',
-        weight DECIMAL(5,4) DEFAULT 1.0 COMMENT '权重（0-1）',
-        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
-        INDEX idx_kb_graph_edges_owner (owner_id) COMMENT '所有者索引',
-        INDEX idx_kb_graph_edges_source (owner_id, source_id) COMMENT '源节点索引',
-        INDEX idx_kb_graph_edges_target (owner_id, target_id) COMMENT '目标节点索引',
-        FOREIGN KEY (source_id) REFERENCES kb_graph_nodes(id) ON DELETE CASCADE,
-        FOREIGN KEY (target_id) REFERENCES kb_graph_nodes(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识图谱边表';
-
-      -- ============================================
-      -- 长期记忆条目表
-      -- ============================================
-      CREATE TABLE IF NOT EXISTS kb_ltm_entries (
-        id VARCHAR(64) PRIMARY KEY COMMENT '记忆ID',
-        owner_id VARCHAR(64) NOT NULL COMMENT '所有者用户ID',
-        entry_key VARCHAR(500) NOT NULL COMMENT '记忆键',
-        value JSON NOT NULL COMMENT '记忆值（JSON）',
-        tags JSON COMMENT '标签数组（JSON）',
-        source VARCHAR(200) COMMENT '来源',
-        summary TEXT COMMENT '摘要',
-        access_count INT DEFAULT 0 COMMENT '访问次数',
-        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
-        updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间（毫秒）',
-        last_accessed_at BIGINT DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '最后访问时间（毫秒）',
-        vector BLOB COMMENT '向量数据（二进制）',
-        is_archived TINYINT DEFAULT 0 COMMENT '是否已归档（1=是）',
-        INDEX idx_kb_ltm_owner (owner_id) COMMENT '所有者索引',
-        INDEX idx_kb_ltm_key (owner_id, entry_key) COMMENT '键索引',
-        INDEX idx_kb_ltm_access (owner_id, last_accessed_at) COMMENT '访问时间索引',
-        INDEX idx_kb_ltm_archived (owner_id, is_archived) COMMENT '归档状态索引',
-        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='长期记忆条目表';
+      -- Removed: kb_graph_nodes, kb_graph_edges, kb_ltm_entries are now created in v1
     `,
     down: `
-      SET FOREIGN_KEY_CHECKS = 0;
-      DROP TABLE IF EXISTS kb_graph_edges;
-      DROP TABLE IF EXISTS kb_graph_nodes;
-      DROP TABLE IF EXISTS kb_ltm_entries;
-      SET FOREIGN_KEY_CHECKS = 1;
+      -- Removed: tables are managed by v1 migration
     `
   },
   {
@@ -932,6 +871,25 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE kb_graph_nodes DROP INDEX idx_kb_graph_nodes_community;
       ALTER TABLE kb_graph_nodes DROP COLUMN community_id;
     `
+  },
+  {
+    version: 10,
+    name: 'add_conversation_history_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS conversation_history (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '记录ID',
+        user_id VARCHAR(64) NOT NULL COMMENT '用户ID',
+        conversation_id VARCHAR(64) NOT NULL COMMENT '会话ID',
+        role ENUM('user', 'assistant', 'tool', 'system') NOT NULL COMMENT '角色',
+        content LONGTEXT COMMENT '内容',
+        tool_calls TEXT COMMENT '工具调用JSON',
+        created_at BIGINT NOT NULL COMMENT '创建时间（毫秒）',
+        INDEX idx_conversation_history_user (user_id, conversation_id, created_at) COMMENT '用户会话索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='对话历史表';
+    `,
+    down: `
+      DROP TABLE IF EXISTS conversation_history;
+    `
   }
 ];
 
@@ -1001,20 +959,35 @@ export async function migrateToVersion(targetVersion: number): Promise<void> {
     // Forward
     for (const migration of MIGRATIONS) {
       if (migration.version > currentVersion && migration.version <= targetVersion) {
-        const statements = parseSQLStatements(migration.up);
-        for (const statement of statements) {
-          try {
-            await adapter.execute(statement);
-          } catch (error) {
-            const err = error as { errno?: number; code?: string };
-            if ([1826, 1050, 1061, 1062, 1060].includes(err.errno ?? 0)) continue;
-            throw error;
-          }
+        try {
+          // Execute migration inside a transaction for atomic rollback on DML
+          await adapter.transaction(async (connection) => {
+            const statements = parseSQLStatements(migration.up);
+            for (const statement of statements) {
+              try {
+                await connection.execute(statement);
+              } catch (error) {
+                const err = error as { errno?: number; code?: string };
+                if ([1826, 1050, 1061, 1062, 1060].includes(err.errno ?? 0)) continue;
+                throw error;
+              }
+            }
+          });
+
+          // Only record version after all statements succeed
+          await adapter.execute(
+            'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+            [migration.version, migration.name]
+          );
+        } catch (error) {
+          log('error', 'mysql_database_migration_failed', {
+            version: migration.version,
+            name: migration.name,
+            error: error instanceof Error ? (error as Error).message : String(error),
+          });
+          // HALT - do not continue to next version
+          throw error;
         }
-        await adapter.execute(
-          'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
-          [migration.version, migration.name]
-        );
       }
     }
   }
@@ -1025,12 +998,22 @@ export async function migrateToVersion(targetVersion: number): Promise<void> {
  */
 export async function initMySQLDatabase(): Promise<void> {
   const adapter = getMySQLAdapter();
-  const currentVersion = await getCurrentVersion();
-  
-  log('info', 'mysql_database_init_start', { currentVersion, targetVersion: MIGRATIONS.length });
 
-  // Run pending migrations
-  for (const migration of MIGRATIONS) {
+  // P0 安全修复：分布式锁防止多实例并发执行迁移
+  const lockName = 'raos_migration_lock';
+  const lockTimeoutSec = 60;
+  const lockResult = await adapter.query<{ get_lock: number }>(`SELECT GET_LOCK(?, ?) as get_lock`, [lockName, lockTimeoutSec]);
+  if (!lockResult[0]?.get_lock) {
+    throw new Error('Failed to acquire migration lock. Another instance may be running migrations.');
+  }
+
+  try {
+    const currentVersion = await getCurrentVersion();
+    
+    log('info', 'mysql_database_init_start', { currentVersion, targetVersion: MIGRATIONS.length });
+
+    // Run pending migrations
+    for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
       try {
         log('info', 'mysql_database_migration_start', { 
@@ -1038,46 +1021,48 @@ export async function initMySQLDatabase(): Promise<void> {
           name: migration.name 
         });
 
-        // Execute migration - DDL statements are auto-committed in MySQL
-        // Use a more robust SQL parser that handles multi-line statements and comments
-        const statements = parseSQLStatements(migration.up);
-
-        for (const statement of statements) {
-          try {
-            await adapter.execute(statement);
-          } catch (error) {
-            // Ignore duplicate errors
-            const err = error as { errno?: number; code?: string };
-            if (err.errno === 1826 || err.code === 'ER_FK_DUP_NAME') {
-              log('debug', 'mysql_migration_fk_exists_skipped', { statement: statement.substring(0, 100) });
-              continue;
+        // Execute migration inside a transaction for atomic rollback on DML.
+        // Note: MySQL DDL statements cause implicit commits, so DDL cannot be
+        // rolled back, but DML within the migration is protected.
+        await adapter.transaction(async (connection) => {
+          const statements = parseSQLStatements(migration.up);
+          for (const statement of statements) {
+            try {
+              await connection.execute(statement);
+            } catch (error) {
+              // Ignore duplicate errors
+              const err = error as { errno?: number; code?: string };
+              if (err.errno === 1826 || err.code === 'ER_FK_DUP_NAME') {
+                log('debug', 'mysql_migration_fk_exists_skipped', { statement: statement.substring(0, 100) });
+                continue;
+              }
+              if (err.errno === 1050 || err.code === 'ER_TABLE_EXISTS_ERROR') {
+                log('debug', 'mysql_migration_table_exists_skipped', { statement: statement.substring(0, 100) });
+                continue;
+              }
+              if (err.errno === 1061 || err.code === 'ER_DUP_KEYNAME') {
+                log('debug', 'mysql_migration_index_exists_skipped', { statement: statement.substring(0, 100) });
+                continue;
+              }
+              if (err.errno === 1062 || err.code === 'ER_DUP_ENTRY') {
+                log('debug', 'mysql_migration_dup_entry_skipped', { statement: statement.substring(0, 100) });
+                continue;
+              }
+              if (err.errno === 1060 || err.code === 'ER_DUP_FIELDNAME') {
+                log('debug', 'mysql_migration_column_exists_skipped', { statement: statement.substring(0, 100) });
+                continue;
+              }
+              // Log the actual error for debugging
+              log('error', 'mysql_migration_statement_failed', { 
+                statement: statement.substring(0, 200),
+                error: err.code || String(error)
+              });
+              throw error;
             }
-            if (err.errno === 1050 || err.code === 'ER_TABLE_EXISTS_ERROR') {
-              log('debug', 'mysql_migration_table_exists_skipped', { statement: statement.substring(0, 100) });
-              continue;
-            }
-            if (err.errno === 1061 || err.code === 'ER_DUP_KEYNAME') {
-              log('debug', 'mysql_migration_index_exists_skipped', { statement: statement.substring(0, 100) });
-              continue;
-            }
-            if (err.errno === 1062 || err.code === 'ER_DUP_ENTRY') {
-              log('debug', 'mysql_migration_dup_entry_skipped', { statement: statement.substring(0, 100) });
-              continue;
-            }
-            if (err.errno === 1060 || err.code === 'ER_DUP_FIELDNAME') {
-              log('debug', 'mysql_migration_column_exists_skipped', { statement: statement.substring(0, 100) });
-              continue;
-            }
-            // Log the actual error for debugging
-            log('error', 'mysql_migration_statement_failed', { 
-              statement: statement.substring(0, 200),
-              error: err.code || String(error)
-            });
-            throw error;
           }
-        }
+        });
 
-        // Record version
+        // Record version ONLY after all statements succeed
         await adapter.execute(
           'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
           [migration.version, migration.name]
@@ -1091,14 +1076,18 @@ export async function initMySQLDatabase(): Promise<void> {
         log('error', 'mysql_database_migration_failed', { 
           version: migration.version, 
           name: migration.name,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? (error as Error).message : String(error)
         });
+        // HALT - do not continue to next version
         throw error;
       }
     }
   }
 
-  log('info', 'mysql_database_init_complete', { version: MIGRATIONS.length });
+    log('info', 'mysql_database_init_complete', { version: MIGRATIONS.length });
+  } finally {
+    await adapter.query(`SELECT RELEASE_LOCK(?)`, [lockName]);
+  }
 }
 
 /**
@@ -1231,7 +1220,7 @@ export async function resetMySQLDatabase(): Promise<void> {
         log('error', 'mysql_database_rollback_failed', { 
           version: migration.version, 
           name: migration.name,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? (error as Error).message : String(error)
         });
       }
     }

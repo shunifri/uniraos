@@ -92,11 +92,11 @@ export function videoFrameUrl(docId: string, framePath: string): string {
 
 export const getConfig = () => api.get('/api/config');
 
-export const saveLLMConfig = (config: unknown) => api.put('/api/config/llm', config);
+export const saveLLMConfig = (config: unknown) => api.post('/api/config/llm', config);
 
-export const saveAgentConfig = (config: unknown) => api.put('/api/config/agent', config);
+export const saveAgentConfig = (config: unknown) => api.post('/api/config/agent', config);
 
-export const saveMultimodalConfig = (config: unknown) => api.put('/api/config/multimodal', config);
+export const saveMultimodalConfig = (config: unknown) => api.post('/api/config/multimodal', config);
 
 export const testLLM = (payload: unknown) => api.post('/api/config/llm/test', payload);
 
@@ -112,12 +112,12 @@ export const saveFederationConfig = (config: unknown) =>
 export const addPeer = (peer: unknown) => api.post('/api/config/federation/peers', peer);
 
 export const removePeer = (peerId: string) =>
-  api.del(`/api/config/federation/peers/${peerId}`);
+  api.del('/api/config/federation/peers', { endpoint: peerId });
 
-export const getEvolutionConfig = () => api.get('/api/config/evolution');
+export const getEvolutionConfig = () => api.get('/api/config/evolution-engine');
 
 export const saveEvolutionConfig = (config: unknown) =>
-  api.put('/api/config/evolution', config);
+  api.post('/api/config/evolution-engine', config);
 
 // ---------------------------------------------------------------------------
 // Skills
@@ -125,15 +125,19 @@ export const saveEvolutionConfig = (config: unknown) =>
 
 export const getSkills = () => api.get('/api/skills');
 
+export const registerSkill = (payload: unknown) => api.post('/api/skills', payload);
+
+export const deleteSkill = (name: string) => api.del(`/api/skills/${name}`);
+
 export const executeSkill = (skillId: string, params: unknown) =>
-  api.post(`/api/skills/${skillId}/execute`, params);
+  api.post('/api/execute', { skillName: skillId, params });
 
 // ---------------------------------------------------------------------------
 // Chat (streaming)
 // ---------------------------------------------------------------------------
 
 export async function streamChat(body: unknown): Promise<ReadableStream> {
-  const res = await apiFetch('/api/chat', {
+  const res = await apiFetch('/api/agent/chat/stream', {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -159,9 +163,9 @@ export const getArchives = () => api.get('/api/memory/archives');
 
 export const getSchedule = () => api.get('/api/memory/schedule');
 
-export const startSchedule = () => api.post('/api/memory/schedule/start');
+export const startSchedule = () => api.post('/api/memory/schedule', { action: 'start' });
 
-export const stopSchedule = () => api.post('/api/memory/schedule/stop');
+export const stopSchedule = () => api.post('/api/memory/schedule', { action: 'stop' });
 
 // ---------------------------------------------------------------------------
 // Admin - Users / Departments / Roles / Resources
@@ -202,7 +206,7 @@ export const getFederationStatus = () => api.get('/api/federation/status');
 export const getEvolutionControllerConfig = () => api.get('/api/evolution/config');
 
 export const updateEvolutionControllerConfig = (config: unknown) =>
-  api.put('/api/evolution/config', config);
+  api.post('/api/evolution/config', config);
 
 export const getPendingApprovals = () => api.get('/api/evolution/approvals');
 
@@ -222,8 +226,8 @@ export const getLifecycle = () => api.get('/api/lifecycle');
 // Marketplace
 // ---------------------------------------------------------------------------
 
-export const searchMarketplace = (query?: unknown) =>
-  api.post('/api/marketplace/search', query);
+export const searchMarketplace = (query?: string) =>
+  api.get('/api/marketplace' + (query ? '?q=' + encodeURIComponent(query) : ''));
 
 // ---------------------------------------------------------------------------
 // Tasks
@@ -301,3 +305,22 @@ export const getWorkflowTaskForm = (taskId: number) =>
 
 export const completeWorkflowTask = (taskId: number, body: { action: string; comment?: string; formData?: any }) =>
   api.post<{ success: boolean; data: any }>(`/api/workflow/tasks/${taskId}/complete`, body);
+
+// ---------------------------------------------------------------------------
+// Workflow Definitions
+// ---------------------------------------------------------------------------
+
+export const getWorkflowDefinition = (key: string) =>
+  api.get<{ success: boolean; data: any }>(`/api/workflow/definitions/${key}`);
+
+export const createWorkflowDefinition = (payload: unknown) =>
+  api.post<{ success: boolean; data: any }>('/api/workflow/definitions', payload);
+
+export const updateWorkflowDefinition = (key: string, payload: unknown) =>
+  api.put<{ success: boolean; data: any }>(`/api/workflow/definitions/${key}`, payload);
+
+export const validateWorkflowDefinition = (key: string) =>
+  api.post<{ success: boolean; data: { valid: boolean; errors: string[] } }>(`/api/workflow/definitions/${key}/validate`);
+
+export const testWorkflowDefinition = (key: string) =>
+  api.post<{ success: boolean; data: any; error?: string }>(`/api/workflow/definitions/${key}/test`);

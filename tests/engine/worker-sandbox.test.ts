@@ -4,7 +4,7 @@ import { runInSandbox } from "../../src/engine/worker-sandbox.js";
 describe("Worker Thread Sandbox", () => {
   it("executes simple code and returns result", async () => {
     const result = await runInSandbox(
-      `return { success: true, data: { sum: params.a + params.b } };`,
+      "return { success: true, data: { sum: params.a + params.b } };",
       { a: 3, b: 5 },
     );
     expect(result.success).toBe(true);
@@ -13,7 +13,7 @@ describe("Worker Thread Sandbox", () => {
 
   it("catches errors in sandboxed code", async () => {
     const result = await runInSandbox(
-      `throw new Error("sandbox boom");`,
+      "throw new Error(\"sandbox boom\");",
       {},
     );
     expect(result.success).toBe(false);
@@ -22,7 +22,7 @@ describe("Worker Thread Sandbox", () => {
 
   it("enforces timeout", async () => {
     const result = await runInSandbox(
-      `while(true) {}; return { success: true };`,
+      "while(true) {}; return { success: true };",
       {},
       { timeout: 200 },
     );
@@ -33,7 +33,7 @@ describe("Worker Thread Sandbox", () => {
 
   it("reports duration", async () => {
     const result = await runInSandbox(
-      `return { success: true, data: "fast" };`,
+      "return { success: true, data: \"fast\" };",
       {},
     );
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
@@ -42,7 +42,7 @@ describe("Worker Thread Sandbox", () => {
 
   it("isolates from main thread globals", async () => {
     const result = await runInSandbox(
-      `return { success: true, data: typeof globalThis.__orchestrator };`,
+      "return { success: true, data: typeof globalThis.__orchestrator };",
       {},
     );
     expect(result.success).toBe(true);

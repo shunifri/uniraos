@@ -8,7 +8,7 @@
 import type { SkillLifecycleManager } from "../../engine/skill-lifecycle.js";
 import type { SkillRegistry } from "../../registry/index.js";
 import type { MetricsCollector } from "../../engine/metrics.js";
-import type { ActionExecutor } from "../evolution-engine.js";
+import type { ActionExecutor } from "../types.js";
 import type { EvolutionAction } from "../types.js";
 
 export class CanaryActionExecutor implements ActionExecutor {

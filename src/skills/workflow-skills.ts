@@ -73,7 +73,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             },
           };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = err instanceof Error ? (err as Error).message : String(err);
           console.error(`[workflow_list] Unexpected error:`, msg);
           return { success: false, error: new Error(`查询流程列表失败: ${msg}`) };
         }
@@ -157,7 +157,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             },
           };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = err instanceof Error ? (err as Error).message : String(err);
           console.error(`[approval_submit] Unexpected error:`, msg);
           return { success: false, error: new Error(`提交审批失败: ${msg}`) };
         }
@@ -282,7 +282,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             },
           };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = err instanceof Error ? (err as Error).message : String(err);
           console.error(`[approval_query] Unexpected error:`, msg);
           return { success: false, error: new Error(`查询审批失败: ${msg}`) };
         }
@@ -394,7 +394,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             },
           };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = err instanceof Error ? (err as Error).message : String(err);
           console.error(`[approval_approve] Unexpected error:`, msg);
           return { success: false, error: new Error(`审批操作失败: ${msg}`) };
         }

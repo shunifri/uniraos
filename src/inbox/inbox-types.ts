@@ -40,10 +40,10 @@ export interface InboxItem {
 
 export interface InboxPayload {
   // 审批类
-  schema?: any;
+  schema?: unknown;
   actions?: InboxAction[];
-  formData?: Record<string, any>;
-  resultData?: Record<string, any>;
+  formData?: Record<string, unknown>;
+  resultData?: Record<string, unknown>;
 
   // 通知类
   content?: string;
@@ -53,7 +53,7 @@ export interface InboxPayload {
   aggregatedItems?: InboxItem[];
 
   // 通用
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface InboxAction {

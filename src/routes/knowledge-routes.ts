@@ -5,9 +5,10 @@ import { cwd } from "process";
 import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 import type { ParsingUpdate } from "../services/parsing-queue.js";
 import { getParsingQueue } from "../services/parsing-queue.js";
+import { log } from "../utils/logger.js";
 
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
@@ -25,8 +26,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         owner: req.user!.id,
       });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -41,18 +42,16 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const userId = req.user!.id;
 
       if (path && !content) {
-        console.log(`[API] path 模式处理: name=${name}, path=${path}`);
-        console.log(`[API] 原始文件名: ${req.body.name}`);
-        console.log(`[API] 原始路径: ${req.body.path}`);
+        log("info", "knowledge.path_mode", { name, path });
 
         const kb = getKnowledgeBase(userId);
         const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [] });
-        console.log(`[API] 创建占位符 docId: ${docId}`);
+        log("info", "knowledge.placeholder_created", { docId });
         res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
 
-        console.log(`[API] 准备执行异步 kb_ingest...`);
+        log("info", "knowledge.starting_ingest", { docId });
         try {
-          requestContext.run({ userId }, async () => {
+          void requestContext.run({ userId }, async () => {
             console.log(`[API] requestContext.run 回调已执行`);
             try {
               const kb2 = getKnowledgeBase(userId);
@@ -117,8 +116,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
           });
         }
       }
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -131,8 +130,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         owner: req.user!.id,
       });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -145,8 +144,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       } else {
         res.json({ success: true, content });
       }
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -201,8 +200,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         mediaType,
         pageCount,
       });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -210,8 +209,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     try {
       const result = await engine.execute("kb_delete", { docId: req.params.docId, owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -219,8 +218,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     try {
       const result = await engine.execute("kb_stats", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -228,8 +227,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     try {
       const result = await engine.execute("kb_rebuild", { owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -239,8 +238,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const scope = shared ? "all" : "none";
       const result = await engine.execute("kb_share", { docId, scope, owner: req.user!.id });
       res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -290,8 +289,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
           res.end();
           return;
         }
-      } catch (e: any) {
-        console.warn(`[SSE] Failed to fetch parsing status fallback for ${docId}:`, e.message);
+      } catch (e: unknown) {
+        console.warn(`[SSE] Failed to fetch parsing status fallback for ${docId}:`, (e as Error).message);
       }
       res.write(`data: ${JSON.stringify({ status: 'failed', error: '任务不存在' })}\n\n`);
       res.end();
@@ -365,8 +364,8 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       res.setHeader("Content-Type", mimeType);
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       createReadStream(imagePath).pipe(res);
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
     }
   });
 

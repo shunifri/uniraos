@@ -9,6 +9,7 @@ afterEach(() => {
 });
 
 // Mock window.matchMedia for Ant Design
+// eslint-disable-next-line no-undef
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: vi.fn().mockImplementation((query: string) => ({

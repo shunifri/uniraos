@@ -36,7 +36,7 @@ import { getFormDefinition } from "../services/form-service.js";
 
 /** 守卫表达式引擎（简化版 SpEL） */
 export class SimpleGuardEngine {
-  evaluate(expression: string | unknown, context: GuardContext): boolean {
+  async evaluate(expression: string | unknown, context: GuardContext): Promise<boolean> {
     const exprStr = typeof expression === "string" ? expression : String(expression ?? "");
     // "default" 表示默认分支，始终通过
     if (exprStr.trim() === "default") return true;
@@ -48,10 +48,9 @@ export class SimpleGuardEngine {
     });
 
     try {
-      // 使用 Function 构造函数安全求值（仅支持基本运算和比较）
-      // eslint-disable-next-line no-new-func
-      const fn = new Function("return (" + expanded + ")");
-      return Boolean(fn());
+      // P0 安全修复：使用 AST 解释器替代 new Function
+      const { safeEvaluateBoolean } = await import("../utils/safe-expression.js");
+      return safeEvaluateBoolean(expanded);
     } catch {
       // 表达式求值失败，返回 false（安全失败）
       console.warn(`[WorkflowEngine] Guard evaluation failed: "${expression}" expanded to "${expanded}"`);
@@ -147,7 +146,7 @@ export class WorkflowEngine {
       // 自动推进到第一个任务
       return await this.advance(instance, { variables });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? (err as Error).message : String(err);
       console.error(`[WorkflowEngine] startInstance failed for ${definitionKey}:`, msg);
       return { success: false, error: new Error(`启动流程失败: ${msg}`) };
     }
@@ -203,7 +202,7 @@ export class WorkflowEngine {
       // 处理当前节点并决定下一个节点
       return await this.processNode(instance, def.definition, currentNode, options);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? (err as Error).message : String(err);
       console.error(`[WorkflowEngine] advance failed:`, msg);
       return { success: false, error: new Error(`流程推进失败: ${msg}`) };
     }
@@ -259,8 +258,8 @@ export class WorkflowEngine {
       action: options.action,
       formData: options.formData,
       comment: options.comment,
-    }).catch((err: any) => {
-      console.error("[WorkflowEngine] Failed to complete inbox item:", err.message);
+    }).catch((err: unknown) => {
+      console.error("[WorkflowEngine] Failed to complete inbox item:", (err as Error).message);
     });
 
     // 会签处理
@@ -466,7 +465,7 @@ export class WorkflowEngine {
           return { success: false, error: new Error(`Unknown node type: ${(node as WorkflowNode).type}`) };
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? (err as Error).message : String(err);
       console.error(`[WorkflowEngine] processNode failed for node ${node.id} (${node.type}):`, msg);
       return { success: false, error: new Error(`节点 ${node.id} 处理失败: ${msg}`) };
     }
@@ -592,8 +591,8 @@ export class WorkflowEngine {
       const adapter = createWorkflowAdapter();
       const input = await adapter.toInboxItem(task, node, instance);
       await getInboxService().createItem(input);
-    } catch (err: any) {
-      console.error("[WorkflowEngine] Failed to create inbox item for task:", err.message);
+    } catch (err: unknown) {
+      console.error("[WorkflowEngine] Failed to create inbox item for task:", (err as Error).message);
     }
   }
 
@@ -645,7 +644,7 @@ export class WorkflowEngine {
 
     // 按顺序评估条件，第一个匹配的胜出
     for (const condition of node.conditions) {
-      if (this.guardEngine.evaluate(condition.expression, context)) {
+      if (await this.guardEngine.evaluate(condition.expression, context)) {
         await this.repo.updateInstance(instance.id, { currentNodeId: condition.next });
         instance.currentNodeId = condition.next;
         return await this.advance(instance);
@@ -911,6 +910,9 @@ export class WorkflowEngine {
  * 优先使用 formDefinitionId 引用表单中心的定义，fallback 到内嵌 form
  */
 export async function getTaskFormSchema(task: WorkflowTask, workflowSpec: WorkflowSpec): Promise<any | null> {
+  if (!workflowSpec || !workflowSpec.nodes || !Array.isArray(workflowSpec.nodes)) {
+    return null;
+  }
   const node = workflowSpec.nodes.find((n) => n.id === task.nodeId);
   if (!node || node.type !== "user_task") {
     return null;

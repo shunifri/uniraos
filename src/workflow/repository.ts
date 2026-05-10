@@ -26,7 +26,7 @@ function safeJsonParse<T>(str: string | unknown, ctx: string): T | null {
   try {
     return JSON.parse(strVal) as T;
   } catch (e) {
-    console.error(`[WorkflowRepository] JSON parse failed (${ctx}): ${e instanceof Error ? e.message : String(e)}. Raw: ${strVal.slice(0, 200)}`);
+    console.error(`[WorkflowRepository] JSON parse failed (${ctx}): ${e instanceof Error ? (e as Error).message : String(e)}. Raw: ${strVal.slice(0, 200)}`);
     return null;
   }
 }

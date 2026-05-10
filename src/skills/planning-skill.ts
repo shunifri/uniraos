@@ -4,7 +4,7 @@
  * LLM 先分析任务生成执行计划，再按计划逐步调用 Skill。
  * 支持动态调整（计划中途发现问题可重新规划）。
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -79,7 +79,7 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
           }
           plan = JSON.parse(jsonStr);
         } catch (err) {
-          return { success: false, error: new Error(`规划失败: ${err instanceof Error ? err.message : String(err)}`) };
+          return { success: false, error: new Error(`规划失败: ${err instanceof Error ? (err as Error).message : String(err)}`) };
         }
 
         if (!plan.steps || plan.steps.length === 0) {
@@ -141,7 +141,7 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
               skill: step.skill,
               description: step.description,
               success: false,
-              error: err instanceof Error ? err.message : String(err),
+              error: err instanceof Error ? (err as Error).message : String(err),
             });
 
             if (allowReplan) break;

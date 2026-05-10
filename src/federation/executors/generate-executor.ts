@@ -10,7 +10,7 @@ import type { LLMProvider } from "../../llm/types.js";
 import type { SkillRegistry } from "../../registry/index.js";
 import type { MetricsCollector } from "../../engine/metrics.js";
 import type { EvolutionController } from "../../engine/evolution-controller.js";
-import type { ActionExecutor } from "../evolution-engine.js";
+import type { ActionExecutor } from "../types.js";
 import type { EvolutionAction } from "../types.js";
 import { runInSandbox } from "../../engine/worker-sandbox.js";
 import { Autonomy } from "../../types/index.js";
@@ -79,7 +79,7 @@ The function should implement the described functionality.`;
     try {
       llmResponse = await this.llm.chat([{ role: "user", content: prompt }]);
     } catch (err) {
-      return { success: false, message: `LLM call failed: ${err instanceof Error ? err.message : String(err)}` };
+      return { success: false, message: `LLM call failed: ${err instanceof Error ? (err as Error).message : String(err)}` };
     }
 
     const generatedCode = llmResponse.content;
@@ -144,7 +144,7 @@ The function should implement the described functionality.`;
     try {
       ctx.registry.register(newSkill);
     } catch (err) {
-      return { success: false, message: `Failed to register skill: ${err instanceof Error ? err.message : String(err)}` };
+      return { success: false, message: `Failed to register skill: ${err instanceof Error ? (err as Error).message : String(err)}` };
     }
 
     this.controller.recordGeneration(skillName, "evolution-engine");

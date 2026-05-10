@@ -7,6 +7,7 @@
 import Database from "better-sqlite3";
 import { join } from "path";
 import { mkdirSync } from "fs";
+import { dbConfig } from "../config/db-config.js";
 
 let db: Database.Database | null = null;
 
@@ -49,11 +50,12 @@ export function initDatabase(dbPath?: string): Database.Database {
 
   db = new Database(finalPath);
 
-  // 性能优化
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
-  db.pragma("cache_size = -64000"); // 64MB cache
-  db.pragma("busy_timeout = 5000");
+  // 性能优化（P2 修复：配置化 pragma）
+  const sqliteCfg = dbConfig.sqlite;
+  db.pragma(`journal_mode = ${sqliteCfg.journalMode}`);
+  db.pragma(`synchronous = ${sqliteCfg.synchronous}`);
+  db.pragma(`cache_size = ${sqliteCfg.cacheSize}`);
+  db.pragma(`busy_timeout = ${sqliteCfg.busyTimeout}`);
   db.pragma("foreign_keys = ON");
 
   runMigrations(db);
@@ -309,6 +311,7 @@ function runMigrations(db: Database.Database): void {
           created_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
         CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id);
+        CREATE INDEX idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at DESC);
       `);
     },
     // v3: chat_messages 增加 extra JSON 列（存储 chartOptions 等扩展数据）
@@ -753,7 +756,11 @@ function runMigrations(db: Database.Database): void {
     },
     // v13: 添加 workflow_tasks.sign_group 字段（会签支持）
     () => {
-      db.exec(`ALTER TABLE workflow_tasks ADD COLUMN sign_group TEXT`);
+      try {
+        db.exec(`ALTER TABLE workflow_tasks ADD COLUMN sign_group TEXT`);
+      } catch {
+        // 列已存在则忽略（v12 已包含该字段时）
+      }
     },
     // v14: 表单引擎表
     () => {
@@ -849,9 +856,201 @@ function runMigrations(db: Database.Database): void {
         ALTER TABLE chat_messages_new RENAME TO chat_messages;
 
         CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id);
+        CREATE INDEX idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at DESC);
 
         PRAGMA foreign_keys = ON;
       `);
+    },
+    // v16: 补充缺失的知识库、上传、WAL、知识图谱、长期记忆、对话历史表
+    () => {
+      db.exec(`
+        -- kb_documents
+        CREATE TABLE IF NOT EXISTS kb_documents (
+          doc_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source TEXT DEFAULT '',
+          owner_id TEXT NOT NULL,
+          chunk_count INTEGER DEFAULT 0,
+          total_tokens INTEGER DEFAULT 0,
+          ingested_at INTEGER NOT NULL,
+          updated_at INTEGER,
+          version INTEGER DEFAULT 1,
+          tags TEXT,
+          shared INTEGER DEFAULT 0,
+          content_hash TEXT DEFAULT '',
+          parsed_content TEXT,
+          layouts_json TEXT,
+          segments_json TEXT,
+          doc_mind_task_id TEXT,
+          parsing_status TEXT DEFAULT 'success',
+          parsing_progress REAL DEFAULT 100.00,
+          media_type TEXT DEFAULT 'document',
+          duration_ms INTEGER,
+          UNIQUE(name, owner_id),
+          FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_documents_owner ON kb_documents(owner_id);
+        CREATE INDEX idx_kb_documents_shared ON kb_documents(shared);
+        CREATE INDEX idx_kb_documents_ingested ON kb_documents(ingested_at);
+
+        -- kb_tags
+        CREATE TABLE IF NOT EXISTS kb_tags (
+          tag TEXT NOT NULL,
+          doc_id TEXT NOT NULL,
+          created_at INTEGER DEFAULT (unixepoch() * 1000),
+          PRIMARY KEY (tag, doc_id),
+          FOREIGN KEY (doc_id) REFERENCES kb_documents(doc_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_tags_doc ON kb_tags(doc_id);
+        CREATE INDEX idx_kb_tags_tag ON kb_tags(tag);
+
+        -- kb_chunks
+        CREATE TABLE IF NOT EXISTS kb_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          doc_id TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          tokens INTEGER DEFAULT 0,
+          vector BLOB,
+          page_number INTEGER,
+          bbox_data TEXT,
+          segment_index INTEGER,
+          time_range TEXT,
+          frame_url TEXT,
+          asr_text TEXT,
+          content_type TEXT DEFAULT 'text',
+          FOREIGN KEY (doc_id) REFERENCES kb_documents(doc_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_chunks_doc_id ON kb_chunks(doc_id);
+        CREATE INDEX idx_kb_chunks_content_type ON kb_chunks(content_type);
+
+        -- kb_versions
+        CREATE TABLE IF NOT EXISTS kb_versions (
+          doc_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          chunk_count INTEGER DEFAULT 0,
+          total_tokens INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (doc_id, version),
+          FOREIGN KEY (doc_id) REFERENCES kb_documents(doc_id) ON DELETE CASCADE
+        );
+
+        -- kb_keywords
+        CREATE TABLE IF NOT EXISTS kb_keywords (
+          keyword TEXT NOT NULL,
+          chunk_id INTEGER NOT NULL,
+          tf REAL DEFAULT 0,
+          PRIMARY KEY (keyword, chunk_id),
+          FOREIGN KEY (chunk_id) REFERENCES kb_chunks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_keywords_chunk ON kb_keywords(chunk_id);
+        CREATE INDEX idx_kb_keywords_keyword ON kb_keywords(keyword);
+
+        -- uploads
+        CREATE TABLE IF NOT EXISTS uploads (
+          id TEXT PRIMARY KEY,
+          original_name TEXT NOT NULL,
+          stored_name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          mime_type TEXT,
+          uploaded_by TEXT DEFAULT 'system',
+          uploaded_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          tags TEXT,
+          description TEXT
+        );
+        CREATE INDEX idx_uploads_stored_name ON uploads(stored_name);
+        CREATE INDEX idx_uploads_uploaded_by ON uploads(uploaded_by);
+        CREATE INDEX idx_uploads_uploaded_at ON uploads(uploaded_at);
+
+        -- wal_entries
+        CREATE TABLE IF NOT EXISTS wal_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sequence_number INTEGER NOT NULL UNIQUE,
+          operation_type TEXT NOT NULL CHECK(operation_type IN ('INSERT', 'UPDATE', 'DELETE')),
+          table_name TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          old_data TEXT,
+          new_data TEXT,
+          timestamp INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          transaction_id TEXT
+        );
+        CREATE INDEX idx_wal_sequence ON wal_entries(sequence_number);
+        CREATE INDEX idx_wal_table_record ON wal_entries(table_name, record_id);
+        CREATE INDEX idx_wal_timestamp ON wal_entries(timestamp);
+        CREATE INDEX idx_wal_transaction ON wal_entries(transaction_id);
+
+        -- kb_graph_nodes
+        CREATE TABLE IF NOT EXISTS kb_graph_nodes (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          type TEXT NOT NULL,
+          tags TEXT,
+          properties TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_graph_nodes_owner ON kb_graph_nodes(owner_id);
+        CREATE INDEX idx_kb_graph_nodes_label ON kb_graph_nodes(owner_id, label);
+        CREATE INDEX idx_kb_graph_nodes_type ON kb_graph_nodes(owner_id, type);
+
+        -- kb_graph_edges
+        CREATE TABLE IF NOT EXISTS kb_graph_edges (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          label TEXT,
+          weight REAL DEFAULT 1.0,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          FOREIGN KEY (source_id) REFERENCES kb_graph_nodes(id) ON DELETE CASCADE,
+          FOREIGN KEY (target_id) REFERENCES kb_graph_nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_graph_edges_owner ON kb_graph_edges(owner_id);
+        CREATE INDEX idx_kb_graph_edges_source ON kb_graph_edges(owner_id, source_id);
+        CREATE INDEX idx_kb_graph_edges_target ON kb_graph_edges(owner_id, target_id);
+
+        -- kb_ltm_entries
+        CREATE TABLE IF NOT EXISTS kb_ltm_entries (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          entry_key TEXT NOT NULL,
+          value TEXT NOT NULL,
+          tags TEXT,
+          source TEXT,
+          summary TEXT,
+          access_count INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          last_accessed_at INTEGER DEFAULT (unixepoch() * 1000),
+          vector BLOB,
+          is_archived INTEGER DEFAULT 0,
+          FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_kb_ltm_owner ON kb_ltm_entries(owner_id);
+        CREATE INDEX idx_kb_ltm_key ON kb_ltm_entries(owner_id, entry_key);
+        CREATE INDEX idx_kb_ltm_access ON kb_ltm_entries(owner_id, last_accessed_at);
+        CREATE INDEX idx_kb_ltm_archived ON kb_ltm_entries(owner_id, is_archived);
+
+        -- conversation_history
+        CREATE TABLE IF NOT EXISTS conversation_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          conversation_id TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('user','assistant','tool','system')),
+          content TEXT,
+          tool_calls TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_conversation_history_user ON conversation_history(user_id, conversation_id, created_at);
+      `);
+    },
+    // v17: chat_messages 添加 conversation_id + created_at 复合索引
+    () => {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at DESC);`);
     },
   ];
 

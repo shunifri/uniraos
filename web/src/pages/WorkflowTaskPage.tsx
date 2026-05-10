@@ -196,7 +196,7 @@ const WorkflowTaskPage: React.FC = () => {
   if (loading) {
     return (
       <div style={{ padding: 48, textAlign: 'center' }}>
-        <Spin size="large" tip="加载任务中..." />
+        <Spin size="large" />
       </div>
     );
   }
@@ -282,7 +282,7 @@ const WorkflowTaskPage: React.FC = () => {
       {/* Form section */}
       {formLoading ? (
         <Card>
-          <Spin tip="加载表单中..." />
+          <Spin />
         </Card>
       ) : formPayload?.schema ? (
         <Card

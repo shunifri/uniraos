@@ -14,6 +14,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, watch } from "fs";
 import { join, resolve } from "path";
 import { pathToFileURL } from "url";
+import { createHash } from "crypto";
 import type { SkillDefinition } from "../types/index.js";
 import { defineSkill } from "../types/index.js";
 import { Autonomy } from "../types/index.js";
@@ -66,7 +67,7 @@ export class PluginLoader {
         await this.loadPlugin(entryPath);
         loaded.push(entry);
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const errMsg = err instanceof Error ? (err as Error).message : String(err);
         errors.push({ name: entry, error: errMsg });
         this.emit({ type: "error", name: entry, error: err instanceof Error ? err : new Error(errMsg) });
         if (!this.config.continueOnError) break;
@@ -94,6 +95,9 @@ export class PluginLoader {
     if (!existsSync(entryPath)) {
       throw new Error(`Entry file not found: ${entryPath}`);
     }
+
+    // P2 修复：校验和验证（插件签名验证）
+    this.verifyChecksum(manifest, entryPath);
 
     // 动态导入入口文件
     const handler = await this.importHandler(entryPath);
@@ -269,6 +273,26 @@ export class PluginLoader {
     }
 
     return handler;
+  }
+
+  /** P2 修复：验证插件文件完整性 */
+  private verifyChecksum(manifest: SkillManifest, entryPath: string): void {
+    const expected = manifest.checksum;
+    if (!expected) {
+      // 无校验和时，生产环境警告（可配置为拒绝）
+      if (process.env.NODE_ENV === "production") {
+        console.warn(`[PluginLoader] Warning: Skill "${manifest.name}" lacks checksum verification`);
+      }
+      return;
+    }
+
+    const content = readFileSync(entryPath, "utf-8");
+    const actual = createHash("sha256").update(content).digest("hex");
+    if (actual !== expected) {
+      throw new Error(
+        `Checksum mismatch for "${manifest.name}": expected ${expected.slice(0, 16)}..., got ${actual.slice(0, 16)}...`
+      );
+    }
   }
 
   private emit(event: PluginEvent): void {

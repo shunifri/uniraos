@@ -21,6 +21,8 @@ export interface HybridSearchParams {
   docIds?: string[];
   /** Filter by content types */
   contentTypes?: ContentType[];
+  /** Optional knowledge graph search callback for enriching results */
+  graphSearch?: (query: string, params: { limit: number; docIds?: string[] }) => Promise<Array<{ doc_id: string; score: number }>>;
 }
 
 export interface HybridSearchResult {
@@ -38,8 +40,10 @@ export interface HybridSearchResult {
   page_number?: number;
   /** Vector similarity score (0-1) */
   vector_score: number;
+  /** Knowledge graph boost score (0-1) */
+  graph_boost?: number;
   /** Metadata from MySQL */
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 /** MySQL chunk metadata row */
@@ -113,9 +117,62 @@ export class HybridSearchService {
       const metadata = await this.fetchMetadata(vectorResults.map((r) => r.id));
 
       // Step 3: Merge and rank results
-      const results = this.mergeAndRank(vectorResults, metadata);
+      let results = this.mergeAndRank(vectorResults, metadata);
 
-      // Step 4: Apply final limit
+      // Step 4: Enrich with knowledge graph results if provided
+      if (params.graphSearch) {
+        try {
+          const graphResults = await params.graphSearch(params.query, {
+            limit: params.limit ?? 10,
+            docIds: params.docIds,
+          });
+
+          if (graphResults.length > 0) {
+            const existingDocIds = new Set(results.map((r) => r.doc_id));
+            const missingGraphResults = graphResults.filter(
+              (gr) => !existingDocIds.has(gr.doc_id)
+            );
+
+            if (missingGraphResults.length > 0) {
+              const graphDocIds = missingGraphResults.map((gr) => gr.doc_id);
+              const graphScoreMap = new Map(
+                missingGraphResults.map((gr) => [gr.doc_id, gr.score])
+              );
+
+              const graphChunks = await this.fetchMetadataByDocIds(graphDocIds);
+
+              const graphResultsMapped: HybridSearchResult[] = graphChunks.map((chunk) => ({
+                id: String(chunk.id),
+                doc_id: chunk.doc_id,
+                chunk_index: chunk.chunk_index,
+                content: chunk.content,
+                content_type: chunk.content_type,
+                page_number: chunk.page_number,
+                vector_score: 0,
+                graph_boost: graphScoreMap.get(chunk.doc_id) ?? 0,
+                metadata: {
+                  source: 'graph_search',
+                },
+              }));
+
+              results = [...results, ...graphResultsMapped];
+            }
+          }
+        } catch (graphError) {
+          log('warn', 'hybrid_search_graph_error', {
+            query: params.query,
+            error: graphError instanceof Error ? graphError.message : String(graphError),
+          });
+        }
+      }
+
+      // Step 5: Re-sort combined results by total score and apply final limit
+      results.sort((a, b) => {
+        const scoreA = a.vector_score + (a.graph_boost ?? 0);
+        const scoreB = b.vector_score + (b.graph_boost ?? 0);
+        return scoreB - scoreA;
+      });
+
       const finalResults = results.slice(0, limit);
 
       log('info', 'hybrid_search_complete', {
@@ -130,7 +187,7 @@ export class HybridSearchService {
     } catch (error) {
       log('error', 'hybrid_search_error', {
         query: params.query,
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? (error as Error).message : String(error),
         duration: Date.now() - startTime,
       });
       throw error;
@@ -195,7 +252,7 @@ export class HybridSearchService {
       // If full-text search fails (e.g., no FULLTEXT index), fall back to LIKE
       log('warn', 'fulltext_search_fallback', {
         query,
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? (error as Error).message : String(error),
       });
 
       return this.fallbackTextSearch(query, limit);
@@ -241,7 +298,7 @@ export class HybridSearchService {
     // Post-filtering will be done based on results.
     
     // If single docId is specified, use it as filter
-    const filter: Record<string, any> = {};
+    const filter: Record<string, unknown> = {};
     
     if (params.docIds && params.docIds.length === 1) {
       filter.doc_id = params.docIds[0];
@@ -296,6 +353,24 @@ export class HybridSearchService {
     `;
 
     return await this.mysql.query<ChunkMetadataRow>(sql, ids);
+  }
+
+  /**
+   * Fetch metadata for doc IDs from MySQL
+   */
+  private async fetchMetadataByDocIds(docIds: string[]): Promise<ChunkMetadataRow[]> {
+    if (docIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = docIds.map(() => '?').join(',');
+    const sql = `
+      SELECT id, doc_id, chunk_index, content, content_type, page_number, created_at, updated_at
+      FROM kb_chunks
+      WHERE doc_id IN (${placeholders})
+    `;
+
+    return await this.mysql.query<ChunkMetadataRow>(sql, docIds);
   }
 
   /**

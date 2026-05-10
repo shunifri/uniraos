@@ -51,7 +51,7 @@ export class RedisClient {
     });
 
     this.client.on('error', (err: Error) => {
-      log('error', 'redis_client_error', { error: err.message });
+      log('error', 'redis_client_error', { error: (err as Error).message });
     });
 
     this.client.on('ready', () => {
@@ -64,6 +64,13 @@ export class RedisClient {
    */
   private getKey(key: string): string {
     return `${this.keyPrefix}${key}`;
+  }
+
+  /**
+   * Expose prefixed key for external lock usage
+   */
+  getPrefixedKey(key: string): string {
+    return this.getKey(key);
   }
 
   /**

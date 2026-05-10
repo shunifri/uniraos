@@ -8,8 +8,9 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { fetchWithTimeout } from "./fetch-with-timeout.js";
 import { resolve, join, extname } from "path";
-import type { VisionModelConfig } from "../services/doc-parser.js";
+import type { VisionModelConfig } from "../services/doc-parser.types.js";
 
 export interface ExtractedImage {
   id: string;          // 唯一标识，如 "img-0", "img-1"
@@ -131,36 +132,36 @@ export async function extractPdfImages(filePath: string): Promise<ExtractedImage
     const resources = page.node.Resources?.();
     if (!resources) continue;
 
-    // @ts-ignore
+    // @ts-ignore - 第三方库无类型定义
     const xObjects = resources.lookup?.("XObject") || resources.get?.("XObject");
     if (!xObjects) continue;
 
-    // @ts-ignore
+    // @ts-ignore - 第三方库无类型定义
     const dict = xObjects.dict || xObjects;
     if (!dict) continue;
 
     const keys = Object.keys(dict);
     for (const key of keys) {
       try {
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const obj = dict[key];
         if (!obj) continue;
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const subtype = obj.get?.("Subtype")?.name || obj.lookup?.("Subtype")?.name;
         if (subtype !== "Image") continue;
 
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const width = obj.get?.("Width")?.numberValue || obj.lookup?.("Width")?.numberValue || 0;
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const height = obj.get?.("Height")?.numberValue || obj.lookup?.("Height")?.numberValue || 0;
         if (width < 50 || height < 50) continue; // 过滤小图标/噪点
 
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const filter = obj.get?.("Filter")?.name || obj.lookup?.("Filter")?.name || "";
         let data: Buffer;
         let ext = "png";
 
-        // @ts-ignore
+        // @ts-ignore - 第三方库无类型定义
         const rawData = obj.getContents?.() || obj.get?.("Contents") || obj.contents;
         if (!rawData) continue;
 
@@ -168,7 +169,7 @@ export async function extractPdfImages(filePath: string): Promise<ExtractedImage
           ext = "jpg";
           data = Buffer.from(rawData);
         } else if (filter === "FlateDecode") {
-          // @ts-ignore
+          // @ts-ignore - 第三方库无类型定义
           const colorSpace = obj.get?.("ColorSpace")?.name || obj.lookup?.("ColorSpace")?.name || "DeviceRGB";
           // 尝试提取为 PNG（简化处理：用 canvas 或 Sharp 可能更好，但这里先做基础版本）
           // 对于 FlateDecode，数据需要解码后重新编码为 PNG
@@ -203,8 +204,8 @@ export async function extractDocumentImages(filePath: string): Promise<Extracted
     if (ext === ".pptx") return await extractPptxImages(filePath);
     if (ext === ".pdf") return await extractPdfImages(filePath);
     return [];
-  } catch (err: any) {
-    console.error(`[ImageExtractor] Failed to extract images from ${filePath}:`, err.message);
+  } catch (err: unknown) {
+    console.error(`[ImageExtractor] Failed to extract images from ${filePath}:`, (err as Error).message);
     return [];
   }
 }
@@ -218,7 +219,7 @@ export async function generateImageDescription(
   const prompt = `请用简短的一句话描述这张图片的主要内容（30字以内）。如果是流程图/架构图/原理图，请说明图中展示的系统/流程名称。如果是操作界面截图，请说明这是什么系统的什么操作界面。如果是照片/实物图，请描述图中主体。只输出描述，不要任何解释。`;
 
   try {
-    const response = await fetch(visionConfig.baseUrl + "/chat/completions", {
+    const response = await fetchWithTimeout(visionConfig.baseUrl + "/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${visionConfig.apiKey}`,
@@ -247,8 +248,8 @@ export async function generateImageDescription(
     const data = await response.json();
     const desc = data.choices?.[0]?.message?.content?.trim() || "";
     return desc || "文档内嵌图片";
-  } catch (err: any) {
-    console.error("[ImageExtractor] Failed to generate description:", err.message);
+  } catch (err: unknown) {
+    console.error("[ImageExtractor] Failed to generate description:", (err as Error).message);
     return "文档内嵌图片";
   }
 }

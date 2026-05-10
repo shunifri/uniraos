@@ -7,11 +7,11 @@
 
 set -e
 
-# 华为云 SWR 配置
-SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
-SWR_NAMESPACE="raos"
-SWR_USERNAME="cn-north-4@HPUATFLDVQ30DWEOVMBZ"
-SWR_PASSWORD="c047c1f5ca9490b8fa37d139a10a81f94edd2c148067fd11b912118dbcf9afa3"
+# 华为云 SWR 配置（从环境变量读取，禁止硬编码）
+SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-north-4.myhuaweicloud.com}"
+SWR_NAMESPACE="${SWR_NAMESPACE:-raos}"
+SWR_USERNAME="${SWR_USERNAME:?错误：SWR_USERNAME 环境变量未设置}"
+SWR_PASSWORD="${SWR_PASSWORD:?错误：SWR_PASSWORD 环境变量未设置}"
 
 # 镜像标签
 VERSION=${1:-latest}

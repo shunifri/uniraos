@@ -5,7 +5,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { SkillRegistry } from "../../src/registry/skill-registry.js";
 import { ExecutionEngine } from "../../src/engine/execution-engine.js";
 import { WALManager } from "../../src/wal/wal-manager.js";
-import { MetricsCollector } from "../../src/engine/metrics.js";
 import { defineSkill, Autonomy } from "../../src/types/skill.js";
 
 let registry: SkillRegistry;

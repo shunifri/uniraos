@@ -22,6 +22,7 @@ import type {
   SkillRecommendation,
   FederationEvent,
   FederationEventHandler,
+  ActionExecutor,
 } from "./types.js";
 import { log } from "../utils/logger.js";
 
@@ -214,12 +215,6 @@ export class FederatedAdoptionStrategy implements EvolutionStrategy {
 }
 
 // ===== 动作执行器 =====
-
-/** 动作执行器接口 — 可注册自定义执行器 */
-export interface ActionExecutor {
-  readonly actionType: string;
-  execute(action: EvolutionAction, ctx: { registry: SkillRegistry; metrics: MetricsCollector }): Promise<{ success: boolean; message: string }>;
-}
 
 /** 淘汰执行器 */
 export class RetireActionExecutor implements ActionExecutor {

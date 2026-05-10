@@ -4,7 +4,7 @@ import { dbConfig } from "../../src/config/db-config.js";
 
 /**
  * Redis Client Tests
- * 
+ *
  * These tests require a running Redis server.
  * Set REDIS_HOSTS environment variable to configure the Redis connection.
  * Default: localhost:6379
@@ -12,7 +12,8 @@ import { dbConfig } from "../../src/config/db-config.js";
 
 describe("RedisClient", () => {
   let client: RedisClient;
-  const testPrefix = 'raos:test:';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _testPrefix = "raos:test:";
 
   // Helper to check if Redis is available
   async function isRedisAvailable(): Promise<boolean> {
@@ -29,11 +30,11 @@ describe("RedisClient", () => {
     // Reset any existing singleton
     resetRedisClient();
     client = getRedisClient();
-    
+
     // Verify Redis is available, skip tests if not
     const available = await isRedisAvailable();
     if (!available) {
-      console.warn('Redis is not available, skipping Redis tests');
+      console.warn("Redis is not available, skipping Redis tests");
     }
   });
 
@@ -47,7 +48,7 @@ describe("RedisClient", () => {
   beforeEach(async () => {
     // Clean up test keys before each test
     if (client) {
-      const keys = await client.keys('test:*');
+      const keys = await client.keys("test:*");
       for (const key of keys) {
         await client.delete(`test:${key}`);
       }
@@ -59,18 +60,18 @@ describe("RedisClient", () => {
       // Skip if Redis is not available
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:basic';
-      const value = { name: 'test', value: 123 };
+      const key = "test:basic";
+      const value = { name: "test", value: 123 };
 
       await client.set(key, value);
       const result = await client.get<typeof value>(key);
 
       expect(result).toEqual(value);
-      
+
       // Cleanup
       await client.delete(key);
     });
@@ -78,26 +79,26 @@ describe("RedisClient", () => {
     it("should return null for non-existent key", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const result = await client.get('test:nonexistent');
+      const result = await client.get("test:nonexistent");
       expect(result).toBeNull();
     });
 
     it("should set value with TTL", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:ttl';
+      const key = "test:ttl";
       const value = { temp: true };
 
       await client.set(key, value, 1); // 1 second TTL
-      
+
       // Should exist immediately
       let result = await client.get<typeof value>(key);
       expect(result).toEqual(value);
@@ -113,12 +114,12 @@ describe("RedisClient", () => {
     it("should delete a key", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:delete';
-      await client.set(key, 'value');
+      const key = "test:delete";
+      await client.set(key, "value");
 
       // Verify it exists
       let exists = await client.exists(key);
@@ -135,13 +136,13 @@ describe("RedisClient", () => {
     it("should delete multiple keys", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const keys = ['test:multi1', 'test:multi2', 'test:multi3'];
+      const keys = ["test:multi1", "test:multi2", "test:multi3"];
       for (const key of keys) {
-        await client.set(key, 'value');
+        await client.set(key, "value");
       }
 
       await client.deleteMany(keys);
@@ -155,12 +156,12 @@ describe("RedisClient", () => {
     it("should increment a counter", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:counter';
-      
+      const key = "test:counter";
+
       const result1 = await client.increment(key);
       expect(result1).toBe(1);
 
@@ -177,12 +178,12 @@ describe("RedisClient", () => {
     it("should set expiration on a key", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:expire';
-      await client.set(key, 'value');
+      const key = "test:expire";
+      await client.set(key, "value");
 
       // Set 2 second expiration
       await client.expire(key, 2);
@@ -202,17 +203,17 @@ describe("RedisClient", () => {
     it("should check if key exists", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:exists';
-      
+      const key = "test:exists";
+
       let exists = await client.exists(key);
       expect(exists).toBe(false);
 
-      await client.set(key, 'value');
-      
+      await client.set(key, "value");
+
       exists = await client.exists(key);
       expect(exists).toBe(true);
 
@@ -225,11 +226,11 @@ describe("RedisClient", () => {
     it("should handle string values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:string';
+      const key = "test:string";
       const value = "Hello, Redis!";
 
       await client.set(key, value);
@@ -244,11 +245,11 @@ describe("RedisClient", () => {
     it("should handle number values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:number';
+      const key = "test:number";
       const value = 42.5;
 
       await client.set(key, value);
@@ -263,14 +264,14 @@ describe("RedisClient", () => {
     it("should handle object values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:object';
+      const key = "test:object";
       const value = {
         id: 123,
-        name: 'Test Object',
+        name: "Test Object",
         nested: {
           array: [1, 2, 3],
           bool: true,
@@ -290,12 +291,12 @@ describe("RedisClient", () => {
     it("should handle array values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:array';
-      const value = [1, 'two', { three: 3 }, [4, 5]];
+      const key = "test:array";
+      const value = [1, "two", { three: 3 }, [4, 5]];
 
       await client.set(key, value);
       const result = await client.get<typeof value>(key);
@@ -309,12 +310,12 @@ describe("RedisClient", () => {
     it("should handle boolean values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key1 = 'test:bool_true';
-      const key2 = 'test:bool_false';
+      const key1 = "test:bool_true";
+      const key2 = "test:bool_false";
 
       await client.set(key1, true);
       await client.set(key2, false);
@@ -333,11 +334,11 @@ describe("RedisClient", () => {
     it("should handle null values", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
-      const key = 'test:null';
+      const key = "test:null";
 
       await client.set(key, null);
       const result = await client.get<null>(key);
@@ -353,7 +354,7 @@ describe("RedisClient", () => {
     it("should return true when Redis is healthy", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
@@ -366,25 +367,25 @@ describe("RedisClient", () => {
     it("should find keys matching pattern", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
       // Set up some test keys
-      await client.set('test:pattern:one', '1');
-      await client.set('test:pattern:two', '2');
-      await client.set('test:other:three', '3');
+      await client.set("test:pattern:one", "1");
+      await client.set("test:pattern:two", "2");
+      await client.set("test:other:three", "3");
 
-      const keys = await client.keys('test:pattern:*');
+      const keys = await client.keys("test:pattern:*");
 
-      expect(keys).toContain('test:pattern:one');
-      expect(keys).toContain('test:pattern:two');
-      expect(keys).not.toContain('test:other:three');
+      expect(keys).toContain("test:pattern:one");
+      expect(keys).toContain("test:pattern:two");
+      expect(keys).not.toContain("test:other:three");
 
       // Cleanup
-      await client.delete('test:pattern:one');
-      await client.delete('test:pattern:two');
-      await client.delete('test:other:three');
+      await client.delete("test:pattern:one");
+      await client.delete("test:pattern:two");
+      await client.delete("test:other:three");
     });
   });
 
@@ -392,22 +393,22 @@ describe("RedisClient", () => {
     it("should use configured key prefix", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
       // The client uses the prefix from dbConfig
-      expect(dbConfig.redis.keyPrefix).toBe('raos:');
+      expect(dbConfig.redis.keyPrefix).toBe("raos:");
 
       // Set a value
-      await client.set('test:prefixed', 'value');
+      await client.set("test:prefixed", "value");
 
       // Get it back
-      const result = await client.get('test:prefixed');
-      expect(result).toBe('value');
+      const result = await client.get("test:prefixed");
+      expect(result).toBe("value");
 
       // Cleanup
-      await client.delete('test:prefixed');
+      await client.delete("test:prefixed");
     });
   });
 
@@ -415,19 +416,19 @@ describe("RedisClient", () => {
     it("should provide access to raw Redis client", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
       const rawClient = client.getClient();
       expect(rawClient).toBeDefined();
-      expect(typeof rawClient.ping).toBe('function');
+      expect(typeof rawClient.ping).toBe("function");
     });
 
     it("should report cluster mode correctly", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
@@ -440,12 +441,12 @@ describe("RedisClient", () => {
     it("should handle get errors gracefully", async () => {
       const available = await isRedisAvailable();
       if (!available) {
-        console.warn('Skipping test: Redis not available');
+        console.warn("Skipping test: Redis not available");
         return;
       }
 
       // Getting a non-existent key should return null, not throw
-      const result = await client.get('test:nonexistent:key');
+      const result = await client.get("test:nonexistent:key");
       expect(result).toBeNull();
     });
   });

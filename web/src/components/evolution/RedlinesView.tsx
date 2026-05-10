@@ -268,6 +268,7 @@ export default function RedlinesView() {
           form.resetFields();
         }}
         loading={actionLoading}
+        forceRender
       >
         <Form
           form={form}

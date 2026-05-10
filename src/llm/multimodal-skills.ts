@@ -51,13 +51,13 @@ export function createMultimodalSkills(
         taskManager.start(task.taskId);
 
         // 异步执行生成（不阻塞 handler 返回）
-        (async () => {
+        void (async () => {
           try {
             taskManager.progress(task.taskId, 10);
             const result = await provider.generate({ type, prompt, referenceMedia, model, options });
             taskManager.complete(task.taskId, result);
           } catch (err) {
-            taskManager.fail(task.taskId, err instanceof Error ? err.message : String(err));
+            taskManager.fail(task.taskId, err instanceof Error ? (err as Error).message : String(err));
           }
         })();
 
@@ -95,7 +95,7 @@ export function createMultimodalSkills(
         const task = taskManager.create();
         taskManager.start(task.taskId);
 
-        (async () => {
+        void (async () => {
           try {
             taskManager.progress(task.taskId, 10);
             const result = await provider.generate({
@@ -106,7 +106,7 @@ export function createMultimodalSkills(
             });
             taskManager.complete(task.taskId, result);
           } catch (err) {
-            taskManager.fail(task.taskId, err instanceof Error ? err.message : String(err));
+            taskManager.fail(task.taskId, err instanceof Error ? (err as Error).message : String(err));
           }
         })();
 

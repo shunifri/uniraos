@@ -15,6 +15,7 @@
 import { defineSkill, defineSystemSkill } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import Database from "better-sqlite3";
 import { join, resolve } from "path";
 import { mkdirSync, existsSync, readFileSync } from "fs";
@@ -113,9 +114,10 @@ async function applyAuth(
       if (!auth.accessToken || (auth.accessTokenExpiry && Date.now() > auth.accessTokenExpiry)) {
         if (auth.tokenUrl && (auth.refreshToken || (auth.clientId && auth.clientSecret))) {
           try {
-            const tokenResponse = await fetch(auth.tokenUrl, {
+            const tokenResponse = await fetchWithTimeout(auth.tokenUrl, {
               method: "POST",
               headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              retries: 1,
               body: new URLSearchParams({
                 grant_type: auth.refreshToken ? "refresh_token" : "client_credentials",
                 ...(auth.refreshToken ? { refresh_token: auth.refreshToken } : {}),

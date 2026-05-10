@@ -1,138 +1,138 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Mock } from "vitest";
 
-vi.mock('../../src/services/database-connector.js', () => ({
+vi.mock("../../src/services/database-connector.js", () => ({
   executeQuery: vi.fn(),
 }));
 
-const { resolveDataSource, applyFilters } = await import('../../src/services/data-source-service.js');
-const { executeQuery } = await import('../../src/services/database-connector.js');
+const { resolveDataSource, applyFilters } = await import("../../src/services/data-source-service.js");
+const { executeQuery } = await import("../../src/services/database-connector.js");
 
-describe('Data Source Service', () => {
-  describe('static data source', () => {
-    it('should resolve static options', async () => {
+describe("Data Source Service", () => {
+  describe("static data source", () => {
+    it("should resolve static options", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'static',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "static",
             options: [
-              { label: 'A', value: 'a' },
-              { label: 'B', value: 'b' },
+              { label: "A", value: "a" },
+              { label: "B", value: "b" },
             ],
           },
         },
         formData: {},
       });
       expect(result.options).toHaveLength(2);
-      expect(result.options[0]).toEqual({ label: 'A', value: 'a' });
-      expect(result.options[1]).toEqual({ label: 'B', value: 'b' });
+      expect(result.options[0]).toEqual({ label: "A", value: "a" });
+      expect(result.options[1]).toEqual({ label: "B", value: "b" });
       expect(result.total).toBe(2);
     });
 
-    it('should filter static options by search keyword', async () => {
+    it("should filter static options by search keyword", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'static',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "static",
             options: [
-              { label: 'Apple', value: 'a' },
-              { label: 'Banana', value: 'b' },
+              { label: "Apple", value: "a" },
+              { label: "Banana", value: "b" },
             ],
           },
         },
         formData: {},
-        searchKeyword: 'app',
+        searchKeyword: "app",
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('Apple');
+      expect(result.options[0].label).toBe("Apple");
       expect(result.total).toBe(1);
     });
 
-    it('should be case-insensitive when filtering', async () => {
+    it("should be case-insensitive when filtering", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'static',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "static",
             options: [
-              { label: 'Apple', value: 'a' },
-              { label: 'Banana', value: 'b' },
+              { label: "Apple", value: "a" },
+              { label: "Banana", value: "b" },
             ],
           },
         },
         formData: {},
-        searchKeyword: 'BAN',
+        searchKeyword: "BAN",
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('Banana');
+      expect(result.options[0].label).toBe("Banana");
     });
 
-    it('should return empty options for no match', async () => {
+    it("should return empty options for no match", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'static',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "static",
             options: [
-              { label: 'Apple', value: 'a' },
-              { label: 'Banana', value: 'b' },
+              { label: "Apple", value: "a" },
+              { label: "Banana", value: "b" },
             ],
           },
         },
         formData: {},
-        searchKeyword: 'xyz',
+        searchKeyword: "xyz",
       });
       expect(result.options).toHaveLength(0);
       expect(result.total).toBe(0);
     });
   });
 
-  describe('expression data source', () => {
-    it('should resolve expression with form data placeholders', async () => {
+  describe("expression data source", () => {
+    it("should resolve expression with form data placeholders", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'expression',
-            expression: '{{deptId}}-{{userId}}',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "expression",
+            expression: "{{deptId}}-{{userId}}",
           },
         },
-        formData: { deptId: 'D001', userId: 'U123' },
+        formData: { deptId: "D001", userId: "U123" },
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].value).toBe('D001-U123');
-      expect(result.options[0].label).toBe('D001-U123');
+      expect(result.options[0].value).toBe("D001-U123");
+      expect(result.options[0].label).toBe("D001-U123");
     });
 
-    it('should replace missing fields with empty string', async () => {
+    it("should replace missing fields with empty string", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'expression',
-            expression: '{{deptId}}-{{missing}}',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "expression",
+            expression: "{{deptId}}-{{missing}}",
           },
         },
-        formData: { deptId: 'D001' },
+        formData: { deptId: "D001" },
       });
-      expect(result.options[0].value).toBe('D001-');
+      expect(result.options[0].value).toBe("D001-");
     });
 
-    it('should return empty options when expression is missing', async () => {
+    it("should return empty options when expression is missing", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'expression',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "expression",
           },
         },
         formData: {},
@@ -141,66 +141,66 @@ describe('Data Source Service', () => {
     });
   });
 
-  describe('workflowVar data source', () => {
-    it('should resolve workflow variable from array', async () => {
+  describe("workflowVar data source", () => {
+    it("should resolve workflow variable from array", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
-            variableName: 'approvers',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
+            variableName: "approvers",
           },
         },
-        formData: { approvers: [{ label: '张三', value: 'u1' }] },
+        formData: { approvers: [{ label: "张三", value: "u1" }] },
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('张三');
-      expect(result.options[0].value).toBe('u1');
+      expect(result.options[0].label).toBe("张三");
+      expect(result.options[0].value).toBe("u1");
     });
 
-    it('should resolve workflow variable with workflowVar. prefix', async () => {
+    it("should resolve workflow variable with workflowVar. prefix", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
-            variableName: 'status',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
+            variableName: "status",
           },
         },
-        formData: { 'workflowVar.status': 'approved' },
+        formData: { "workflowVar.status": "approved" },
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('approved');
-      expect(result.options[0].value).toBe('approved');
+      expect(result.options[0].label).toBe("approved");
+      expect(result.options[0].value).toBe("approved");
     });
 
-    it('should resolve scalar workflow variable', async () => {
+    it("should resolve scalar workflow variable", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
-            variableName: 'count',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
+            variableName: "count",
           },
         },
         formData: { count: 42 },
       });
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('42');
+      expect(result.options[0].label).toBe("42");
       expect(result.options[0].value).toBe(42);
     });
 
-    it('should return empty options for missing variable', async () => {
+    it("should return empty options for missing variable", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
-            variableName: 'missing',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
+            variableName: "missing",
           },
         },
         formData: {},
@@ -208,13 +208,13 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options when variableName is missing', async () => {
+    it("should return empty options when variableName is missing", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
           },
         },
         formData: { approvers: [] },
@@ -222,25 +222,25 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should handle array of primitives', async () => {
+    it("should handle array of primitives", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'workflowVar',
-            variableName: 'tags',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "workflowVar",
+            variableName: "tags",
           },
         },
-        formData: { tags: ['tag1', 'tag2'] },
+        formData: { tags: ["tag1", "tag2"] },
       });
       expect(result.options).toHaveLength(2);
-      expect(result.options[0]).toEqual({ label: 'tag1', value: 'tag1' });
-      expect(result.options[1]).toEqual({ label: 'tag2', value: 'tag2' });
+      expect(result.options[0]).toEqual({ label: "tag1", value: "tag1" });
+      expect(result.options[1]).toEqual({ label: "tag2", value: "tag2" });
     });
   });
 
-  describe('remote data source', () => {
+  describe("remote data source", () => {
     let fetchMock: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
@@ -252,37 +252,37 @@ describe('Data Source Service', () => {
       vi.restoreAllMocks();
     });
 
-    it('should fetch remote data with GET', async () => {
+    it("should fetch remote data with GET", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => [
-          { label: 'Item 1', value: 'v1' },
-          { label: 'Item 2', value: 'v2' },
+          { label: "Item 1", value: "v1" },
+          { label: "Item 2", value: "v2" },
         ],
       });
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
-            method: 'GET',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
+            method: "GET",
           },
         },
         formData: {},
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'https://api.example.com/items',
-        expect.objectContaining({ method: 'GET' })
+        "https://api.example.com/items",
+        expect.objectContaining({ method: "GET" })
       );
       expect(result.options).toHaveLength(2);
-      expect(result.options[0]).toEqual({ label: 'Item 1', value: 'v1' });
+      expect(result.options[0]).toEqual({ label: "Item 1", value: "v1" });
     });
 
-    it('should replace URL placeholders', async () => {
+    it("should replace URL placeholders", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => [],
@@ -290,24 +290,24 @@ describe('Data Source Service', () => {
 
       await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/{{orgId}}/users',
-            method: 'GET',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/{{orgId}}/users",
+            method: "GET",
           },
         },
-        formData: { orgId: 'org-123' },
+        formData: { orgId: "org-123" },
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'https://api.example.com/org-123/users',
+        "https://api.example.com/org-123/users",
         expect.anything()
       );
     });
 
-    it('should replace param placeholders and add search keyword', async () => {
+    it("should replace param placeholders and add search keyword", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => [],
@@ -315,35 +315,35 @@ describe('Data Source Service', () => {
 
       await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/search',
-            method: 'GET',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/search",
+            method: "GET",
             params: {
-              dept: '{{deptId}}',
-              fixed: 'value',
+              dept: "{{deptId}}",
+              fixed: "value",
             },
           },
         },
-        formData: { deptId: 'D001' },
-        searchKeyword: 'test',
+        formData: { deptId: "D001" },
+        searchKeyword: "test",
       });
 
       const calledUrl = fetchMock.mock.calls[0][0];
-      expect(calledUrl).toContain('dept=D001');
-      expect(calledUrl).toContain('fixed=value');
-      expect(calledUrl).toContain('keyword=test');
+      expect(calledUrl).toContain("dept=D001");
+      expect(calledUrl).toContain("fixed=value");
+      expect(calledUrl).toContain("keyword=test");
     });
 
-    it('should extract data using path', async () => {
+    it("should extract data using path", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           data: {
             list: [
-              { label: 'A', value: 'a' },
+              { label: "A", value: "a" },
             ],
           },
         }),
@@ -351,62 +351,62 @@ describe('Data Source Service', () => {
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
-            path: 'data.list',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
+            path: "data.list",
           },
         },
         formData: {},
       });
 
       expect(result.options).toHaveLength(1);
-      expect(result.options[0].label).toBe('A');
+      expect(result.options[0].label).toBe("A");
     });
 
-    it('should send POST request with body', async () => {
+    it("should send POST request with body", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: async () => [{ name: 'Post Item', id: 'p1' }],
+        json: async () => [{ name: "Post Item", id: "p1" }],
       });
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
-            method: 'POST',
-            params: { category: 'all' },
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
+            method: "POST",
+            params: { category: "all" },
           },
         },
         formData: {},
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'https://api.example.com/items',
+        "https://api.example.com/items",
         expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ category: 'all' }),
+          method: "POST",
+          body: JSON.stringify({ category: "all" }),
         })
       );
-      expect(result.options[0].label).toBe('Post Item');
-      expect(result.options[0].value).toBe('p1');
+      expect(result.options[0].label).toBe("Post Item");
+      expect(result.options[0].value).toBe("p1");
     });
 
-    it('should return empty options on fetch error', async () => {
-      fetchMock.mockRejectedValueOnce(new Error('Network error'));
+    it("should return empty options on fetch error", async () => {
+      fetchMock.mockRejectedValueOnce(new Error("Network error"));
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
           },
         },
         formData: {},
@@ -415,7 +415,7 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options on non-ok response', async () => {
+    it("should return empty options on non-ok response", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: false,
         status: 500,
@@ -423,11 +423,11 @@ describe('Data Source Service', () => {
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
           },
         },
         formData: {},
@@ -436,7 +436,7 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options when response is not an array', async () => {
+    it("should return empty options when response is not an array", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ notAnArray: true }),
@@ -444,11 +444,11 @@ describe('Data Source Service', () => {
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
           },
         },
         formData: {},
@@ -457,14 +457,14 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options when url is missing', async () => {
+    it("should return empty options when url is missing", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: '',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "",
           },
         },
         formData: {},
@@ -474,55 +474,55 @@ describe('Data Source Service', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it('should fallback label to name, title, or value string', async () => {
+    it("should fallback label to name, title, or value string", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: async () => [
-          { name: 'Name Item', value: 'v1' },
-          { title: 'Title Item', id: 'v2' },
-          { id: 'v3' },
-          { key: 'v4' },
+          { name: "Name Item", value: "v1" },
+          { title: "Title Item", id: "v2" },
+          { id: "v3" },
+          { key: "v4" },
         ],
       });
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'remote',
-            url: 'https://api.example.com/items',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "remote",
+            url: "https://api.example.com/items",
           },
         },
         formData: {},
       });
 
-      expect(result.options[0].label).toBe('Name Item');
-      expect(result.options[1].label).toBe('Title Item');
-      expect(result.options[2].label).toBe('v3');
-      expect(result.options[3].label).toBe('v4');
+      expect(result.options[0].label).toBe("Name Item");
+      expect(result.options[1].label).toBe("Title Item");
+      expect(result.options[2].label).toBe("v3");
+      expect(result.options[3].label).toBe("v4");
     });
   });
 
-  describe('edge cases', () => {
-    it('should return empty options when no dataSource is configured', async () => {
+  describe("edge cases", () => {
+    it("should return empty options when no dataSource is configured", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
+          type: "string",
+          title: "Test",
         },
         formData: {},
       });
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options for unknown data source type', async () => {
+    it("should return empty options for unknown data source type", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'unknown' as any,
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "unknown" as any,
           },
         },
         formData: {},
@@ -530,13 +530,13 @@ describe('Data Source Service', () => {
       expect(result.options).toHaveLength(0);
     });
 
-    it('should return empty options for database type (phase 15)', async () => {
+    it("should return empty options for database type (phase 15)", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
           },
         },
         formData: {},
@@ -545,144 +545,144 @@ describe('Data Source Service', () => {
     });
   });
 
-  describe('applyFilters', () => {
+  describe("applyFilters", () => {
     const options = [
-      { label: '张三', value: 'u1', extra: { age: 25, dept: 'rd' } },
-      { label: '李四', value: 'u2', extra: { age: 30, dept: 'pm' } },
-      { label: '王五', value: 'u3', extra: { age: 35, dept: 'rd' } }
+      { label: "张三", value: "u1", extra: { age: 25, dept: "rd" } },
+      { label: "李四", value: "u2", extra: { age: 30, dept: "pm" } },
+      { label: "王五", value: "u3", extra: { age: 35, dept: "rd" } }
     ];
 
-    it('should filter by eq', () => {
-      const result = applyFilters(options, [{ field: 'dept', operator: 'eq', value: 'rd' }], {});
+    it("should filter by eq", () => {
+      const result = applyFilters(options, [{ field: "dept", operator: "eq", value: "rd" }], {});
       expect(result).toHaveLength(2);
-      expect(result[0].label).toBe('张三');
+      expect(result[0].label).toBe("张三");
     });
 
-    it('should filter by gt', () => {
-      const result = applyFilters(options, [{ field: 'age', operator: 'gt', value: 28 }], {});
+    it("should filter by gt", () => {
+      const result = applyFilters(options, [{ field: "age", operator: "gt", value: 28 }], {});
       expect(result).toHaveLength(2);
     });
 
-    it('should filter by contains', () => {
-      const result = applyFilters(options, [{ field: 'label', operator: 'contains', value: '三' }], {});
+    it("should filter by contains", () => {
+      const result = applyFilters(options, [{ field: "label", operator: "contains", value: "三" }], {});
       expect(result).toHaveLength(1);
-      expect(result[0].label).toBe('张三');
+      expect(result[0].label).toBe("张三");
     });
 
-    it('should filter by in', () => {
-      const result = applyFilters(options, [{ field: 'dept', operator: 'in', value: ['rd', 'pm'] }], {});
+    it("should filter by in", () => {
+      const result = applyFilters(options, [{ field: "dept", operator: "in", value: ["rd", "pm"] }], {});
       expect(result).toHaveLength(3);
     });
 
-    it('should filter by between', () => {
-      const result = applyFilters(options, [{ field: 'age', operator: 'between', value: [26, 32] }], {});
+    it("should filter by between", () => {
+      const result = applyFilters(options, [{ field: "age", operator: "between", value: [26, 32] }], {});
       expect(result).toHaveLength(1);
-      expect(result[0].label).toBe('李四');
+      expect(result[0].label).toBe("李四");
     });
 
-    it('should filter by isNull', () => {
+    it("should filter by isNull", () => {
       const optionsWithNull = [
         ...options,
-        { label: '赵六', value: 'u4', extra: { age: null, dept: 'hr' } }
+        { label: "赵六", value: "u4", extra: { age: null, dept: "hr" } }
       ];
-      const result = applyFilters(optionsWithNull, [{ field: 'age', operator: 'isNull' }], {});
+      const result = applyFilters(optionsWithNull, [{ field: "age", operator: "isNull" }], {});
       expect(result).toHaveLength(1);
-      expect(result[0].label).toBe('赵六');
+      expect(result[0].label).toBe("赵六");
     });
 
-    it('should support and/or logic', () => {
+    it("should support and/or logic", () => {
       const result = applyFilters(options, [
-        { field: 'dept', operator: 'eq', value: 'rd', logic: 'and' },
-        { field: 'age', operator: 'gt', value: 30, logic: 'and' }
+        { field: "dept", operator: "eq", value: "rd", logic: "and" },
+        { field: "age", operator: "gt", value: 30, logic: "and" }
       ], {});
       expect(result).toHaveLength(1);
-      expect(result[0].label).toBe('王五');
+      expect(result[0].label).toBe("王五");
     });
 
-    it('should resolve {{fieldName}} in filter value', () => {
+    it("should resolve {{fieldName}} in filter value", () => {
       const result = applyFilters(options, [
-        { field: 'dept', operator: 'eq', value: '{{selectedDept}}' }
-      ], { selectedDept: 'rd' });
+        { field: "dept", operator: "eq", value: "{{selectedDept}}" }
+      ], { selectedDept: "rd" });
       expect(result).toHaveLength(2);
     });
 
-    it('should return all options when no filters', () => {
+    it("should return all options when no filters", () => {
       const result = applyFilters(options, [], {});
       expect(result).toHaveLength(3);
     });
   });
 
-  describe('database data source', () => {
+  describe("database data source", () => {
     beforeEach(() => {
       (executeQuery as Mock).mockReset();
     });
 
-    it('should resolve database options with query params', async () => {
+    it("should resolve database options with query params", async () => {
       (executeQuery as Mock).mockResolvedValueOnce([
-        { id: 'u1', name: '张三', age: 25 },
-        { id: 'u2', name: '李四', age: 30 },
+        { id: "u1", name: "张三", age: 25 },
+        { id: "u2", name: "李四", age: 30 },
       ]);
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: '员工',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "员工",
+          "x-dataSource": {
+            type: "database",
             database: {
-              connectionId: 'conn-1',
-              query: 'SELECT * FROM users WHERE dept_id = ?',
+              connectionId: "conn-1",
+              query: "SELECT * FROM users WHERE dept_id = ?",
               queryParams: [
-                { source: 'formField', sourceField: 'department' },
+                { source: "formField", sourceField: "department" },
               ],
-              labelField: 'name',
-              valueField: 'id',
-              extraFields: ['age'],
+              labelField: "name",
+              valueField: "id",
+              extraFields: ["age"],
             },
           },
         },
-        formData: { department: 'dept-1' },
+        formData: { department: "dept-1" },
       });
 
       expect(executeQuery).toHaveBeenCalledWith(
-        'conn-1',
-        'SELECT * FROM users WHERE dept_id = ?',
-        ['dept-1'],
+        "conn-1",
+        "SELECT * FROM users WHERE dept_id = ?",
+        ["dept-1"],
         5000
       );
       expect(result.options).toHaveLength(2);
       expect(result.options[0]).toEqual({
-        label: '张三',
-        value: 'u1',
+        label: "张三",
+        value: "u1",
         extra: { age: 25 },
       });
       expect(result.options[1]).toEqual({
-        label: '李四',
-        value: 'u2',
+        label: "李四",
+        value: "u2",
         extra: { age: 30 },
       });
       expect(result.total).toBe(2);
     });
 
-    it('should handle static query params', async () => {
+    it("should handle static query params", async () => {
       (executeQuery as Mock).mockResolvedValueOnce([
-        { id: 'a1', name: 'Item A' },
+        { id: "a1", name: "Item A" },
       ]);
 
       await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
             database: {
-              connectionId: 'conn-1',
-              query: 'SELECT * FROM items WHERE status = ?',
+              connectionId: "conn-1",
+              query: "SELECT * FROM items WHERE status = ?",
               queryParams: [
-                { source: 'static', value: 'active' },
+                { source: "static", value: "active" },
               ],
-              labelField: 'name',
-              valueField: 'id',
+              labelField: "name",
+              valueField: "id",
             },
           },
         },
@@ -690,60 +690,60 @@ describe('Data Source Service', () => {
       });
 
       expect(executeQuery).toHaveBeenCalledWith(
-        'conn-1',
-        'SELECT * FROM items WHERE status = ?',
-        ['active'],
+        "conn-1",
+        "SELECT * FROM items WHERE status = ?",
+        ["active"],
         5000
       );
     });
 
-    it('should handle multiple query params', async () => {
+    it("should handle multiple query params", async () => {
       (executeQuery as Mock).mockResolvedValueOnce([]);
 
       await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
             database: {
-              connectionId: 'conn-1',
-              query: 'SELECT * WHERE a = ? AND b = ?',
+              connectionId: "conn-1",
+              query: "SELECT * WHERE a = ? AND b = ?",
               queryParams: [
-                { source: 'formField', sourceField: 'fieldA' },
-                { source: 'static', value: 42 },
+                { source: "formField", sourceField: "fieldA" },
+                { source: "static", value: 42 },
               ],
-              labelField: 'name',
-              valueField: 'id',
+              labelField: "name",
+              valueField: "id",
             },
           },
         },
-        formData: { fieldA: 'valueA' },
+        formData: { fieldA: "valueA" },
       });
 
       expect(executeQuery).toHaveBeenCalledWith(
-        'conn-1',
-        'SELECT * WHERE a = ? AND b = ?',
-        ['valueA', 42],
+        "conn-1",
+        "SELECT * WHERE a = ? AND b = ?",
+        ["valueA", 42],
         5000
       );
     });
 
-    it('should use custom timeout', async () => {
+    it("should use custom timeout", async () => {
       (executeQuery as Mock).mockResolvedValueOnce([]);
 
       await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
             database: {
-              connectionId: 'conn-1',
-              query: 'SELECT 1',
+              connectionId: "conn-1",
+              query: "SELECT 1",
               queryParams: [],
-              labelField: 'name',
-              valueField: 'id',
+              labelField: "name",
+              valueField: "id",
               timeout: 10000,
             },
           },
@@ -752,20 +752,20 @@ describe('Data Source Service', () => {
       });
 
       expect(executeQuery).toHaveBeenCalledWith(
-        'conn-1',
-        'SELECT 1',
+        "conn-1",
+        "SELECT 1",
         [],
         10000
       );
     });
 
-    it('should return empty options when database config is missing', async () => {
+    it("should return empty options when database config is missing", async () => {
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
           },
         },
         formData: {},
@@ -775,21 +775,21 @@ describe('Data Source Service', () => {
       expect(executeQuery).not.toHaveBeenCalled();
     });
 
-    it('should return empty options on query error', async () => {
-      (executeQuery as Mock).mockRejectedValueOnce(new Error('DB error'));
+    it("should return empty options on query error", async () => {
+      (executeQuery as Mock).mockRejectedValueOnce(new Error("DB error"));
 
       const result = await resolveDataSource({
         fieldSchema: {
-          type: 'string',
-          title: 'Test',
-          'x-dataSource': {
-            type: 'database',
+          type: "string",
+          title: "Test",
+          "x-dataSource": {
+            type: "database",
             database: {
-              connectionId: 'conn-1',
-              query: 'SELECT * FROM users',
+              connectionId: "conn-1",
+              query: "SELECT * FROM users",
               queryParams: [],
-              labelField: 'name',
-              valueField: 'id',
+              labelField: "name",
+              valueField: "id",
             },
           },
         },

@@ -4,7 +4,7 @@
  * 根据结构化数据自动推荐并生成最适合的 ECharts 图表配置。
  * 智能体可以分析数据特征，自动选择图表类型，生成可直接渲染的 ECharts option。
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 // ===== 图表类型推荐引擎 =====

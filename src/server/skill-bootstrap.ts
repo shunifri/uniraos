@@ -2,6 +2,7 @@ import { defineSystemSkill } from "../types/index.js";
 import { Autonomy } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import * as resRepo from "../db/resource-repository.js";
+import { safeEvaluateExpression } from "../utils/safe-expression.js";
 
 export function loadExampleSkills(registry: SkillRegistry): void {
   registry.register(
@@ -129,7 +130,7 @@ export function loadExampleSkills(registry: SkillRegistry): void {
         if (!/^[\d\s+\-*/().]+$/.test(expression)) {
           return { success: false, error: new Error("Invalid expression") };
         }
-        const result = new Function(`return (${expression})`)();
+        const result = safeEvaluateExpression(expression);
         return { success: true, data: { expression, result } };
       },
       description: "数学表达式计算，接受 expression 参数，如 '2 + 3 * 4'",

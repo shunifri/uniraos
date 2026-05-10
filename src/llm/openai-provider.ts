@@ -11,6 +11,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 export class OpenAIProvider implements LLMProvider {
   readonly name: string;
@@ -70,13 +71,14 @@ export class OpenAIProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const body = this.buildRequestBody(messages, tools, false, options);
 
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      timeoutMs: 120_000,
     });
 
     if (!res.ok) {
@@ -100,13 +102,14 @@ export class OpenAIProvider implements LLMProvider {
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools, true, options);
 
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      timeoutMs: 300_000,
     });
 
     if (!res.ok) {

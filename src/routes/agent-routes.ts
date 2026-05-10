@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { join } from "path";
-import { requireAuth, requirePermission } from "../db/auth-middleware.js";
+import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { getRoleAgentConfig, getUserRoles } from "../db/user-repository.js";
 import type { RoleAgentConfig } from "../permissions/types/role.js";
 import { parseDocument } from "../services/doc-parser.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 import { confirmQueue } from "../skills/user-confirm-skill.js";
+import { log } from "../utils/logger.js";
 
 // MySQL adapter helper
 async function getMySQLAdapter() {
@@ -550,7 +551,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   router.post("/conversations/:id/messages", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const convId = req.params.id as string;
-    console.log(`   [CHAT] Save messages to ${convId}: ${JSON.stringify((req.body.messages || []).map((m: any) => ({ role: m.role, len: m.content?.length })))}`);
+    log("info", "chat.save_messages", { convId, messageCount: (req.body.messages || []).length });
     
     try {
       let conv;

@@ -3,7 +3,7 @@ import { permissions } from "../permissions/index.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
 import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
   const { registry, engine, wal, taskManager, pluginLoader, syncSkillsToResources } = deps;
@@ -72,7 +72,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
         errorType: err instanceof Error ? err.constructor.name : "UnknownError",
       });
     }
@@ -107,7 +107,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -120,7 +120,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -132,7 +132,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       res.json({ order });
     } catch (err) {
       res.status(400).json({
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -214,7 +214,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       const task = await taskManager.waitFor(taskId, timeoutMs);
       res.json({ success: true, task });
     } catch (err) {
-      res.status(408).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(408).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -235,7 +235,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
           res.status(404).json({ success: false, error: `Plugin "${name}" not found` });
         }
       } catch (err) {
-        res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+        res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
       }
     } else {
       const result = await pluginLoader.loadAll();
@@ -267,7 +267,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -279,7 +279,7 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -310,8 +310,8 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
         version: req.body.version,
       });
       res.json({ success: true, template: pt });
-    } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message });
+    } catch (err: unknown) {
+      res.status(400).json({ success: false, error: (err as Error).message });
     }
   });
 
@@ -319,8 +319,8 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     try {
       const rendered = deps.promptManager.render(req.body.name, req.body.variables || {});
       res.json({ success: true, rendered });
-    } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message });
+    } catch (err: unknown) {
+      res.status(400).json({ success: false, error: (err as Error).message });
     }
   });
 

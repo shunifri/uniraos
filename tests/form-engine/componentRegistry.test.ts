@@ -5,6 +5,7 @@ import {
   getComponent,
   hasComponent,
   listComponents,
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
   registry,
   type FieldComponent,
 } from "../../web/src/components/form-engine/registry/componentRegistry.js";

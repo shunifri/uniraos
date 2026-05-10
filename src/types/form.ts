@@ -70,7 +70,7 @@ export interface RaosFieldSchema {
         async?: string;
       };
   "ui:widget"?: string;
-  "ui:props"?: Record<string, any>;
+  "ui:props"?: Record<string, unknown>;
   "ui:colSpan"?: number; // 默认 24
   "ui:placeholder"?: string;
   "ui:help"?: string;
@@ -91,7 +91,7 @@ export interface RaosFieldSchema {
   "x-condition"?: ConditionalSchemaRule[];
   properties?: Record<string, RaosFieldSchema>; // type: 'object' 时
   items?: RaosFieldSchema; // type: 'array' 时
-  enum?: any[];
+  enum?: unknown[];
   enumNames?: string[];
 }
 
@@ -165,10 +165,10 @@ export interface LinkageRule {
 
 export interface DataSourceConfig {
   type: "static" | "remote" | "database" | "workflowVar" | "expression";
-  options?: Array<{ label: string; value: any; children?: any[] }>;
+  options?: Array<{ label: string; value: any; children?: unknown[] }>;
   url?: string;
   method?: "GET" | "POST";
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   headers?: Record<string, string>;
   path?: string;
   database?: DatabaseSourceConfig;

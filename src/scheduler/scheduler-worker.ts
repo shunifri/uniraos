@@ -12,6 +12,7 @@ import { log } from "../utils/logger.js";
 import { getSchedulerService } from "./scheduler-service.js";
 import { getInboxService } from "../inbox/inbox-service.js";
 import { getDeliveryRouter } from "../inbox/delivery-router.js";
+import { getGlobalExecutionEngine } from "../engine/execution-engine.js";
 import type { InboxType, InboxCategory, InboxPriority } from "../inbox/inbox-types.js";
 
 export interface JobData {
@@ -108,16 +109,51 @@ async function executeAction(event: any): Promise<void> {
     }
 
     case "email": {
-      // 调用 email_send skill
-      log("info", "schedule_worker_email", { eventId: event.id, subject: action.payload.subject });
-      // TODO: 集成 email skill
+      try {
+        const engine = getGlobalExecutionEngine();
+        if (!engine) {
+          log("warn", "schedule_worker_email_no_engine", { eventId: event.id });
+          break;
+        }
+        const { getUserById } = await import("../db/user-repository.js");
+        const user = await getUserById(event.userId);
+        const to = (action.payload.to as string) || user?.email;
+        if (!to) {
+          log("warn", "schedule_worker_email_no_recipient", { eventId: event.id, userId: event.userId });
+          break;
+        }
+        const result = await engine.execute("email_send", {
+          connection: (action.payload.connection as string) || "default",
+          to,
+          subject: (action.payload.subject as string) || action.payload.title || "定时提醒",
+          body: (action.payload.body as string) || action.payload.content || action.payload.message || "",
+        });
+        if (!result.success) {
+          log("error", "schedule_worker_email_failed", { eventId: event.id, error: (result.error as any)?.message });
+        }
+      } catch (err: any) {
+        log("error", "schedule_worker_email_error", { eventId: event.id, error: err.message });
+      }
       break;
     }
 
     case "im": {
-      // 调用 im_bot_send skill
-      log("info", "schedule_worker_im", { eventId: event.id });
-      // TODO: 集成 IM skill
+      try {
+        const engine = getGlobalExecutionEngine();
+        if (!engine) {
+          log("warn", "schedule_worker_im_no_engine", { eventId: event.id });
+          break;
+        }
+        const result = await engine.execute("im_bot_send", {
+          connection: (action.payload.connection as string) || "default",
+          content: (action.payload.content as string) || action.payload.message || action.payload.text || action.payload.title || "定时提醒",
+        });
+        if (!result.success) {
+          log("error", "schedule_worker_im_failed", { eventId: event.id, error: (result.error as any)?.message });
+        }
+      } catch (err: any) {
+        log("error", "schedule_worker_im_error", { eventId: event.id, error: err.message });
+      }
       break;
     }
 

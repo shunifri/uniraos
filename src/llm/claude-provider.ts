@@ -11,6 +11,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 export class ClaudeProvider implements LLMProvider {
   readonly name = "claude";
@@ -68,7 +69,7 @@ export class ClaudeProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const body = this.buildRequestBody(messages, tools);
 
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -76,6 +77,7 @@ export class ClaudeProvider implements LLMProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
+      timeoutMs: 120_000,
     });
 
     if (!res.ok) {
@@ -94,7 +96,7 @@ export class ClaudeProvider implements LLMProvider {
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools, true);
 
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
+    const res = await fetchWithTimeout(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -102,6 +104,7 @@ export class ClaudeProvider implements LLMProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
+      timeoutMs: 300_000,
     });
 
     if (!res.ok) {

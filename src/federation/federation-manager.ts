@@ -183,7 +183,7 @@ export class FederationManager {
     this.syncTimer = setInterval(() => this.syncAndRecommend(), syncInterval);
 
     // 立即执行一次
-    this.sendHeartbeat();
+    void this.sendHeartbeat();
   }
 
   /** 停止联邦服务 */
@@ -198,7 +198,7 @@ export class FederationManager {
     try {
       await this.transport.broadcast("federation:heartbeat", profile);
       this.emit({ type: "federation:heartbeat", timestamp: Date.now(), data: { instanceId: this.instanceId } });
-    } catch (err) { log("debug", "federation.heartbeat_failed", { error: err instanceof Error ? err.message : String(err) }); }
+    } catch (err) { log("debug", "federation.heartbeat_failed", { error: err instanceof Error ? (err as Error).message : String(err) }); }
   }
 
   /** 同步指标并生成推荐 */
@@ -211,7 +211,7 @@ export class FederationManager {
           this.remoteSnapshots.set(instanceId, result as FederatedMetricsSnapshot);
         }
       }
-    } catch (err) { log("debug", "federation.sync_failed", { error: err instanceof Error ? err.message : String(err) }); }
+    } catch (err) { log("debug", "federation.sync_failed", { error: err instanceof Error ? (err as Error).message : String(err) }); }
 
     // 生成推荐
     const localSkills = this.registry.list().map((s) => s.name);

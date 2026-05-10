@@ -9,6 +9,7 @@
 
 import { log } from "../utils/logger.js";
 import { inboxEventBus } from "./inbox-events.js";
+import { getGlobalExecutionEngine } from "../engine/execution-engine.js";
 import type { InboxItem, DeliveryEvent, DeliveryDecision } from "./inbox-types.js";
 
 export class DeliveryRouter {
@@ -87,7 +88,30 @@ export class DeliveryRouter {
    */
   async deliverToEmail(item: InboxItem): Promise<void> {
     log("info", "delivery_router_email", { itemId: item.id });
-    // TODO: Phase 4 实现，调用 email_send skill
+    try {
+      const engine = getGlobalExecutionEngine();
+      if (!engine) {
+        log("warn", "delivery_router_email_no_engine", { itemId: item.id });
+        return;
+      }
+      const { getUserById } = await import("../db/user-repository.js");
+      const user = await getUserById(item.userId);
+      if (!user?.email) {
+        log("warn", "delivery_router_email_no_recipient", { itemId: item.id, userId: item.userId });
+        return;
+      }
+      const result = await engine.execute("email_send", {
+        connection: "default",
+        to: user.email,
+        subject: item.title,
+        body: item.description || item.title,
+      });
+      if (!result.success) {
+        log("error", "delivery_router_email_failed", { itemId: item.id, error: (result.error as any)?.message });
+      }
+    } catch (err: any) {
+      log("error", "delivery_router_email_error", { itemId: item.id, error: err.message });
+    }
   }
 
   /**
@@ -95,7 +119,22 @@ export class DeliveryRouter {
    */
   async deliverToIM(item: InboxItem): Promise<void> {
     log("info", "delivery_router_im", { itemId: item.id });
-    // TODO: Phase 4 实现，调用 im_bot_send skill
+    try {
+      const engine = getGlobalExecutionEngine();
+      if (!engine) {
+        log("warn", "delivery_router_im_no_engine", { itemId: item.id });
+        return;
+      }
+      const result = await engine.execute("im_bot_send", {
+        connection: "default",
+        content: `${item.title}\n\n${item.description || ""}`,
+      });
+      if (!result.success) {
+        log("error", "delivery_router_im_failed", { itemId: item.id, error: (result.error as any)?.message });
+      }
+    } catch (err: any) {
+      log("error", "delivery_router_im_error", { itemId: item.id, error: err.message });
+    }
   }
 }
 

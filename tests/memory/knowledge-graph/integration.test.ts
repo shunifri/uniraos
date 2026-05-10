@@ -74,7 +74,7 @@ describe.sequential("Knowledge Graph Integration", () => {
     await store.addEdge("c2_0", "c2_1", "EXTRACTED", "link");
     await store.addEdge("c2_1", "c2_2", "EXTRACTED", "link");
 
-    const { communities, stats } = await manager.getCommunities();
+const { stats } = await manager.getCommunities();
     expect(stats.count).toBeGreaterThanOrEqual(1);
   });
 

@@ -43,6 +43,8 @@ export type EmbeddingApiMode = "openai" | "volcengine-multimodal";
  * OpenAI Embedding Provider
  * 兼容 OpenAI 标准格式和火山引擎多模态格式
  */
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
+
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly dimension = 1536;
   readonly name: string;
@@ -68,7 +70,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   /** 标准 OpenAI 格式 */
   private async embedOpenAI(texts: string[]): Promise<number[][]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -78,6 +80,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         model: this.model,
         input: texts,
       }),
+      timeoutMs: 60_000,
     });
 
     if (!response.ok) {
@@ -105,7 +108,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     const results: number[][] = [];
 
     for (const text of texts) {
-      const response = await fetch(`${this.baseUrl}/embeddings/multimodal`, {
+      const response = await fetchWithTimeout(`${this.baseUrl}/embeddings/multimodal`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -115,6 +118,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
           model: this.model,
           input: [{ type: "text", text }],
         }),
+        timeoutMs: 120_000,
       });
 
       if (!response.ok) {

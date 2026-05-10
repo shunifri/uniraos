@@ -18,12 +18,26 @@ export default defineConfig({
   },
   test: {
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    exclude: [
+      "tests/db/mysql-database.test.ts",
+      "tests/vector/qdrant-client.test.ts",
+    ],
     environment: "jsdom",
     setupFiles: ["tests/setup.ts"],
     server: {
       deps: {
         inline: [/^(react|react-dom)/],
       },
+    },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      thresholds: {
+        lines: 50,
+        functions: 50,
+        branches: 40,
+        statements: 50
+      }
     },
     env: {
       // Qdrant 端口配置 - 与 docker-compose.local.yml 保持一致

@@ -1,4 +1,5 @@
 import type { DataSourceConfig, DataFilter, RaosFieldSchema } from '../types/form.js';
+import { fetchWithTimeout } from '../utils/fetch-with-timeout.js';
 
 export interface ResolveDataSourceRequest {
   fieldSchema: RaosFieldSchema;
@@ -237,10 +238,10 @@ async function resolveRemote(
         Object.entries(resolvedParams).map(([k, v]) => [k, String(v ?? '')])
       ).toString();
       const fullUrl = queryString ? `${resolvedUrl}?${queryString}` : resolvedUrl;
-      response = await fetch(fullUrl, fetchOptions);
+      response = await fetchWithTimeout(fullUrl, fetchOptions);
     } else {
       fetchOptions.body = JSON.stringify(resolvedParams);
-      response = await fetch(resolvedUrl, fetchOptions);
+      response = await fetchWithTimeout(resolvedUrl, fetchOptions);
     }
 
     if (!response.ok) {

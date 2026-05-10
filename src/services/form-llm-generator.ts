@@ -10,8 +10,7 @@ export interface GenerateFormInput {
   name: string;
   /** 表单标识（英文小写+下划线） */
   key: string;
-  /** 描述 */
-  description?: string;
+
   /** 分类 */
   category?: string;
   /** 如果提供，则基于现有表单修改 */

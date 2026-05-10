@@ -8,13 +8,13 @@
  * - 与 LifecycleManager 的集成（retire 后 deprecate）
  * - 涌现检测记录
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SkillRegistry } from "../../src/registry/skill-registry.js";
 import { MetricsCollector } from "../../src/engine/metrics.js";
 import { EvolutionController } from "../../src/engine/evolution-controller.js";
 import { SkillLifecycleManager } from "../../src/engine/skill-lifecycle.js";
-import { EvolutionEngine, BottleneckDetectionStrategy, InactiveRetirementStrategy } from "../../src/federation/evolution-engine.js";
-import { defineSkill, Autonomy } from "../../src/types/skill.js";
+import { EvolutionEngine } from "../../src/federation/evolution-engine.js";
+import { defineSkill } from "../../src/types/skill.js";
 import { ExecutionEngine } from "../../src/engine/execution-engine.js";
 import { WALManager } from "../../src/wal/wal-manager.js";
 

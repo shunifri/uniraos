@@ -35,7 +35,7 @@ describe("EmergenceDetector Integration", () => {
   });
 
   it("should call detector.record() on failed execution", async () => {
-    try { await engine.execute("failing_skill", {}); } catch {}
+    try { await engine.execute("failing_skill", {}); } catch { /* noop */ }
     expect(mockDetector.record).toHaveBeenCalledWith(
       "failing_skill",
       expect.objectContaining({ success: false }),

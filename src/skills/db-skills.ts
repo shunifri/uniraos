@@ -20,11 +20,11 @@ const DB_BASE = resolve(process.cwd(), ".raos", "workspace");
 /** SQLite 连接缓存 */
 const connectionCache = new Map<string, { db: Database.Database; lastUsed: number }>();
 
-/** 最大缓存连接数 */
-const MAX_CONNECTIONS = 10;
+/** 最大缓存连接数（P2 修复：可配置） */
+const MAX_CONNECTIONS = parseInt(process.env.SKILL_DB_CONN_LIMIT || "10");
 
-/** 连接空闲超时（5分钟） */
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** 连接空闲超时（5分钟，P2 修复：可配置） */
+const IDLE_TIMEOUT_MS = parseInt(process.env.SKILL_DB_IDLE_TIMEOUT_MS || String(5 * 60 * 1000));
 
 function ensureSafeDbPath(path: string): string {
   const resolved = resolve(DB_BASE, path);
@@ -459,7 +459,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
         password: config.password,
         database: config.database,
         waitForConnections: true,
-        connectionLimit: 10,
+        connectionLimit: parseInt(process.env.SKILL_DB_CONN_LIMIT || "10"),
         queueLimit: 0,
       });
       pools.set(key, pool);
@@ -603,7 +603,7 @@ async function createMySQLSkills(registry: SkillRegistry): Promise<boolean> {
 async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
   try {
     // @ts-ignore — 可选依赖
-    const pg = await import("pg");
+    const pg = await import(String("pg"));
 
     const pools = new Map<string, InstanceType<typeof pg.Pool>>();
 
@@ -617,7 +617,7 @@ async function createPostgresSkills(registry: SkillRegistry): Promise<boolean> {
         user: config.user,
         password: config.password,
         database: config.database,
-        max: 10,
+        max: parseInt(process.env.SKILL_DB_CONN_LIMIT || "10"),
       });
       pools.set(key, pool);
       return pool;
@@ -813,7 +813,7 @@ async function createRedisSkills(registry: SkillRegistry): Promise<boolean> {
 async function createMSSQLSkills(registry: SkillRegistry): Promise<boolean> {
   try {
     // @ts-ignore — 可选依赖
-    const mssql = await import("mssql");
+    const mssql = await import(String("mssql"));
 
     const pools = new Map<string, InstanceType<typeof mssql.ConnectionPool>>();
 
@@ -831,7 +831,7 @@ async function createMSSQLSkills(registry: SkillRegistry): Promise<boolean> {
           encrypt: config.encrypt ?? false,
           trustServerCertificate: true,
         },
-        pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+        pool: { max: parseInt(process.env.SKILL_DB_CONN_LIMIT || "10"), min: 0, idleTimeoutMillis: 30000 },
       });
       await pool.connect();
       pools.set(key, pool);
@@ -913,7 +913,7 @@ async function createMSSQLSkills(registry: SkillRegistry): Promise<boolean> {
 async function createOracleSkills(registry: SkillRegistry): Promise<boolean> {
   try {
     // @ts-ignore — 可选依赖
-    const oracledb = await import("oracledb");
+    const oracledb = await import(String("oracledb"));
 
     let pool: any = null;
 
@@ -925,7 +925,7 @@ async function createOracleSkills(registry: SkillRegistry): Promise<boolean> {
         password: config.password,
         connectString: config.connectString,
         poolMin: config.poolMin ?? 0,
-        poolMax: config.poolMax ?? 10,
+        poolMax: config.poolMax ?? parseInt(process.env.SKILL_DB_CONN_LIMIT || "10"),
       });
       return pool;
     }

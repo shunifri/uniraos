@@ -18,15 +18,15 @@ export async function runInboxSchedulerMigration(): Promise<void> {
       for (const stmt of statements) {
         try {
           await adapter.execute(stmt);
-        } catch (err: any) {
-          if (!err.message?.includes("Duplicate") && !err.message?.includes("already exists")) {
-            console.warn(`   Migration warning: ${err.message}`);
+        } catch (err: unknown) {
+          if (!(err as Error).message?.includes("Duplicate") && !(err as Error).message?.includes("already exists")) {
+            console.warn(`   Migration warning: ${(err as Error).message}`);
           }
         }
       }
       console.log("   Inbox + Scheduler migration applied");
     }
-  } catch (err: any) {
-    console.warn(`   Migration error: ${err.message}`);
+  } catch (err: unknown) {
+    console.warn(`   Migration error: ${(err as Error).message}`);
   }
 }

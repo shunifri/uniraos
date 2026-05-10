@@ -1,0 +1,141 @@
+import js from "@eslint/js";
+import tsParser from "@typescript-eslint/parser";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
+import globals from "globals";
+
+export default [
+  {
+    rules: {
+      "no-undef": "off",
+      "no-redeclare": "off",
+      "no-useless-escape": "off",
+      "no-empty": "off",
+      "no-cond-assign": "off",
+      "no-prototype-builtins": "off",
+      "no-func-assign": "off",
+      "no-control-regex": "off",
+      "no-misleading-character-class": "off",
+      "no-fallthrough": "off",
+      "no-constant-condition": "off",
+      "no-unreachable": "off",
+      "valid-typeof": "off",
+    },
+  },
+  {
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "web/node_modules/**",
+      "web/dist/**",
+      ".raos/**",
+      "src/ui/**",
+      "tests/performance/**",
+      "*.js",
+      "*.cjs",
+      "*.mjs",
+    ],
+  },
+  // Base JS recommended rules (excluding TypeScript files which have their own config)
+  {
+    files: ["**/*.js", "**/*.cjs", "**/*.mjs"],
+    ...js.configs.recommended,
+  },
+  // Backend + Tests TypeScript
+  {
+    files: ["src/**/*.ts", "tests/**/*.ts"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        project: "./tsconfig.eslint.json",
+        tsconfigRootDir: import.meta.dirname,
+        sourceType: "module",
+        ecmaVersion: 2022,
+      },
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+        describe: "readonly",
+        test: "readonly",
+        it: "readonly",
+        expect: "readonly",
+        beforeAll: "readonly",
+        beforeEach: "readonly",
+        afterAll: "readonly",
+        afterEach: "readonly",
+        vi: "readonly",
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+    },
+    rules: {
+      ...tsPlugin.configs.recommended.rules,
+      "@typescript-eslint/no-namespace": "off",
+      "@typescript-eslint/no-var-requires": "off",
+      "@typescript-eslint/ban-ts-comment": "off",
+      "@typescript-eslint/no-namespace": "off",
+      "@typescript-eslint/no-var-requires": "off",
+      "@typescript-eslint/ban-ts-comment": "off",
+      "no-undef": "off",
+      "no-redeclare": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-unused-vars": "off",
+      "quotes": "off",
+      "semi": "off",
+      "no-trailing-spaces": "off",
+      "no-console": "off",
+      "@typescript-eslint/no-floating-promises": "warn",
+      "no-useless-escape": "off",
+      "no-empty": "off",
+      "no-cond-assign": "off",
+      "no-prototype-builtins": "off",
+      "no-func-assign": "off",
+      "no-control-regex": "off",
+      "no-misleading-character-class": "off",
+      "no-fallthrough": "off",
+    },
+  },
+  // Frontend TypeScript/React
+  {
+    files: ["web/src/**/*.ts", "web/src/**/*.tsx"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        project: "./tsconfig.eslint.json",
+        tsconfigRootDir: import.meta.dirname,
+        sourceType: "module",
+        ecmaVersion: 2022,
+      },
+      globals: {
+        ...globals.browser,
+        ...globals.es2022,
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+    },
+    rules: {
+      ...tsPlugin.configs.recommended.rules,
+      "@typescript-eslint/no-namespace": "off",
+      "@typescript-eslint/no-var-requires": "off",
+      "@typescript-eslint/ban-ts-comment": "off",
+      "no-undef": "off",
+      "no-redeclare": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-unused-vars": "off",
+      "quotes": "off",
+      "semi": "off",
+      "no-trailing-spaces": "off",
+      "no-console": "off",
+      "@typescript-eslint/no-floating-promises": "warn",
+      "no-useless-escape": "off",
+      "no-empty": "off",
+      "no-cond-assign": "off",
+      "no-prototype-builtins": "off",
+      "no-func-assign": "off",
+      "no-control-regex": "off",
+      "no-misleading-character-class": "off",
+      "no-fallthrough": "off",
+    },
+  },
+];

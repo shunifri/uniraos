@@ -1,14 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
 
 let testDb: Database.Database;
 
-vi.mock('../../src/db/database.js', () => ({
+vi.mock("../../src/db/database.js", () => ({
   getDb: () => testDb,
+  isMySQL: () => false,
 }));
 
 async function importConnector() {
-  return import('../../src/services/database-connector.js');
+  return import("../../src/services/database-connector.js");
 }
 
 function initSchema(db: Database.Database) {
@@ -25,9 +26,9 @@ function initSchema(db: Database.Database) {
   `);
 }
 
-describe('Database Connector', () => {
+describe("Database Connector", () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
+    testDb = new Database(":memory:");
     initSchema(testDb);
   });
 
@@ -37,61 +38,61 @@ describe('Database Connector', () => {
     testDb.close();
   });
 
-  it('should throw for non-existent connection', async () => {
+  it("should throw for non-existent connection", async () => {
     const { getConnection } = await importConnector();
-    await expect(getConnection('non-existent')).rejects.toThrow('not found');
+    await expect(getConnection("non-existent")).rejects.toThrow("not found");
   });
 
-  it('should throw for connection without db_config', async () => {
+  it("should throw for connection without db_config", async () => {
     testDb
       .prepare(
         `INSERT INTO connections (id, name, type, config, db_config, status)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run('conn-1', 'Test', 'mysql', '{}', null, 'active');
+      .run("conn-1", "Test", "mysql", "{}", null, "active");
 
     const { getConnection } = await importConnector();
-    await expect(getConnection('conn-1')).rejects.toThrow('no database config');
+    await expect(getConnection("conn-1")).rejects.toThrow("no database config");
   });
 
-  it('should test inline SQLite config', async () => {
+  it("should test inline SQLite config", async () => {
     const { testConnectionConfig } = await importConnector();
     const result = await testConnectionConfig({
-      name: 'test',
-      type: 'sqlite',
-      host: '',
+      name: "test",
+      type: "sqlite",
+      host: "",
       port: 0,
-      database: ':memory:',
-      username: '',
-      password: '',
+      database: ":memory:",
+      username: "",
+      password: "",
     });
     expect(result.success).toBe(true);
-    expect(result.message).toBe('Connection successful');
+    expect(result.message).toBe("Connection successful");
   });
 
-  it('should test inline MySQL config with invalid credentials', async () => {
+  it("should test inline MySQL config with invalid credentials", async () => {
     const { testConnectionConfig } = await importConnector();
     const result = await testConnectionConfig({
-      name: 'test',
-      type: 'mysql',
-      host: 'localhost',
+      name: "test",
+      type: "mysql",
+      host: "localhost",
       port: 3306,
-      database: 'test',
-      username: 'invalid',
-      password: 'invalid',
+      database: "test",
+      username: "invalid",
+      password: "invalid",
     });
     expect(result.success).toBe(false);
   });
 
-  it('should get SQLite connection and execute query', async () => {
+  it("should get SQLite connection and execute query", async () => {
     const dbConfig = JSON.stringify({
-      name: 'test-sqlite',
-      type: 'sqlite',
-      host: '',
+      name: "test-sqlite",
+      type: "sqlite",
+      host: "",
       port: 0,
-      database: ':memory:',
-      username: '',
-      password: '',
+      database: ":memory:",
+      username: "",
+      password: "",
     });
 
     testDb
@@ -99,27 +100,27 @@ describe('Database Connector', () => {
         `INSERT INTO connections (id, name, type, config, db_config, status)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run('conn-sqlite', 'Test SQLite', 'sqlite', '{}', dbConfig, 'active');
+      .run("conn-sqlite", "Test SQLite", "sqlite", "{}", dbConfig, "active");
 
     const { getConnection, executeQuery, closeConnection } = await importConnector();
-    const conn = await getConnection('conn-sqlite');
+    const conn = await getConnection("conn-sqlite");
     expect(conn).toBeDefined();
 
-    const result = await executeQuery('conn-sqlite', 'SELECT 1 as val');
+    const result = await executeQuery("conn-sqlite", "SELECT 1 as val");
     expect(result).toEqual([{ val: 1 }]);
 
-    await closeConnection('conn-sqlite');
+    await closeConnection("conn-sqlite");
   });
 
-  it('should test existing connection', async () => {
+  it("should test existing connection", async () => {
     const dbConfig = JSON.stringify({
-      name: 'test-sqlite',
-      type: 'sqlite',
-      host: '',
+      name: "test-sqlite",
+      type: "sqlite",
+      host: "",
       port: 0,
-      database: ':memory:',
-      username: '',
-      password: '',
+      database: ":memory:",
+      username: "",
+      password: "",
     });
 
     testDb
@@ -127,12 +128,12 @@ describe('Database Connector', () => {
         `INSERT INTO connections (id, name, type, config, db_config, test_query, status)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run('conn-test', 'Test', 'sqlite', '{}', dbConfig, 'SELECT 1', 'active');
+      .run("conn-test", "Test", "sqlite", "{}", dbConfig, "SELECT 1", "active");
 
     const { testConnection, closeConnection } = await importConnector();
-    const result = await testConnection('conn-test');
+    const result = await testConnection("conn-test");
     expect(result.success).toBe(true);
 
-    await closeConnection('conn-test');
+    await closeConnection("conn-test");
   });
 });

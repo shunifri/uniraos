@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { requireAuth, requirePermission, requireAdmin } from "../db/auth-middleware.js";
+import { requireAuth, requirePermission, requireAdmin } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import * as userRepo from "../db/user-repository.js";
 import * as deptRepo from "../db/department-repository.js";
 import * as resRepo from "../db/resource-repository.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 export function createAdminCompatRoutes(deps: RouteDependencies): Router {
   const {
@@ -39,7 +40,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       const user = await userRepo.createUser({ username, password, displayName, departmentId });
       res.json({ success: true, user });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -49,7 +50,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       await userRepo.updateUser(userId, req.body);
       res.json({ success: true });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -59,7 +60,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       await userRepo.deleteUser(userId);
       res.json({ success: true });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -74,7 +75,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       const dept = await deptRepo.createDepartment(req.body);
       res.json({ success: true, department: dept });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -84,7 +85,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       await deptRepo.deleteDepartment(deptId);
       res.json({ success: true });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -99,7 +100,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
       const role = await userRepo.createRole(req.body);
       res.json({ success: true, role });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -193,7 +194,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });
@@ -221,7 +222,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
             ? `${config.baseUrl}/chat/completions`
             : `${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`;
 
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -264,7 +265,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
             ? JSON.stringify({ model: config.model, prompt: "test" })
             : JSON.stringify({ model: config.model, prompt: "test", n: 1, size: "1024x1024" });
 
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -303,7 +304,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
             ? JSON.stringify({ model: config.model, input: "Hello" })
             : JSON.stringify({ model: config.model, input: "Hello", voice: "alloy" });
 
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -338,7 +339,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
             ? `${config.baseUrl}/audio/transcriptions`
             : `${config.baseUrl || "https://api.openai.com/v1"}/audio/transcriptions`;
 
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${config.apiKey}`,
@@ -382,7 +383,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
                 input: "Hello world",
               });
 
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -407,7 +408,7 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
     } catch (err) {
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? (err as Error).message : String(err),
       });
     }
   });

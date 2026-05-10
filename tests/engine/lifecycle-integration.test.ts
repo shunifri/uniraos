@@ -159,7 +159,8 @@ describe("LifecycleManager Integration", () => {
 
   it("should support skill retirement", () => {
     // Manually create a skill with old lastUsedAt time
-    const info = lifecycleManager.getInfo("very_old_skill");
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _info = lifecycleManager.getInfo("very_old_skill");
     // Manually set it up by calling recordUsage (which creates the entry)
     lifecycleManager.recordUsage("very_old_skill");
     const infoAfterRecord = lifecycleManager.getInfo("very_old_skill")!;

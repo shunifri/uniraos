@@ -12,7 +12,7 @@
  */
 import { readFileSync, existsSync } from "fs";
 import { resolve, extname } from "path";
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 
 const SAFE_BASE = resolve(process.cwd(), ".raos", "workspace");
@@ -210,8 +210,8 @@ async function readPDF(path: string): Promise<{ success: boolean; data?: any; er
         textLength: data.text.length,
       },
     };
-  } catch (err: any) {
-    if (err.code === "MODULE_NOT_FOUND" || err.code === "ERR_MODULE_NOT_FOUND") {
+  } catch (err: unknown) {
+    if ((err as any).code === "MODULE_NOT_FOUND" || (err as any).code === "ERR_MODULE_NOT_FOUND") {
       return { success: false, error: new Error("PDF 解析需要安装 pdf-parse: npm install pdf-parse") };
     }
     return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -260,8 +260,8 @@ async function readExcel(path: string, options?: { sheet?: string | number }): P
         totalSheets: sheetNames.length,
       },
     };
-  } catch (err: any) {
-    if (err.code === "MODULE_NOT_FOUND" || err.code === "ERR_MODULE_NOT_FOUND") {
+  } catch (err: unknown) {
+    if ((err as any).code === "MODULE_NOT_FOUND" || (err as any).code === "ERR_MODULE_NOT_FOUND") {
       return { success: false, error: new Error("Excel 解析需要安装 xlsx: npm install xlsx") };
     }
     return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -289,8 +289,8 @@ async function readWord(path: string): Promise<{ success: boolean; data?: any; e
         messages: result.messages.slice(0, 10),
       },
     };
-  } catch (err: any) {
-    if (err.code === "MODULE_NOT_FOUND" || err.code === "ERR_MODULE_NOT_FOUND") {
+  } catch (err: unknown) {
+    if ((err as any).code === "MODULE_NOT_FOUND" || (err as any).code === "ERR_MODULE_NOT_FOUND") {
       return { success: false, error: new Error("Word 解析需要安装 mammoth: npm install mammoth") };
     }
     return { success: false, error: err instanceof Error ? err : new Error(String(err)) };

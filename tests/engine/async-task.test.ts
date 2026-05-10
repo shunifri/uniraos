@@ -78,6 +78,7 @@ describe("AsyncTaskManager", () => {
     const mgr = new AsyncTaskManager();
     const t1 = mgr.create();
     const t2 = mgr.create();
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
     const t3 = mgr.create();
 
     mgr.start(t1.taskId);

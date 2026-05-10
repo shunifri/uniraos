@@ -89,7 +89,7 @@ export async function getDepartmentById(id: string): Promise<Department | null> 
     const adapter = await getMySQLAdapter();
     const rows = await adapter.query(
       "SELECT * FROM departments WHERE id = ?",
-      [id]
+      [id] as any
     );
     return rows.length > 0 ? mapDepartment(rows[0]) : null;
   }
@@ -196,20 +196,20 @@ export async function deleteDepartment(id: string): Promise<void> {
     // 检查是否有子部门
     const children = await adapter.query(
       "SELECT COUNT(*) as c FROM departments WHERE parent_id = ?",
-      [id]
+      [id] as any
     );
     if (children[0].c > 0) throw new Error("Cannot delete department with children. Delete children first.");
 
     // 检查是否有用户
     const users = await adapter.query(
       "SELECT COUNT(*) as c FROM users WHERE department_id = ?",
-      [id]
+      [id] as any
     );
     if (users[0].c > 0) throw new Error("Cannot delete department with users. Reassign users first.");
 
     await adapter.execute(
       "DELETE FROM departments WHERE id = ?",
-      [id]
+      [id] as any
     );
     return;
   }

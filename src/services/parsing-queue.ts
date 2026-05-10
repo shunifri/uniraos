@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from "events";
-import type { DocMindParser, DocMindLayout, DocMindSegment, ProgressCallback } from "./docmind-parser.js";
+import type { DocMindParser, DocMindLayout, DocMindSegment, ProgressCallback, ParseOptions } from "./docmind-parser.js";
 import { downloadFile, detectMediaType } from "./docmind-parser.js";
 import type { KnowledgeBase } from "../skills/knowledge-skills.js";
 import type { UserSessionManager } from "../user/user-session.js";
@@ -21,6 +21,8 @@ import { dirname, join, resolve } from "path";
 import { cwd } from "process";
 import { saveImages, extractDocumentImages, describeImages } from "../utils/image-extractor.js";
 import type { ImageWithDescription } from "../utils/image-extractor.js";
+import type { KnowledgeGraphManager } from "../memory/knowledge-graph/index.js";
+import type { LLMProvider } from "../llm/types.js";
 
 /** 工作空间根目录 */
 const WORKSPACE_BASE = resolve(cwd(), ".raos", "workspace");
@@ -118,6 +120,51 @@ const DEFAULT_CONFIG: ParsingQueueConfig = {
   kbImagesDir: resolve(cwd(), ".raos/kb_images"),
 };
 
+/** 从数据库取回的版面数据结构（可能比 DocMindLayout 更宽松） */
+interface StoredLayout {
+  id?: string;
+  uniqueId?: string;
+  page?: number;
+  pageNum?: number | number[];
+  type?: string;
+  subType?: string;
+  content?: string;
+  text?: string;
+  imageUrl?: string;
+}
+
+/** 从数据库取回的音视频切片数据结构 */
+interface StoredSegment {
+  index?: number;
+  startTime?: number;
+  endTime?: number;
+  synopsis?: string;
+  searchableText?: string;
+}
+
+/** 知识图谱边可能携带 relation 字段（与 label 同义） */
+interface EdgeWithRelation {
+  relation?: string;
+}
+
+/** 带 _skipQueue 的 ingest 选项 */
+interface IngestWithSkipQueue {
+  source: string;
+  tags: string[];
+  _placeholderDocId: string;
+  _skipQueue: boolean;
+}
+
+/** 带图片的 ingest 选项 */
+interface IngestWithImages {
+  source: string;
+  tags: string[];
+  skipEmbedding: boolean;
+  _placeholderDocId: string;
+  _skipQueue: boolean;
+  images: Array<{ id: string; description: string; page?: number; url: string }>;
+}
+
 /**
  * 解析队列管理器
  */
@@ -192,7 +239,7 @@ export class ParsingQueue extends EventEmitter {
     });
 
     // 尝试开始处理
-    this.processNext();
+    void this.processNext();
     
     return task;
   }
@@ -258,7 +305,7 @@ export class ParsingQueue extends EventEmitter {
 
       this.emit('completed', task);
       return task;
-    } catch (error: any) {
+    } catch (error: unknown) {
       const task: ParsingTask = {
         docId,
         docName,
@@ -331,7 +378,9 @@ export class ParsingQueue extends EventEmitter {
       this.emit('failed', pendingTask);
     }).finally(() => {
       this.processing.delete(pendingTask.docId);
-      this.processNext();  // 继续处理下一个
+      // P1 修复：任务完成后清理 subscribers，防止内存泄漏
+      this.subscribers.delete(pendingTask.docId);
+      void this.processNext();  // 继续处理下一个
     });
   }
 
@@ -346,7 +395,7 @@ export class ParsingQueue extends EventEmitter {
     let submitResult;
     try {
       // 启用增强模式
-      const parseOptions: any = {
+      const parseOptions: ParseOptions = {
         llmEnhancement: true, // 启用 LLM 增强，提升复杂表格/公式/版式理解精度
         enhancementMode: 'VLM', // 启用 VLM 多模态分析
         formulaEnhancement: true, // 启用公式识别增强
@@ -358,9 +407,9 @@ export class ParsingQueue extends EventEmitter {
         task.docName,
         parseOptions
       );
-    } catch (docMindError: any) {
+    } catch (docMindError: unknown) {
       // Document Mind 失败，降级到本地解析
-      console.warn(`[ParsingQueue] Document Mind failed for ${task.docId}: ${docMindError.message}`);
+      console.warn(`[ParsingQueue] Document Mind failed for ${task.docId}: ${docMindError instanceof Error ? docMindError.message : String(docMindError)}`);
       console.warn(`[ParsingQueue] Falling back to local parsing...`);
       await this.fallbackToLocalParsing(task);
       return;
@@ -483,8 +532,8 @@ export class ParsingQueue extends EventEmitter {
         } else {
           console.log(`[ParsingQueue] 跳过标签提取，无视觉模型配置`);
         }
-      } catch (err: any) {
-        console.warn(`[ParsingQueue] 标签提取失败: ${err.message}`);
+      } catch (err: unknown) {
+        console.warn(`[ParsingQueue] 标签提取失败: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -493,7 +542,7 @@ export class ParsingQueue extends EventEmitter {
     if (this.sessionManager && task.docId) {
       try {
         const session = this.sessionManager.getOrCreate(task.owner);
-        const sessionWithGraph = session as unknown as { graphManager?: any; llmProvider?: any };
+        const sessionWithGraph = session as unknown as { graphManager?: KnowledgeGraphManager; llmProvider?: LLMProvider };
         const graphManager = sessionWithGraph.graphManager;
         const llmProvider = sessionWithGraph.llmProvider;
         if (graphManager) {
@@ -507,14 +556,14 @@ export class ParsingQueue extends EventEmitter {
           });
 
           // 2. 添加版面节点
-          const layouts = await kb.getLayouts(task.docId);
+          const layouts = await kb.getLayouts(task.docId) as StoredLayout[];
           if (layouts && Array.isArray(layouts) && layouts.length > 0) {
             for (const layout of layouts.slice(0, 20)) {  // 最多同步 20 个版面
               await graphManager.onFactStored({
-                id: `kb_layout_${(layout as any).id || (layout as any).uniqueId}`,
-                key: `kb:${task.docName}:p${(layout as any).page || (layout as any).pageNum}:${(layout as any).type}`,
-                value: ((layout as any).content || (layout as any).text || '').slice(0, 200),
-                tags: ['kb_layout', (layout as any).type, (layout as any).subType, ...task.tags].filter(Boolean),
+                id: `kb_layout_${layout.id || layout.uniqueId}`,
+                key: `kb:${task.docName}:p${layout.page || layout.pageNum}:${layout.type}`,
+                value: ((layout.content || layout.text) || '').slice(0, 200),
+                tags: ['kb_layout', layout.type, layout.subType, ...task.tags].filter((t): t is string => typeof t === 'string'),
                 relation: `kb:${task.docName}`,
                 type: "entity",
               });
@@ -522,13 +571,13 @@ export class ParsingQueue extends EventEmitter {
           }
 
           // 3. 添加音视频切片节点
-          const segments = await kb.getSegments(task.docId);
+          const segments = await kb.getSegments(task.docId) as StoredSegment[];
           if (segments && Array.isArray(segments) && segments.length > 0) {
             for (const segment of segments.slice(0, 10)) {  // 最多同步 10 个切片
               await graphManager.onFactStored({
-                id: `kb_seg_${task.docId}_${(segment as any).index}`,
-                key: `kb:${task.docName}:t${(segment as any).startTime}-${(segment as any).endTime}`,
-                value: ((segment as any).synopsis || (segment as any).searchableText || '').slice(0, 200),
+                id: `kb_seg_${task.docId}_${segment.index}`,
+                key: `kb:${task.docName}:t${segment.startTime}-${segment.endTime}`,
+                value: ((segment.synopsis || segment.searchableText) || '').slice(0, 200),
                 tags: ['kb_segment', task.mediaType, ...task.tags].filter(Boolean),
                 relation: `kb:${task.docName}`,
                 type: "entity",
@@ -542,7 +591,7 @@ export class ParsingQueue extends EventEmitter {
             const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
             const relations = await extractRelationships(docContent.slice(0, 2000), llmProvider);
             console.log(`[ParsingQueue] LLM extracted ${relations.length} relations`);
-            const store = graphManager.getStore();
+            const store = await graphManager.getStore();
             let createdCount = 0;
             for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
               let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
@@ -571,7 +620,7 @@ export class ParsingQueue extends EventEmitter {
               }
               // 避免重复边
               const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-              if (existingEdges.every((e: any) => e.relation !== rel.relation)) {
+              if (existingEdges.every((e: EdgeWithRelation) => e.relation !== rel.relation)) {
                 await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
               }
             }
@@ -617,8 +666,8 @@ export class ParsingQueue extends EventEmitter {
         await kb.incrementChunkCount(task.docId, imageChunkCount, described.reduce((sum, img) => sum + img.description.length, 0));
         console.log(`[ParsingQueue] 已插入 ${imageChunkCount} 个图片 chunks`);
       }
-    } catch (err: any) {
-      console.error(`[ParsingQueue] 图片提取失败（不影响主流程）: ${err.message}`);
+    } catch (err: unknown) {
+      console.error(`[ParsingQueue] 图片提取失败（不影响主流程）: ${err instanceof Error ? err.message : String(err)}`);
     }
 
      // 更新数据库状态 - 在所有处理完成后更新
@@ -664,8 +713,8 @@ export class ParsingQueue extends EventEmitter {
     try {
       await kb.clearDocChunks(task.docId);
       console.log(`[ParsingQueue] Cleared old chunks for ${task.docId}`);
-    } catch (err: any) {
-      console.error(`[ParsingQueue] Failed to clear old chunks for ${task.docId}: ${err.message}`);
+    } catch (err: unknown) {
+      console.error(`[ParsingQueue] Failed to clear old chunks for ${task.docId}: ${err instanceof Error ? err.message : String(err)}`);
     }
     
     // 跟踪成功插入的 chunk 数量和 token 数量
@@ -700,8 +749,8 @@ export class ParsingQueue extends EventEmitter {
           // 使用真实插入后的 chunkId
           await kb.insertKeyword(keyword, chunkId, tf);
         }
-      } catch (err: any) {
-        console.error(`[ParsingQueue] Failed to index chunk ${i}: ${err.message}`);
+      } catch (err: unknown) {
+        console.error(`[ParsingQueue] Failed to index chunk ${i}: ${err instanceof Error ? err.message : String(err)}`);
         // 继续处理其他 chunks，不中断整个流程
       }
     }
@@ -781,7 +830,7 @@ export class ParsingQueue extends EventEmitter {
             finalTags = [...new Set([...finalTags, ...extractedTags])];
           }
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.warn(`[ParsingQueue] Failed to extract tags for ${task.docId}:`, err);
       }
     }
@@ -796,7 +845,7 @@ export class ParsingQueue extends EventEmitter {
       tags: finalTags,
       _placeholderDocId: task.docId,
       _skipQueue: true,
-    } as any);
+    } as unknown as IngestWithSkipQueue);
   }
 
   /**
@@ -945,7 +994,7 @@ export class ParsingQueue extends EventEmitter {
 
     for (const layout of layouts) {
       // Document Mind 新版API中，如果layout有图片URL，下载它
-      const imageUrl = (layout as any).imageUrl;
+      const imageUrl = (layout as StoredLayout).imageUrl;
       if (typeof imageUrl === 'string' && imageUrl) {
         // Document Mind pageNum 是 0-based，转为 1-based 与本地解析一致
         const rawPageNum = Array.isArray(layout.pageNum) ? layout.pageNum[0] : layout.pageNum;
@@ -955,8 +1004,8 @@ export class ParsingQueue extends EventEmitter {
         if (!existsSync(destPath)) {
           mkdirSync(dirname(destPath), { recursive: true });
           downloadPromises.push(
-            downloadFile(imageUrl, destPath).then(() => { savedPages.add(pageNum); }).catch((err: any) => {
-              console.error(`[ParsingQueue] Failed to download layout image for page ${pageNum}: ${err.message}`);
+            downloadFile(imageUrl, destPath).then(() => { savedPages.add(pageNum); }).catch((err: unknown) => {
+              console.error(`[ParsingQueue] Failed to download layout image for page ${pageNum}: ${err instanceof Error ? err.message : String(err)}`);
             })
           );
         } else {
@@ -977,8 +1026,8 @@ export class ParsingQueue extends EventEmitter {
         }
         const merged = [...new Set([...existingPages, ...savedPages])].sort((a, b) => a - b);
         writeFileSync(indexFile, JSON.stringify(merged));
-      } catch (err: any) {
-        console.error(`[ParsingQueue] Failed to update pages.json for ${task.docId}: ${err.message}`);
+      } catch (err: unknown) {
+        console.error(`[ParsingQueue] Failed to update pages.json for ${task.docId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -1016,8 +1065,8 @@ export class ParsingQueue extends EventEmitter {
         if (!existsSync(destPath)) {
           mkdirSync(dirname(destPath), { recursive: true });
           downloadPromises.push(
-            downloadFile(frame.fileUrl, destPath).catch((err: any) => {
-              console.error(`[ParsingQueue] Failed to download frame: ${err.message}`);
+            downloadFile(frame.fileUrl, destPath).catch((err: unknown) => {
+              console.error(`[ParsingQueue] Failed to download frame: ${err instanceof Error ? err.message : String(err)}`);
             })
           );
         }
@@ -1048,7 +1097,7 @@ export class ParsingQueue extends EventEmitter {
       for (const callback of callbacks) {
         try {
           callback(update);
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error('[ParsingQueue] Subscriber error:', err);
         }
       }
@@ -1145,7 +1194,7 @@ export class ParsingQueue extends EventEmitter {
             page: img.page,
             url: `/api/knowledge/documents/${task.docId}/images/${img.id}`,
           })),
-        } as any);
+        } as unknown as IngestWithImages);
         console.log(`[ParsingQueue] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}`);
 
        task.progress = 100;
@@ -1177,7 +1226,7 @@ export class ParsingQueue extends EventEmitter {
       if (this.sessionManager && task.docId) {
         try {
           const session = this.sessionManager.getOrCreate(task.owner);
-          const sessionWithGraph = session as unknown as { graphManager?: any; llmProvider?: any };
+          const sessionWithGraph = session as unknown as { graphManager?: KnowledgeGraphManager; llmProvider?: LLMProvider };
           const graphManager = sessionWithGraph.graphManager;
           const llmProvider = sessionWithGraph.llmProvider;
           if (graphManager) {
@@ -1196,7 +1245,7 @@ export class ParsingQueue extends EventEmitter {
               const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
               const relations = await extractRelationships(savedContent.slice(0, 2000), llmProvider);
               console.log(`[ParsingQueue] LLM extracted ${relations.length} relations`);
-              const store = graphManager.getStore();
+              const store = await graphManager.getStore();
               let createdCount = 0;
               for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
                 let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
@@ -1225,7 +1274,7 @@ export class ParsingQueue extends EventEmitter {
                 }
                 // 避免重复边
                 const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-                if (existingEdges.every((e: any) => e.relation !== rel.relation)) {
+                if (existingEdges.every((e: EdgeWithRelation) => e.relation !== rel.relation)) {
                   await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
                 }
               }
@@ -1239,10 +1288,10 @@ export class ParsingQueue extends EventEmitter {
         }
       }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(`[ParsingQueue] Local parsing failed for ${task.docId}:`, error);
       task.status = 'failed';
-      task.error = error.message;
+      task.error = error instanceof Error ? error.message : String(error);
 
       // 更新数据库中的失败状态
       const kb = this.getKnowledgeBase(task.owner);
@@ -1259,7 +1308,7 @@ export class ParsingQueue extends EventEmitter {
         totalSegments: 0,
         canPreview: false,
         canSearch: false,
-        error: error.message,
+        error: error instanceof Error ? error.message : String(error),
       });
 
       throw error;

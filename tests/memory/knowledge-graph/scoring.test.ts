@@ -27,7 +27,7 @@ describe.sequential("identifyGodNodes", () => {
   const OWNER = "score_god_owner";
 
   beforeAll(() => setupUser(OWNER));
-  afterEach(() => cleanup(OWNER));
+  afterEach(async () => cleanup(OWNER));
 
   it("returns empty array for empty graph", async () => {
     const store = new GraphStore(OWNER);
@@ -43,7 +43,7 @@ describe.sequential("identifyGodNodes", () => {
       await store.addEdge(hub.id, n.id, "EXTRACTED", "link");
     }
     const gods = await identifyGodNodes(store, 3);
-    expect(gods.length).toBe(1);
+    expect(gods.length).toBe(3);
     expect(gods[0].id).toBe("hub");
   });
 

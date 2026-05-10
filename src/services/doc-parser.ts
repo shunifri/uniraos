@@ -11,11 +11,24 @@
  * 无视觉模型时回退到纯文本提取（pdf-parse / mammoth / jszip）。
  */
 
-import { readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmdirSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmdirSync, statSync } from "fs";
 import { resolve, extname, basename, join } from "path";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import { tmpdir } from "os";
 import { execSync } from "child_process";
 import { extractDocumentImages, describeImages, type ImageWithDescription } from "../utils/image-extractor.js";
+import type { VisionModelConfig } from "./doc-parser.types.js";
+
+// P1 修复：安全文件读取，限制最大 100MB，防止 OOM
+export const MAX_PARSE_FILE_SIZE = 100 * 1024 * 1024;
+
+export function safeReadFile(filePath: string): Buffer {
+  const stats = statSync(filePath);
+  if (stats.size > MAX_PARSE_FILE_SIZE) {
+    throw new Error(`File too large to parse: ${stats.size} bytes (max ${MAX_PARSE_FILE_SIZE} bytes)`);
+  }
+  return readFileSync(filePath);
+}
 
 /**
  * 清理 PDF 解析后的文本空格
@@ -86,12 +99,8 @@ export interface OCRBlock {
   bbox: [number, number, number, number]; // [x%, y%, w%, h%] 百分比坐标
 }
 
-/** 视觉模型调用配置 */
-export interface VisionModelConfig {
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-}
+/** @deprecated 请从 ./doc-parser.types.js 导入 VisionModelConfig */
+export type { VisionModelConfig } from "./doc-parser.types.js";
 
 /** 解析结果 */
 export interface DocParseResult {
@@ -122,6 +131,44 @@ export interface DocImage {
   description: string;   // LLM 生成的图片描述
   base64: string;        // base64 编码数据
 }
+
+// Minimal OpenAI-style chat completion response
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
+// Minimal pdf-parse types
+interface PdfParseResult {
+  numpages: number;
+  text: string;
+}
+
+interface PdfParseFunction {
+  (buffer: Buffer, options?: Record<string, unknown>): Promise<PdfParseResult>;
+}
+
+interface PdfPageData {
+  getTextContent: () => Promise<{
+    items: Array<{ str?: string }>;
+  }>;
+}
+
+function getPdfParse(module: unknown): PdfParseFunction {
+  const m = module as Record<string, unknown>;
+  return (m.default as PdfParseFunction | undefined) ?? (module as PdfParseFunction);
+}
+
+// Minimal OCR block from LLM JSON
+interface OcrBlockRaw {
+  type?: string;
+  text?: string;
+  bbox?: unknown[];
+}
+
 
 // ===== 视觉模型调用 =====
 
@@ -161,7 +208,7 @@ ${snippet}`,
   };
 
   try {
-    const response = await fetch(`${visionConfig.baseUrl}/chat/completions`, {
+    const response = await fetchWithTimeout(`${visionConfig.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -172,13 +219,13 @@ ${snippet}`,
 
     if (!response.ok) return [];
 
-    const data = (await response.json()) as any;
+    const data = (await response.json()) as ChatCompletionResponse;
     const text = data.choices?.[0]?.message?.content ?? "";
     // 从响应中提取 JSON 数组
     const match = text.match(/\[[\s\S]*?\]/);
     if (match) {
       const tags = JSON.parse(match[0]);
-      if (Array.isArray(tags)) return tags.filter((t: any) => typeof t === "string" && t.trim()).map((t: string) => t.trim());
+      if (Array.isArray(tags)) return tags.filter((t: unknown): t is string => typeof t === "string" && t.trim().length > 0).map((t: string) => t.trim());
     }
     return [];
   } catch {
@@ -214,7 +261,7 @@ async function ocrImage(imageBase64: string, visionConfig: VisionModelConfig, mi
     temperature: 0,
   };
 
-  const response = await fetch(`${visionConfig.baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${visionConfig.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -228,7 +275,7 @@ async function ocrImage(imageBase64: string, visionConfig: VisionModelConfig, mi
     throw new Error(`Vision API error ${response.status}: ${errText}`);
   }
 
-  const data = (await response.json()) as any;
+  const data = (await response.json()) as ChatCompletionResponse;
   return data.choices?.[0]?.message?.content ?? "";
 }
 
@@ -292,7 +339,7 @@ async function ocrImageWithBbox(
   };
 
   try {
-    const response = await fetch(`${visionConfig.baseUrl}/chat/completions`, {
+    const response = await fetchWithTimeout(`${visionConfig.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -305,7 +352,7 @@ async function ocrImageWithBbox(
       throw new Error(`Vision API error ${response.status}`);
     }
 
-    const data = (await response.json()) as any;
+    const data = (await response.json()) as ChatCompletionResponse;
     const text = data.choices?.[0]?.message?.content ?? "";
 
     // 尝试解析 JSON
@@ -313,11 +360,11 @@ async function ocrImageWithBbox(
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
-        const blocks: OCRBlock[] = parsed.blocks.map((b: any) => ({
+        const blocks: OCRBlock[] = (parsed.blocks as OcrBlockRaw[]).map((b) => ({
           type: b.type || "paragraph",
           text: b.text || "",
           bbox: Array.isArray(b.bbox) && b.bbox.length === 4
-            ? b.bbox.map((v: any) => Number(v) || 0) as [number, number, number, number]
+            ? b.bbox.map((v) => Number(v) || 0) as [number, number, number, number]
             : [0, 0, 100, 100] as [number, number, number, number],
         }));
         const rawMarkdown = blocks.map((b) => b.text).join("\n\n");
@@ -430,14 +477,14 @@ ${rawText}`;
     temperature: 0,
   };
 
-  const response = await fetch(`${visionConfig.baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${visionConfig.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${visionConfig.apiKey}` },
     body: JSON.stringify(body),
   });
 
   if (!response.ok) throw new Error(`LLM format error ${response.status}`);
-  const data = (await response.json()) as any;
+  const data = (await response.json()) as ChatCompletionResponse;
   return data.choices?.[0]?.message?.content ?? rawText;
 }
 
@@ -472,10 +519,10 @@ function htmlToSimpleMarkdown(html: string): string {
  * PDF 转图片后 OCR（仅用于扫描件/图片 PDF 的回退路径）
  */
 async function pdfToVisionOCR(pdfPath: string, visionConfig: VisionModelConfig, format: string): Promise<DocParseResult> {
-  // @ts-ignore — pdf-parse v1 无类型定义
+  // @ts-expect-error — pdf-parse v1 无类型定义
   const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-  const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-  const buffer = readFileSync(pdfPath);
+  const pdfParse = getPdfParse(pdfParseModule);
+  const buffer = safeReadFile(pdfPath);
   const pdfData = await pdfParse(buffer);
   const pageCount = pdfData.numpages;
 
@@ -497,13 +544,13 @@ async function pdfToVisionOCR(pdfPath: string, visionConfig: VisionModelConfig, 
       pages.push({ page: pageNum, content: "[图片转换失败]" });
       return;
     }
-    const base64 = readFileSync(imageFile).toString("base64");
+    const base64 = safeReadFile(imageFile).toString("base64");
     try {
       const { blocks, rawMarkdown } = await ocrImageWithBbox(base64, visionConfig, "image/png", priorPage);
       pages.push({ page: pageNum, content: rawMarkdown, imageBase64: base64, blocks });
       priorPage = rawMarkdown;
-    } catch (e: any) {
-      pages.push({ page: pageNum, content: `[OCR 失败: ${e.message}]`, imageBase64: base64 });
+    } catch (e: unknown) {
+      pages.push({ page: pageNum, content: `[OCR 失败: ${(e instanceof Error ? e.message : String(e))}]`, imageBase64: base64 });
     }
   })));
 
@@ -521,10 +568,15 @@ async function pdfToVisionOCR(pdfPath: string, visionConfig: VisionModelConfig, 
   };
 }
 
-/** 清理临时目录 */
+/** 清理临时目录（P2 安全修复：防止目录遍历） */
 function cleanupDir(dir: string): void {
   try {
-    for (const f of readdirSync(dir)) unlinkSync(resolve(dir, f));
+    for (const f of readdirSync(dir)) {
+      const filePath = resolve(dir, f);
+      // 确保解析后的路径仍在目标目录内
+      if (!filePath.startsWith(resolve(dir))) continue;
+      unlinkSync(filePath);
+    }
     rmdirSync(dir);
   } catch {}
 }
@@ -581,17 +633,17 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
   let perPageTexts: string[] = [];
 
   try {
-    // @ts-ignore
+    // @ts-expect-error - 第三方库无类型定义
     const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-    const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-    const buffer = readFileSync(filePath);
+    const pdfParse = getPdfParse(pdfParseModule);
+    const buffer = safeReadFile(filePath);
     const pageTexts: string[] = [];
     const data = await pdfParse(buffer, {
-      pagerender: async (pageData: any) => {
+      pagerender: async (pageData: PdfPageData) => {
         try {
           const textContent = await pageData.getTextContent();
           // 智能连接文本项：中文内容不加空格，英文内容加空格
-          const items = textContent.items.map((item: any) => item.str || "");
+          const items = textContent.items.map((item) => item.str || "");
           let text = "";
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
@@ -623,8 +675,8 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
     perPageTexts = pageTexts;
     // 组装完整的 PDF 文本（使用处理后的页面文本）
     pdfText = pageTexts.join("\n\n");
-  } catch (err: any) {
-    console.warn(`pdf-parse failed: ${err.message}`);
+  } catch (err: unknown) {
+    console.warn(`pdf-parse failed: ${(err instanceof Error ? err.message : String(err))}`);
   }
 
   const quality = assessPdfTextQuality(pdfText, pageCount);
@@ -640,7 +692,7 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
        const imageMap = new Map<number, string>();
        for (const pageNum of successPages) {
          const imageFile = join(tempDir, `page.${pageNum}.png`);
-         imageMap.set(pageNum, readFileSync(imageFile).toString("base64"));
+         imageMap.set(pageNum, safeReadFile(imageFile).toString("base64"));
        }
        cleanupDir(tempDir);
        return imageMap;
@@ -700,8 +752,8 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
       const result = await pdfToVisionOCR(filePath, visionConfig, "pdf");
       console.log(`[doc-parser] 视觉模型OCR完成，内容长度: ${result.content.length}`);
       return result;
-    } catch (err: any) {
-      console.warn(`[doc-parser] 视觉模型OCR失败，回退到纯文本: ${err.message}`);
+    } catch (err: unknown) {
+      console.warn(`[doc-parser] 视觉模型OCR失败，回退到纯文本: ${(err instanceof Error ? err.message : String(err))}`);
     }
   } else {
     console.log(`[doc-parser] 无视觉模型配置，回退到纯文本提取`);
@@ -712,10 +764,10 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
 /** PDF 纯文本提取（回退方案） */
 async function parsePDFText(filePath: string): Promise<DocParseResult> {
   try {
-    // @ts-ignore
+    // @ts-expect-error - 第三方库无类型定义
     const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-    const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-    const buffer = readFileSync(filePath);
+    const pdfParse = getPdfParse(pdfParseModule);
+    const buffer = safeReadFile(filePath);
     const data = await pdfParse(buffer);
     const text = data.text.length > 100000 ? data.text.substring(0, 100000) + "\n...[内容已截断]" : data.text;
     return {
@@ -724,8 +776,8 @@ async function parsePDFText(filePath: string): Promise<DocParseResult> {
       content: text,
       metadata: { pageCount: data.numpages, method: "text-extraction" },
     };
-  } catch (err: any) {
-    return { success: false, format: "pdf", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "pdf", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -737,7 +789,7 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
   let mammothContent: string | null = null;
   try {
     const mammoth = await import("mammoth");
-    const buffer = readFileSync(filePath);
+    const buffer = safeReadFile(filePath);
     const htmlResult = await mammoth.convertToHtml({ buffer });
     mammothContent = htmlToSimpleMarkdown(htmlResult.value);
     // 如果 mammoth 提取的纯文本太少，尝试 extractRawText
@@ -761,10 +813,10 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
     try {
       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
       const pdfPath = convertToPDF(filePath, tempDir);
-      // @ts-ignore
+      // @ts-expect-error - 第三方库无类型定义
       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-      const pdfData = await pdfParse(readFileSync(pdfPath));
+      const pdfParse = getPdfParse(pdfParseModule);
+      const pdfData = await pdfParse(safeReadFile(pdfPath));
 
       const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
       mkdirSync(imageTempDir, { recursive: true });
@@ -773,7 +825,7 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       const images = new Map<number, string>();
       for (const pageNum of successPages) {
         const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-        images.set(pageNum, readFileSync(imageFile).toString("base64"));
+        images.set(pageNum, safeReadFile(imageFile).toString("base64"));
       }
 
       cleanupDir(tempDir);
@@ -830,8 +882,8 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       const result = await pdfToVisionOCR(pdfPath, visionConfig, "docx");
       cleanupDir(tempDir);
       return { ...result, format: "docx", metadata: { ...result.metadata, method: "libreoffice+vision-ocr" } };
-    } catch (err: any) {
-      console.warn(`Word vision OCR also failed: ${err.message}`);
+    } catch (err: unknown) {
+      console.warn(`Word vision OCR also failed: ${(err instanceof Error ? err.message : String(err))}`);
     }
   }
 
@@ -846,7 +898,7 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
   let extractedPages: PageResult[] | null = null;
   try {
     const JSZip = (await import("jszip")).default;
-    const buffer = readFileSync(filePath);
+    const buffer = safeReadFile(filePath);
     const zip = await JSZip.loadAsync(buffer);
 
     const slideFiles = Object.keys(zip.files)
@@ -888,10 +940,10 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
     try {
       const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
       const pdfPath = convertToPDF(filePath, tempDir);
-      // @ts-ignore
+      // @ts-expect-error - 第三方库无类型定义
       const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-      const pdfData = await pdfParse(readFileSync(pdfPath));
+      const pdfParse = getPdfParse(pdfParseModule);
+      const pdfData = await pdfParse(safeReadFile(pdfPath));
       
       const imageTempDir = resolve(tmpdir(), `raos-ppt-img-${Date.now()}`);
       mkdirSync(imageTempDir, { recursive: true });
@@ -900,7 +952,7 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
       const images = new Map<number, string>();
       for (const pageNum of successPages) {
         const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-        images.set(pageNum, readFileSync(imageFile).toString("base64"));
+        images.set(pageNum, safeReadFile(imageFile).toString("base64"));
       }
       
       cleanupDir(tempDir);
@@ -944,8 +996,8 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
       const result = await pdfToVisionOCR(pdfPath, visionConfig, "pptx");
       cleanupDir(tempDir);
       return { ...result, format: "pptx", metadata: { ...result.metadata, method: "libreoffice+vision-ocr" } };
-    } catch (err: any) {
-      console.warn(`PPT vision OCR also failed: ${err.message}`);
+    } catch (err: unknown) {
+      console.warn(`PPT vision OCR also failed: ${(err instanceof Error ? err.message : String(err))}`);
     }
   }
 
@@ -966,11 +1018,11 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) continue;
 
-      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
       if (jsonData.length === 0) continue;
 
       let md = `### ${sheetName}\n\n`;
-      const headers = (jsonData[0] || []).map((h: any) => String(h ?? ""));
+      const headers = (jsonData[0] || []).map((h) => String(h ?? ""));
       md += "| " + headers.join(" | ") + " |\n";
       md += "| " + headers.map(() => "---").join(" | ") + " |\n";
 
@@ -992,10 +1044,10 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
       try {
         const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
         const pdfPath = convertToPDF(filePath, tempDir);
-        // @ts-ignore
+        // @ts-expect-error - 第三方库无类型定义
         const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-        const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-        const pdfData = await pdfParse(readFileSync(pdfPath));
+        const pdfParse = getPdfParse(pdfParseModule);
+        const pdfData = await pdfParse(safeReadFile(pdfPath));
 
         const imageTempDir = resolve(tmpdir(), `raos-excel-img-${Date.now()}`);
         mkdirSync(imageTempDir, { recursive: true });
@@ -1010,7 +1062,7 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
           return {
             page: pageNum,
             content: "",
-            imageBase64: readFileSync(imageFile).toString("base64"),
+            imageBase64: safeReadFile(imageFile).toString("base64"),
           };
         });
 
@@ -1018,8 +1070,8 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
         cleanupDir(imageTempDir);
         console.log(`[doc-parser] Excel: generated ${pdfData.numpages} page images`);
         return pages;
-      } catch (err: any) {
-        console.warn(`[doc-parser] Excel image generation failed: ${err.message}`);
+      } catch (err: unknown) {
+        console.warn(`[doc-parser] Excel image generation failed: ${(err instanceof Error ? err.message : String(err))}`);
         return undefined;
       }
     })();
@@ -1042,8 +1094,8 @@ async function parseExcel(filePath: string): Promise<DocParseResult> {
       pages,
       metadata: { sheetCount: workbook.SheetNames.length, sheetNames: workbook.SheetNames, method: "xlsx" },
     };
-  } catch (err: any) {
-    return { success: false, format: "excel", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "excel", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -1056,7 +1108,7 @@ async function parseImage(filePath: string, visionConfig: VisionModelConfig | nu
   }
 
   try {
-    const buffer = readFileSync(filePath);
+    const buffer = safeReadFile(filePath);
     const base64 = buffer.toString("base64");
     const ext = extname(filePath).toLowerCase();
     const mimeMap: Record<string, string> = {
@@ -1076,8 +1128,8 @@ async function parseImage(filePath: string, visionConfig: VisionModelConfig | nu
       content,
       metadata: { method: "vision-ocr", mimeType },
     };
-  } catch (err: any) {
-    return { success: false, format: "image", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "image", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -1087,8 +1139,8 @@ function parseText(filePath: string): DocParseResult {
     const content = readFileSync(filePath, "utf-8");
     const truncated = content.length > 100000 ? content.substring(0, 100000) + "\n...[内容已截断]" : content;
     return { success: true, format: "text", content: truncated, metadata: { length: content.length, method: "direct-read" } };
-  } catch (err: any) {
-    return { success: false, format: "text", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "text", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -1118,8 +1170,8 @@ function parseCSV(filePath: string): DocParseResult {
     }
 
     return { success: true, format: "csv", content: md, metadata: { rowCount: lines.length - 1, columns: headers.length, method: "direct-read" } };
-  } catch (err: any) {
-    return { success: false, format: "csv", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "csv", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -1131,8 +1183,8 @@ function parseJSON(filePath: string): DocParseResult {
     const content = JSON.stringify(data, null, 2);
     const truncated = content.length > 100000 ? content.substring(0, 100000) + "\n...[内容已截断]" : content;
     return { success: true, format: "json", content: truncated, metadata: { method: "direct-read" } };
-  } catch (err: any) {
-    return { success: false, format: "json", content: "", error: err.message };
+  } catch (err: unknown) {
+    return { success: false, format: "json", content: "", error: (err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -1219,8 +1271,8 @@ export async function parseDocument(
         }));
         console.log(`[doc-parser] 图片处理完成: ${described.length} 张`);
       }
-    } catch (err: any) {
-      console.error(`[doc-parser] 图片提取失败（不影响主流程）:`, err.message);
+    } catch (err: unknown) {
+      console.error(`[doc-parser] 图片提取失败（不影响主流程）:`, (err instanceof Error ? err.message : String(err)));
     }
   }
 

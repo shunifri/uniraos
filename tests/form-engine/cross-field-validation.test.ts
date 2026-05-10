@@ -23,7 +23,7 @@ describe("validateCrossFieldRules", () => {
 
   it("should support string comparison", () => {
     const rules: CrossFieldValidationRule[] = [
-      { expr: 'formData.endDate > formData.startDate', message: "结束日期必须大于开始日期", targetFields: ["endDate"] },
+      { expr: "formData.endDate > formData.startDate", message: "结束日期必须大于开始日期", targetFields: ["endDate"] },
     ];
     const errors = validateCrossFieldRules(rules, { startDate: "2024-01-01", endDate: "2024-12-31" });
     expect(errors).toHaveLength(0);

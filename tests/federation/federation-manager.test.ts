@@ -17,6 +17,7 @@ import type {
   FederatedMetricsSnapshot,
   SkillRecommendation,
   FederationEvent,
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
   InstanceProfile,
 } from "../../src/federation/types.js";
 import type { SkillMigrationManager } from "../../src/federation/skill-migration.js";
@@ -593,7 +594,8 @@ describe("FederationManager Integration", () => {
       instanceId: "local-instance",
     });
 
-    const originalBroadcast = failingTransport.broadcast.bind(failingTransport);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _originalBroadcast = failingTransport.broadcast.bind(failingTransport);
     failingTransport.broadcast = async () => {
       broadcastCalled = true;
       throw new Error("Transport error");

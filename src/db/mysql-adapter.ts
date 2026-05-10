@@ -7,7 +7,7 @@ import * as mysql from 'mysql2/promise';
 import { dbConfig } from '../config/db-config.js';
 import { log } from '../utils/logger.js';
 
-export interface QueryResult<T = any> {
+export interface QueryResult<T = unknown> {
   rows: T[];
   fields: mysql.FieldPacket[];
 }
@@ -16,9 +16,23 @@ export class MySQLAdapter {
   private primaryPool: mysql.Pool;
   private replicaPools: mysql.Pool[];
   private replicaIndex = 0;
+  private readonly RETRYABLE_ERRORS = ['ECONNREFUSED', 'ECONNRESET', 'PROTOCOL_CONNECTION_LOST'];
+  private readonly RETRY_DELAYS = [100, 500, 2000];
+  private readonly MAX_RETRIES = 3;
 
   constructor() {
     const config = dbConfig.mysql;
+    const sslConfig = config.ssl === true ? {} : config.ssl || undefined;
+    const poolOpts = config.poolOptions;
+    const basePoolConfig = {
+      waitForConnections: true,
+      queueLimit: poolOpts.queueLimit,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: poolOpts.keepAliveInitialDelay,
+      acquireTimeout: poolOpts.acquireTimeout,
+      connectTimeout: poolOpts.connectTimeout,
+      ...(sslConfig ? { ssl: sslConfig as mysql.SslOptions } : {}),
+    };
 
     // Primary pool for writes
     this.primaryPool = mysql.createPool({
@@ -28,10 +42,7 @@ export class MySQLAdapter {
       password: config.primary.password,
       database: config.primary.database,
       connectionLimit: config.primary.connectionLimit,
-      waitForConnections: true,
-      queueLimit: 0,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 10000,
+      ...basePoolConfig,
     });
 
     log('info', 'mysql_adapter_primary_pool_created', {
@@ -54,10 +65,7 @@ export class MySQLAdapter {
         password: config.primary.password,
         database: config.primary.database,
         connectionLimit: replica.connectionLimit,
-        waitForConnections: true,
-        queueLimit: 0,
-        enableKeepAlive: true,
-        keepAliveInitialDelay: 10000,
+        ...basePoolConfig,
       });
     });
 
@@ -69,22 +77,49 @@ export class MySQLAdapter {
   }
 
   /**
+   * Retry an operation with exponential backoff on transient connection errors.
+   */
+  private async withRetry<T>(operation: () => Promise<T>, context: string): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        const err = error as { code?: string };
+        if (attempt < this.MAX_RETRIES && this.RETRYABLE_ERRORS.includes(err.code || '')) {
+          log('warn', `mysql_adapter_${context}_retry`, {
+            attempt: attempt + 1,
+            maxRetries: this.MAX_RETRIES,
+            delayMs: this.RETRY_DELAYS[attempt],
+            error: err.code,
+          });
+          await new Promise((resolve) => setTimeout(resolve, this.RETRY_DELAYS[attempt]));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
+  }
+
+  /**
    * Execute a write operation (INSERT, UPDATE, DELETE) on the primary
    * Returns ResultSetHeader with affectedRows, insertId, etc.
    */
-  async execute<T = any>(
+  async execute<T = unknown>(
     sql: string,
     params?: any[]
   ): Promise<mysql.ResultSetHeader> {
-    try {
-      log('debug', 'mysql_adapter_execute', {
-        sql: sql.substring(0, 100),
-        params: params?.length,
-      });
+    log('debug', 'mysql_adapter_execute', {
+      sql: sql.substring(0, 100),
+      params: params?.length,
+    });
 
-      const [result] = await this.primaryPool.execute<mysql.ResultSetHeader>(
-        sql,
-        params
+    try {
+      const [result] = await this.withRetry(
+        () => this.primaryPool.execute<mysql.ResultSetHeader>(sql, params),
+        'execute'
       );
 
       log('debug', 'mysql_adapter_execute_success', {
@@ -109,14 +144,17 @@ export class MySQLAdapter {
   async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
     const pool = this.getReplicaPool();
 
-    try {
-      log('debug', 'mysql_adapter_query', {
-        sql: sql.substring(0, 100),
-        params: params?.length,
-        target: pool === this.primaryPool ? 'primary' : 'replica',
-      });
+    log('debug', 'mysql_adapter_query', {
+      sql: sql.substring(0, 100),
+      params: params?.length,
+      target: pool === this.primaryPool ? 'primary' : 'replica',
+    });
 
-      const [rows] = await pool.query<mysql.RowDataPacket[]>(sql, params);
+    try {
+      const [rows] = await this.withRetry(
+        () => pool.query<mysql.RowDataPacket[]>(sql, params),
+        'query'
+      );
 
       log('debug', 'mysql_adapter_query_success', {
         rowCount: Array.isArray(rows) ? rows.length : 0,

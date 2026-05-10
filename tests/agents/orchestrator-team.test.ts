@@ -7,12 +7,11 @@
  * - 不同协议的选择（mock LLM 返回不同协议值）
  * - Task #16 激活路径验证
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { Orchestrator } from "../../src/agents/orchestrator.js";
 import { SkillRegistry } from "../../src/registry/skill-registry.js";
 import { ExecutionEngine } from "../../src/engine/execution-engine.js";
 import { WALManager } from "../../src/wal/wal-manager.js";
-import { defineSkill } from "../../src/types/skill.js";
 import type { LLMProvider, Message } from "../../src/llm/types.js";
 import type { AgentDeps, Protocol } from "../../src/agents/types.js";
 
@@ -20,7 +19,8 @@ import type { AgentDeps, Protocol } from "../../src/agents/types.js";
 class MockLLMProvider implements LLMProvider {
   private responseOverride: string | null = null;
 
-  async chat(messages: Message[]): Promise<{ content?: string }> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async chat(__messages: Message[]): Promise<{ content?: string }> {
     if (this.responseOverride) {
       return { content: this.responseOverride };
     }
@@ -33,7 +33,8 @@ class MockLLMProvider implements LLMProvider {
     };
   }
 
-  async embedding(text: string): Promise<number[]> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async embedding(__text: string): Promise<number[]> {
     return Array(384).fill(0);
   }
 
@@ -115,7 +116,7 @@ describe("Orchestrator TeamAgent Integration", () => {
     mockLlm.setResponseOverride(teamResponse);
 
     const decision = await orchestrator.analyzeStrategy(
-      "分析多个数据源的信息，然后生成综合摘要和可视化报告",
+      "协调多智能体分析多个数据源并产出综合摘要",
     );
 
     expect(decision.level).toBe("team");
@@ -191,7 +192,7 @@ describe("Orchestrator TeamAgent Integration", () => {
     mockLlm.setResponseOverride(sequentialResponse);
 
     const decision = await orchestrator.analyzeStrategy(
-      "处理数据：先清洗，再验证，最后分析，每步依赖前一步结果",
+      "顺序执行数据清洗、验证和分析流水线，每步依赖前一步结果",
     );
 
     expect(decision.level).toBe("team");

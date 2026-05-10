@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../db/auth-middleware.js';
+import { requireAuth } from '../permissions/middleware/auth-middleware.js';
 import { getWorkflowRepository } from '../workflow/repository.js';
 import { getWorkflowEngine } from '../workflow/engine.js';
 import { saveTaskForm } from '../services/workflow-task-form-service.js';

@@ -6,7 +6,7 @@
 # -----------------------------------------------------------------------------
 # 阶段 1: 依赖安装
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS dependencies
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS dependencies
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN npm ci --only=production && npm cache clean --force
 # -----------------------------------------------------------------------------
 # 阶段 2: 构建
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS builder
 
 WORKDIR /app
 
@@ -42,7 +42,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # 阶段 3: 生产运行
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS production
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS production
 
 # 安装安全更新
 RUN apk update && apk upgrade && apk add --no-cache curl && rm -rf /var/cache/apk/*

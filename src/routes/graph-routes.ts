@@ -1,7 +1,8 @@
 import { Router } from "express";
+import { asyncHandler } from "./middleware.js";
 import { permissions } from "../permissions/index.js";
 import { identifyGodNodes } from "../memory/knowledge-graph/scoring.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 export function createGraphRoutes(deps: RouteDependencies): Router {
   const router = Router();
@@ -17,7 +18,7 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
   }
 
   // GET /api/graph/data — full graph for visualization
-  router.get("/graph/data", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
+  router.get("/graph/data", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), asyncHandler(async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodes: [], edges: [] }); return; }
     const store = await gm.getStore();
@@ -47,26 +48,26 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
     }
 
     res.json({ nodes, edges });
-  });
+  }));
 
   // GET /api/graph/stats
-  router.get("/graph/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
+  router.get("/graph/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), asyncHandler(async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodeCount: 0, edgeCount: 0 }); return; }
     res.json(await gm.getStats());
-  });
+  }));
 
   // POST /api/graph/query
-  router.post("/graph/query", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
+  router.post("/graph/query", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), asyncHandler(async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ nodes: [], edges: [], seedNodes: [] }); return; }
     const { query, maxDepth, maxNodes } = req.body;
     const result = await gm.querySubgraph(query ?? "", { maxDepth, maxNodes });
     res.json(result);
-  });
+  }));
 
   // POST /api/graph/sync — sync from LTM
-  router.post("/graph/sync", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
+  router.post("/graph/sync", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), asyncHandler(async (req, res) => {
     const userId = (req as any).user?.id ?? "default";
     const session = sessionManager.getOrCreate(userId);
     const gm = session.graphManager;
@@ -76,20 +77,20 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
       id: e.id, key: e.key, value: e.value, tags: e.tags ?? [],
     })));
     res.json(result);
-  });
+  }));
 
   // POST /api/graph/clear — clear entire graph
-  router.post("/graph/clear", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), async (req, res) => {
+  router.post("/graph/clear", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), asyncHandler(async (req, res) => {
     const userId = (req as any).user?.id ?? "default";
     const session = sessionManager.getOrCreate(userId);
     const gm = session.graphManager;
     if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
     const result = await gm.clearGraph();
     res.json(result);
-  });
+  }));
 
   // POST /api/graph/communities
-  router.post("/graph/communities", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
+  router.post("/graph/communities", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), asyncHandler(async (req, res) => {
     const gm = getGraphManager(req);
     if (!gm) { res.json({ communities: [], stats: { count: 0, avgSize: 0 } }); return; }
     const result = await gm.getCommunities();
@@ -97,7 +98,7 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
       id, size: nodes.length, nodes: nodes.slice(0, 20),
     }));
     res.json({ communities: commList, stats: result.stats });
-  });
+  }));
 
   return router;
 }

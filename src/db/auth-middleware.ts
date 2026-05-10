@@ -2,8 +2,10 @@
  * Express 认证中间件
  * 支持 SQLite 和 MySQL
  *
- * @deprecated Use src/permissions/middleware/auth-middleware.ts instead
- * This module will be removed in a future version.
+ * @deprecated This module is deprecated and will be removed in a future version.
+ * Please use `src/permissions/middleware/auth-middleware.ts` instead.
+ * Note: `requireAdmin` and `requirePermission` are now available via
+ * `createPermissionMiddleware(permissionService)` in `src/permissions/middleware/permission-middleware.ts`.
  */
 import type { Request, Response, NextFunction } from "express";
 import { validateSession } from "./auth.js";
@@ -35,11 +37,6 @@ export async function authMiddleware(req: Request, _res: Response, next: NextFun
   // 2. 回退：从 Cookie 读取 token（更安全，token 不会暴露在 URL/日志中）
   if (!token && req.cookies?.token) {
     token = req.cookies.token;
-  }
-
-  // 3. 最后回退：从 URL 查询参数 ?token=xxx 取（用于 <img src> 等无法设置 header/Cookie 的场景）
-  if (!token && typeof req.query.token === "string") {
-    token = req.query.token;
   }
 
   if (token) {

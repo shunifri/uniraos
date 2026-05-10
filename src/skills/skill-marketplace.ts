@@ -4,12 +4,13 @@
  * 提供 Skill 的导出、导入和共享能力。
  * 支持将 Skill 打包为标准化格式，可在不同 RAOS 实例间迁移。
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSystemSkill } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import { runInSandbox } from "../engine/worker-sandbox.js";
 import Database from "better-sqlite3";
 import { join } from "path";
+import { createHash } from "crypto";
 
 /** Skill 包格式（用于序列化传输） */
 export interface SkillPackage {
@@ -49,7 +50,7 @@ export class SkillMarketplace {
     this.registry = registry;
     // 初始化 SQLite 持久化
     const resolved = dbPath ?? join(process.cwd(), ".raos", "marketplace.db");
-    this.initDb(resolved);
+    void this.initDb(resolved);
   }
 
   private async initDb(resolved: string): Promise<void> {
@@ -110,8 +111,10 @@ export class SkillMarketplace {
       exportedAt: Date.now(),
     };
 
-    // 简单校验和
-    pkg.checksum = simpleChecksum(JSON.stringify({ name: pkg.name, code: pkg.handlerCode }));
+    // P2 修复：SHA-256 校验和（替代弱 hash）
+    pkg.checksum = createHash("sha256")
+      .update(JSON.stringify({ name: pkg.name, code: pkg.handlerCode }))
+      .digest("hex");
 
     return pkg;
   }
@@ -124,6 +127,18 @@ export class SkillMarketplace {
 
     if (this.registry.lookup(pkg.name)) {
       return { success: false, error: `Skill 已存在: ${pkg.name}` };
+    }
+
+    // P2 修复：校验和验证
+    if (pkg.checksum) {
+      const expected = createHash("sha256")
+        .update(JSON.stringify({ name: pkg.name, code: pkg.handlerCode }))
+        .digest("hex");
+      if (expected !== pkg.checksum) {
+        return { success: false, error: `Skill 包校验和不匹配: ${pkg.name}` };
+      }
+    } else if (process.env.NODE_ENV === "production") {
+      return { success: false, error: `生产环境禁止导入无校验和的 Skill: ${pkg.name}` };
     }
 
     // 安全检查
@@ -172,7 +187,7 @@ export class SkillMarketplace {
       this.registry.register(skill);
       return { success: true };
     } catch (err) {
-      return { success: false, error: `导入失败: ${err instanceof Error ? err.message : String(err)}` };
+      return { success: false, error: `导入失败: ${err instanceof Error ? (err as Error).message : String(err)}` };
     }
   }
 
@@ -239,10 +254,4 @@ export class SkillMarketplace {
   }
 }
 
-function simpleChecksum(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return hash.toString(16);
-}
+

@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth } from "../permissions/middleware/auth-middleware.js";
 import { getSchedulerService } from "./scheduler-service.js";
 
 const router = Router();
@@ -33,8 +33,8 @@ router.post("/schedule", requireAuth, async (req, res) => {
     });
 
     res.json({ success: true, data: event });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -56,8 +56,8 @@ router.get("/schedule", requireAuth, async (req, res) => {
 
     const result = await getSchedulerService().listEvents(query);
     res.json({ success: true, ...result });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -73,8 +73,8 @@ router.get("/schedule/:id", requireAuth, async (req, res) => {
       return;
     }
     res.json({ success: true, data: event });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -86,8 +86,8 @@ router.delete("/schedule/:id", requireAuth, async (req, res) => {
   try {
     const success = await getSchedulerService().cancelEvent(req.params.id as string);
     res.json({ success });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -99,8 +99,8 @@ router.post("/schedule/:id/cancel", requireAuth, async (req, res) => {
   try {
     const success = await getSchedulerService().cancelEvent(req.params.id as string);
     res.json({ success });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 
@@ -112,8 +112,8 @@ router.post("/schedule/:id/trigger", requireAuth, async (req, res) => {
   try {
     await getSchedulerService().triggerNow(req.params.id as string);
     res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 

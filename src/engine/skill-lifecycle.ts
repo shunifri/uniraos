@@ -114,7 +114,7 @@ export class SkillLifecycleManager {
     try {
       this.registry.switchVersion(name, newVersion);
     } catch (err) {
-      log("warn", "lifecycle.canary_promote_version_switch_failed", { name, newVersion, error: err instanceof Error ? err.message : String(err) });
+      log("warn", "lifecycle.canary_promote_version_switch_failed", { name, newVersion, error: err instanceof Error ? (err as Error).message : String(err) });
     }
 
     log("info", "lifecycle.canary_promoted", { name, version: newVersion });
@@ -132,7 +132,7 @@ export class SkillLifecycleManager {
     try {
       this.registry.switchVersion(name, oldVersion);
     } catch (err) {
-      log("warn", "lifecycle.canary_rollback_version_switch_failed", { name, oldVersion, error: err instanceof Error ? err.message : String(err) });
+      log("warn", "lifecycle.canary_rollback_version_switch_failed", { name, oldVersion, error: err instanceof Error ? (err as Error).message : String(err) });
     }
 
     log("warn", "lifecycle.canary_rolled_back", { name, oldVersion, newVersion });

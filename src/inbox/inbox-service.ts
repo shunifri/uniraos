@@ -206,7 +206,7 @@ export class InboxService {
     try {
       const decision = await this.router.route({
         item,
-        userOnline: true, // TODO: 从 session 获取
+        userOnline: false, // 无 presence 系统时安全默认：离线通知走 email/IM 而非 chat
         relatedConversationId: item.conversationId,
       });
 

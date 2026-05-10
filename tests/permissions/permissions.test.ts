@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { permissions } from "../../src/permissions/index.js";
-import { SkillRegistry } from "../../src/registry/skill-registry.js";
 
 describe("Permissions API (Unit Tests)", () => {
   describe("Constants Exports", () => {

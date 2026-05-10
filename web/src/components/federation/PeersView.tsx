@@ -223,6 +223,7 @@ export default function PeersView() {
             setIsAddModalVisible(false);
             form.resetFields();
           }}
+          forceRender
         >
           <Form form={form} layout="vertical">
             <Form.Item
@@ -280,6 +281,7 @@ export default function PeersView() {
           setIsAddModalVisible(false);
           form.resetFields();
         }}
+        forceRender
       >
         <Form form={form} layout="vertical">
           <Form.Item

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import DOMPurify from "dompurify";
 import { Flex, Typography, Tag, Button, List, Spin, Badge, Segmented, message } from "antd";
 import {
   FilePdfOutlined,
@@ -277,8 +278,8 @@ export default function UserFiles({
                   maxHeight: 300, overflowY: "auto",
                   fontSize: 13, lineHeight: 1.7,
                 }}>
-                  {/* XMarkdown rendered in parent */}
-                  <div dangerouslySetInnerHTML={{ __html: mdContent }} />
+                  {/* P1 安全修复：DOMPurify 过滤后渲染 */}
+                  <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(mdContent) }} />
                 </div>
               )}
             </div>

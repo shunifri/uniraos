@@ -1,4 +1,4 @@
-export { ExecutionEngine } from "./execution-engine.js";
+export { ExecutionEngine, setGlobalExecutionEngine, getGlobalExecutionEngine } from "./execution-engine.js";
 export type { EngineConfig } from "./execution-engine.js";
 export { AsyncTaskManager } from "./async-task-manager.js";
 export type { TaskCallback } from "./async-task-manager.js";

@@ -3,7 +3,6 @@ import { PluginLoader } from "../../src/plugin/plugin-loader.js";
 import { SkillRegistry } from "../../src/registry/skill-registry.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { tmpdir } from "os";
 
 /** 创建一个测试插件目录 */
 function createTestPlugin(
@@ -101,7 +100,7 @@ describe("PluginLoader", () => {
 
   it("should handle invalid handler export", async () => {
     createTestPlugin(tmpDir, "no_handler", {
-      handlerCode: `export const notAHandler = "oops";`,
+      handlerCode: "export const notAHandler = \"oops\";",
     });
 
     const loader = new PluginLoader(registry, { skillsDir: tmpDir });
@@ -114,7 +113,7 @@ describe("PluginLoader", () => {
 
   it("should execute loaded plugin handler", async () => {
     createTestPlugin(tmpDir, "echo", {
-      handlerCode: `export default async function(params) { return { success: true, data: { echo: params.msg } }; }`,
+      handlerCode: "export default async function(params) { return { success: true, data: { echo: params.msg } }; }",
     });
 
     const loader = new PluginLoader(registry, { skillsDir: tmpDir });
@@ -142,7 +141,7 @@ describe("PluginLoader", () => {
 
   it("should reload plugin", async () => {
     createTestPlugin(tmpDir, "reloadable", {
-      handlerCode: `export default async function() { return { success: true, data: { v: 1 } }; }`,
+      handlerCode: "export default async function() { return { success: true, data: { v: 1 } }; }",
     });
 
     const loader = new PluginLoader(registry, { skillsDir: tmpDir });
@@ -151,7 +150,7 @@ describe("PluginLoader", () => {
     // 修改handler
     writeFileSync(
       join(tmpDir, "reloadable", "handler.mjs"),
-      `export default async function() { return { success: true, data: { v: 2 } }; }`,
+      "export default async function() { return { success: true, data: { v: 2 } }; }",
     );
 
     const reloaded = await loader.reloadPlugin("reloadable");

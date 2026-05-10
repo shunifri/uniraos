@@ -5,7 +5,9 @@ import { createSession, destroySession } from "../db/auth.js";
 import * as userRepo from "../db/user-repository.js";
 import * as deptRepo from "../db/department-repository.js";
 import * as resRepo from "../db/resource-repository.js";
-import type { RouteDependencies } from "./index.js";
+import { loginSchema, registerSchema, validate } from "./validation.js";
+import type { RouteDependencies } from "./types.js";
+import { log } from "../utils/logger.js";
 
 export function createAuthRoutes(deps: RouteDependencies): Router {
   const { sessionManager, syncSkillsToResources } = deps;
@@ -16,12 +18,8 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
   // ===== Auth Routes =====
 
-  router.post("/auth/login", async (req, res) => {
+  router.post("/auth/login", validate(loginSchema), async (req, res) => {
     const { username, password } = req.body as { username: string; password: string };
-    if (!username || !password) {
-      res.status(400).json({ success: false, error: "username and password are required" });
-      return;
-    }
 
     const user = await userRepo.authenticate(username, password);
     if (!user) {
@@ -115,15 +113,17 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
         user: details,
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
   router.post("/auth/logout", pm.requireAuth, async (req, res) => {
+    const userId = req.user!.id;
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
       await destroySession(authHeader.slice(7));
     }
+    log("info", "auth.logout", { userId });
     res.json({ success: true });
   });
 
@@ -158,18 +158,15 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, users: enriched });
   });
 
-  router.post("/users", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
+  router.post("/users", pm.requireAuth, pm.requireAdmin(), validate(registerSchema), async (req, res) => {
     const { username, password, displayName, departmentId, phone, email, roleIds } = req.body;
-    if (!username || !password) {
-      res.status(400).json({ success: false, error: "username and password are required" });
-      return;
-    }
     try {
       const user = await userRepo.createUser({ username, password, displayName, departmentId, phone, email, roleIds });
+      log("info", "auth.user_created", { userId: user.id, username, by: req.user!.id });
       const details = await userRepo.getUserWithDetails(user.id);
       res.json({ success: true, user: details });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -181,6 +178,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       res.status(404).json({ success: false, error: "User not found" });
       return;
     }
+    log("info", "auth.user_updated", { userId: id, by: req.user!.id });
     const details = await userRepo.getUserWithDetails(id);
     res.json({ success: true, user: details });
   });
@@ -191,6 +189,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: "Cannot delete yourself" });
       return;
     }
+    log("info", "auth.user_deleted", { userId: id, by: req.user!.id });
     const deleted = await userRepo.deleteUser(id);
     res.json({ success: true, deleted });
   });
@@ -239,7 +238,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const dept = await deptRepo.createDepartment({ name, parentId, description });
       res.json({ success: true, department: dept });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -260,7 +259,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       await deptRepo.deleteDepartment(id);
       res.json({ success: true });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -400,7 +399,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const role = await userRepo.createRole({ name, description });
       res.json({ success: true, role });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 
@@ -414,7 +413,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       }
       res.json({ success: true });
     } catch (err) {
-      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
 

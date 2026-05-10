@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateDAG } from "../../src/registry/dag-validator.js";
-import { defineSkill, Autonomy } from "../../src/types/skill.js";
+import { defineSkill } from "../../src/types/skill.js";
 
 const noop = async () => ({ success: true });
 

@@ -123,58 +123,17 @@ export class SkillMigrationManager {
       return result;
     }
 
-    // 安全检查
-    const forbidden = [
-      "require(", "import(", "process.exit", "child_process", "eval(",
-      "__proto__", "constructor[", "globalThis", "Object.defineProperty",
-      "Object.getOwnPropertyDescriptor", "Reflect.", "Proxy",
-    ];
-    for (const f of forbidden) {
-      if (pkg.skill.handlerCode.includes(f)) {
-        const result: MigrationResult = { ...baseResult, success: false, action: "rejected", reason: `Handler contains forbidden operation: ${f}` };
-        this.migrationHistory.push(result);
-        return result;
-      }
-    }
-
-    // 检查是否已存在
-    const existing = this.registry.lookup(pkg.skill.name);
-    const action = existing ? "updated" : "imported";
-
-    try {
-      const handler = new Function("return " + pkg.skill.handlerCode)();
-
-      const skill = defineSkill({
-        name: pkg.skill.name,
-        version: pkg.skill.version,
-        description: `[迁移自 ${pkg.sourceInstance}] ${pkg.skill.description}`,
-        visible: pkg.skill.visible,
-        timeout: pkg.skill.timeout,
-        retry: pkg.skill.retry,
-        capabilities: pkg.skill.capabilities,
-        dependencies: pkg.skill.dependencies ?? [],
-        handler,
-      });
-
-      if (existing) {
-        this.registry.unregister(pkg.skill.name);
-      }
-      this.registry.register(skill);
-
-      const result: MigrationResult = { ...baseResult, success: true, action };
-      this.migrationHistory.push(result);
-      this.emit({ type: "skill:migrated", timestamp: Date.now(), data: { ...result, from: pkg.sourceInstance } });
-      return result;
-    } catch (err) {
-      const result: MigrationResult = {
-        ...baseResult,
-        success: false,
-        action: "rejected",
-        reason: err instanceof Error ? err.message : String(err),
-      };
-      this.migrationHistory.push(result);
-      return result;
-    }
+    // P0 安全修复：联邦远程代码不再通过 new Function 直接执行
+    // 远程 skill 只迁移元数据，handler 需在目标实例由管理员手动审批后重新注册
+    const result: MigrationResult = {
+      ...baseResult,
+      success: false,
+      action: "rejected",
+      reason: "Remote skill handler execution is disabled for security. Please manually recreate this skill on the target instance.",
+    };
+    this.migrationHistory.push(result);
+    this.emit({ type: "skill:migration_rejected", timestamp: Date.now(), data: { ...result, from: pkg.sourceInstance, skillName: pkg.skill.name } });
+    return result;
   }
 
   /** 从远程实例拉取 Skill */
@@ -189,7 +148,7 @@ export class SkillMigrationManager {
         targetInstance: this.instanceId,
         success: false,
         action: "rejected",
-        reason: err instanceof Error ? err.message : String(err),
+        reason: err instanceof Error ? (err as Error).message : String(err),
       };
     }
   }
@@ -218,7 +177,7 @@ export class SkillMigrationManager {
         targetInstance: endpoint,
         success: false,
         action: "rejected",
-        reason: err instanceof Error ? err.message : String(err),
+        reason: err instanceof Error ? (err as Error).message : String(err),
       };
     }
   }

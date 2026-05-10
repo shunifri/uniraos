@@ -9,10 +9,11 @@
  * 
  * 支持 SQLite 和 MySQL 切换
  */
-import { randomBytes, scryptSync } from "crypto";
+import { randomBytes, scrypt } from "crypto";
 import { randomUUID } from "crypto";
 import { getDb, isMySQL } from "./database.js";
 import type { RoleAgentConfig } from "../permissions/types/role.js";
+import { log } from "../utils/logger.js";
 
 export interface User {
   id: string;
@@ -46,16 +47,40 @@ export interface UserWithDetails extends User {
 
 // ===== 密码哈希 =====
 
-function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
+/** Scrypt 成本因子（N=2^15=32768, maxmem=64MB） */
+const SCRYPT_OPTIONS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const SCRYPT_KEYLEN = 64;
+
+function scryptAsync(password: string, salt: string, keylen: number, options?: object): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, keylen, options ?? {}, (err, derivedKey) => {
+      if (err) reject(err);
+      else resolve(derivedKey);
+    });
+  });
 }
 
-function verifyPassword(password: string, stored: string): boolean {
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString("hex");
+  const hash = (await scryptAsync(password, salt, SCRYPT_KEYLEN, SCRYPT_OPTIONS)).toString("hex");
+  return `v2:${salt}:${hash}`;
+}
+
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  // v2 格式: v2:salt:hash (N=32768)
+  if (stored.startsWith("v2:")) {
+    const parts = stored.split(":");
+    if (parts.length !== 3) return false;
+    const [, salt, hash] = parts;
+    if (!salt || !hash) return false;
+    const check = (await scryptAsync(password, salt, SCRYPT_KEYLEN, SCRYPT_OPTIONS)).toString("hex");
+    return hash === check;
+  }
+
+  // 旧格式: salt:hash (Node.js 默认 N=16384)
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
-  const check = scryptSync(password, salt, 64).toString("hex");
+  const check = (await scryptAsync(password, salt, SCRYPT_KEYLEN)).toString("hex");
   return hash === check;
 }
 
@@ -77,7 +102,7 @@ export async function createUser(input: CreateUserInput): Promise<User> {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
     const id = `u_${randomUUID().slice(0, 12)}`;
-    const passwordHash = hashPassword(input.password);
+    const passwordHash = await hashPassword(input.password);
     const departmentId = input.departmentId ?? "dept_root";
     const now = Date.now();
 
@@ -99,7 +124,7 @@ export async function createUser(input: CreateUserInput): Promise<User> {
   } else {
     const db = getDb();
     const id = `u_${randomUUID().slice(0, 12)}`;
-    const passwordHash = hashPassword(input.password);
+    const passwordHash = await hashPassword(input.password);
     const departmentId = input.departmentId ?? "dept_root";
 
     db.prepare(`
@@ -251,17 +276,21 @@ export async function updateUser(id: string, fields: { displayName?: string; ava
 }
 
 export async function changePassword(id: string, newPassword: string): Promise<boolean> {
-  const hash = hashPassword(newPassword);
+  const hash = await hashPassword(newPassword);
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
     const result = await adapter.execute(
       `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
       [hash, Date.now(), id]
     );
-    return result.affectedRows > 0;
+    const success = result.affectedRows > 0;
+    if (success) log("info", "auth.password_changed", { userId: id });
+    return success;
   } else {
     const result = getDb().prepare("UPDATE users SET password_hash = ?, updated_at = unixepoch() WHERE id = ?").run(hash, id);
-    return result.changes > 0;
+    const success = result.changes > 0;
+    if (success) log("info", "auth.password_changed", { userId: id });
+    return success;
   }
 }
 
@@ -272,10 +301,14 @@ export async function deleteUser(id: string): Promise<boolean> {
       `UPDATE users SET status = 'deleted', updated_at = ? WHERE id = ?`,
       [Date.now(), id]
     );
-    return result.affectedRows > 0;
+    const success = result.affectedRows > 0;
+    if (success) log("info", "auth.user_deleted", { userId: id });
+    return success;
   } else {
     const result = getDb().prepare("UPDATE users SET status = 'deleted', updated_at = unixepoch() WHERE id = ?").run(id);
-    return result.changes > 0;
+    const success = result.changes > 0;
+    if (success) log("info", "auth.user_deleted", { userId: id });
+    return success;
   }
 }
 
@@ -288,18 +321,32 @@ export async function authenticate(username: string, password: string): Promise<
       `SELECT * FROM users WHERE username = ? AND status = 'active'`,
       [username]
     );
-    if (rows.length === 0) return null;
+    if (rows.length === 0) {
+      log("warn", "auth.login_failed", { username, reason: "user_not_found" });
+      return null;
+    }
     const row = rows[0];
-    if (!verifyPassword(password, row.password_hash)) return null;
+    if (!(await verifyPassword(password, row.password_hash))) {
+      log("warn", "auth.login_failed", { username, userId: row.id, reason: "invalid_password" });
+      return null;
+    }
 
     await adapter.execute(`UPDATE users SET last_login_at = ? WHERE id = ?`, [Date.now(), row.id]);
+    log("info", "auth.login_success", { username, userId: row.id });
     return mapUser(row);
   } else {
     const row = getDb().prepare("SELECT * FROM users WHERE username = ? AND status = 'active'").get(username) as any;
-    if (!row) return null;
-    if (!verifyPassword(password, row.password_hash)) return null;
+    if (!row) {
+      log("warn", "auth.login_failed", { username, reason: "user_not_found" });
+      return null;
+    }
+    if (!(await verifyPassword(password, row.password_hash))) {
+      log("warn", "auth.login_failed", { username, userId: row.id, reason: "invalid_password" });
+      return null;
+    }
 
     getDb().prepare("UPDATE users SET last_login_at = unixepoch() WHERE id = ?").run(row.id);
+    log("info", "auth.login_success", { username, userId: row.id });
     return mapUser(row);
   }
 }
@@ -378,6 +425,7 @@ export async function assignRole(userId: string, roleId: string): Promise<void> 
   } else {
     getDb().prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)").run(userId, roleId);
   }
+  log("info", "auth.role_assigned", { userId, roleId });
 }
 
 export async function removeRole(userId: string, roleId: string): Promise<void> {
@@ -387,6 +435,7 @@ export async function removeRole(userId: string, roleId: string): Promise<void> 
   } else {
     getDb().prepare("DELETE FROM user_roles WHERE user_id = ? AND role_id = ?").run(userId, roleId);
   }
+  log("info", "auth.role_removed", { userId, roleId });
 }
 
 // ===== 权限查询（交叉控制） =====
@@ -563,7 +612,8 @@ export async function ensureAdminExists(): Promise<User> {
   if (existing) return existing;
 
   const id = `u_${randomUUID().slice(0, 12)}`;
-  const passwordHash = hashPassword("admin123");
+  const randomPassword = randomBytes(16).toString("hex");
+  const passwordHash = await hashPassword(randomPassword);
 
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
@@ -586,7 +636,13 @@ export async function ensureAdminExists(): Promise<User> {
     db.prepare("INSERT INTO user_roles (user_id, role_id) VALUES (?, 'role_admin')").run(id);
   }
 
-  console.log("   Default admin created (admin / admin123)");
+  console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
+  console.warn("║  SECURITY WARNING: Default admin account created with a random password    ║");
+  console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
+  console.warn("║  Username: admin                                                           ║");
+  console.warn(`║  Password: ${randomPassword.padEnd(64)}║`);
+  console.warn("║  Please change this password immediately after first login.                ║");
+  console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
   return (await getUserById(id))!;
 }
 

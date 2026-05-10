@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SkillRegistry } from "../../src/registry/skill-registry.js";
-import { defineSkill, Autonomy } from "../../src/types/skill.js";
+import { defineSkill } from "../../src/types/skill.js";
 
 let registry: SkillRegistry;
 

@@ -1,6 +1,6 @@
 import { join, resolve } from "path";
 import { SkillRegistry } from "../registry/index.js";
-import { ExecutionEngine, AsyncTaskManager, SkillAccessService } from "../engine/index.js";
+import { ExecutionEngine, AsyncTaskManager, SkillAccessService, setGlobalExecutionEngine } from "../engine/index.js";
 import { WALManager } from "../wal/index.js";
 import { FileWALStore } from "../wal/file-wal-store.js";
 import { defineSkill, defineSystemSkill } from "../types/index.js";
@@ -84,6 +84,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
   const taskManager = new AsyncTaskManager();
 
   const engine = new ExecutionEngine(registry, wal);
+  setGlobalExecutionEngine(engine);
   const skillAccessService = new SkillAccessService(registry);
   const providerManager = new ProviderManager(configManager, sessionManager, registry, engine, skillAccessService);
 
@@ -260,14 +261,14 @@ export async function bootstrap(): Promise<BootstrapResult> {
     if (event.type === "reloaded") console.log(`   Plugin reloaded: ${event.plugin.name}`);
     if (event.type === "error") console.error(`   Plugin error [${event.name}]: ${event.error.message}`);
   });
-  pluginLoader.loadAll().then(({ loaded, errors }) => {
+  void pluginLoader.loadAll().then(({ loaded, errors }) => {
     if (loaded.length > 0) console.log(`   Plugins loaded: ${loaded.join(", ")}`);
     if (errors.length > 0) console.log(`   Plugin errors: ${errors.map((e) => `${e.name}(${e.error})`).join(", ")}`);
-    syncSkillsToResources(registry);
+    void syncSkillsToResources(registry);
   });
 
   // 从数据库加载用户自定义 Skill
-  (async () => {
+  void (async () => {
     try {
       const repo = getCustomSkillRepository();
       const customSkills = await repo.findAll();
@@ -287,7 +288,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
       }
       if (loadedCount > 0) {
         console.log(`   Custom skills loaded from database: ${loadedCount}`);
-        syncSkillsToResources(registry);
+        void syncSkillsToResources(registry);
       }
     } catch (error) {
       console.warn("   Failed to load custom skills from database:", error);
@@ -329,7 +330,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
     }
   }
 
-  syncSkillsToResources(registry);
+  void syncSkillsToResources(registry);
 
   return {
     registry,

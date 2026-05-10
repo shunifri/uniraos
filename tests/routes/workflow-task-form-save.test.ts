@@ -1,24 +1,26 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import Database from 'better-sqlite3';
+import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
+import Database from "better-sqlite3";
 
 let testDb: Database.Database;
 
-vi.mock('../../src/db/database.js', () => ({
+vi.mock("../../src/db/database.js", () => ({
   getDb: () => testDb,
+  isMySQL: () => false,
 }));
 
-vi.mock('../../src/services/form-service.js', () => ({
+vi.mock("../../src/services/form-service.js", () => ({
   getFormDefinition: vi.fn(),
   getFormDefinitionByKey: vi.fn(),
 }));
 
-vi.mock('../../src/workflow/repository.js', () => ({
+vi.mock("../../src/workflow/repository.js", () => ({
   getWorkflowRepository: vi.fn(),
 }));
 
-const { saveTaskForm } = await import('../../src/services/workflow-task-form-service.js');
-const { getFormDefinition, getFormDefinitionByKey } = await import('../../src/services/form-service.js');
-const { getWorkflowRepository } = await import('../../src/workflow/repository.js');
+const { saveTaskForm } = await import("../../src/services/workflow-task-form-service.js");
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const { getFormDefinition, getFormDefinitionByKey } = await import("../../src/services/form-service.js");
+const { getWorkflowRepository } = await import("../../src/workflow/repository.js");
 
 function initSchema(db: Database.Database) {
   db.exec(`
@@ -49,11 +51,11 @@ function initSchema(db: Database.Database) {
   `);
 }
 
-describe('Workflow Task Form Save Service', () => {
+describe("Workflow Task Form Save Service", () => {
   let mockRepo: any;
 
   beforeEach(() => {
-    testDb = new Database(':memory:');
+    testDb = new Database(":memory:");
     initSchema(testDb);
 
     mockRepo = {
@@ -62,6 +64,10 @@ describe('Workflow Task Form Save Service', () => {
       updateTask: vi.fn(),
       setVariable: vi.fn(),
       getVariables: vi.fn(),
+      getDefinitionById: vi.fn(async (id: number) => {
+        const row = testDb.prepare("SELECT * FROM workflow_definitions WHERE id = ?").get(id);
+        return row || null;
+      }),
     };
     (getWorkflowRepository as Mock).mockReturnValue(mockRepo);
     vi.clearAllMocks();
@@ -72,7 +78,7 @@ describe('Workflow Task Form Save Service', () => {
       INSERT INTO workflow_definitions (name, key, version, definition)
       VALUES (?, ?, ?, ?)
     `);
-    const result = stmt.run(key, key, 1, '{}');
+    const result = stmt.run(key, key, 1, "{}");
     return Number(result.lastInsertRowid);
   }
 
@@ -85,22 +91,22 @@ describe('Workflow Task Form Save Service', () => {
     return id;
   }
 
-  it('should save formData and sync to variableName', async () => {
-    const defId = insertDefinition('leave_approval');
-    insertBinding('leave_approval', 'manager_approval', 'form-001', {
-      variableName: 'leaveForm',
+  it("should save formData and sync to variableName", async () => {
+    const defId = insertDefinition("leave_approval");
+    insertBinding("leave_approval", "manager_approval", "form-001", {
+      variableName: "leaveForm",
     });
 
     (getFormDefinition as Mock).mockReturnValue({
-      id: 'form-001',
-      schema_json: { type: 'object' },
+      id: "form-001",
+      schema_json: { type: "object" },
     });
 
     mockRepo.getTaskById.mockResolvedValue({
       id: 1,
       instanceId: 100,
-      nodeId: 'manager_approval',
-      status: 'pending',
+      nodeId: "manager_approval",
+      status: "pending",
     });
 
     mockRepo.getInstanceById.mockResolvedValue({
@@ -109,37 +115,37 @@ describe('Workflow Task Form Save Service', () => {
     });
 
     mockRepo.getVariables.mockResolvedValue({
-      leaveForm: { days: 10, reason: 'personal' },
+      leaveForm: { days: 10, reason: "personal" },
     });
 
-    const formData = { days: 10, reason: 'personal' };
-    const result = await saveTaskForm(1, { formData, comment: 'submit', action: 'approve' });
+    const formData = { days: 10, reason: "personal" };
+    const result = await saveTaskForm(1, { formData, comment: "submit", action: "approve" });
 
     expect(mockRepo.updateTask).toHaveBeenCalledWith(1, {
       formData,
-      comment: 'submit',
-      action: 'approve',
+      comment: "submit",
+      action: "approve",
     });
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(100, 'leaveForm', formData, 'json');
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(100, "leaveForm", formData, "json");
     expect(result.taskId).toBe(1);
     expect(result.initialData).toEqual(formData);
   });
 
-  it('should sync fieldMappings individually', async () => {
-    const defId = insertDefinition('procurement');
-    insertBinding('procurement', 'director_approval', 'form-003', {
-      fieldMappings: { total: 'budget', dept: 'department', approved: 'isApproved' },
+  it("should sync fieldMappings individually", async () => {
+    const defId = insertDefinition("procurement");
+    insertBinding("procurement", "director_approval", "form-003", {
+      fieldMappings: { total: "budget", dept: "department", approved: "isApproved" },
     });
 
     (getFormDefinition as Mock).mockReturnValue({
-      id: 'form-003',
-      schema_json: { type: 'object' },
+      id: "form-003",
+      schema_json: { type: "object" },
     });
 
     mockRepo.getTaskById.mockResolvedValue({
       id: 2,
       instanceId: 200,
-      nodeId: 'director_approval',
+      nodeId: "director_approval",
     });
 
     mockRepo.getInstanceById.mockResolvedValue({
@@ -149,25 +155,25 @@ describe('Workflow Task Form Save Service', () => {
 
     mockRepo.getVariables.mockResolvedValue({
       budget: 50000,
-      department: 'IT',
+      department: "IT",
       isApproved: false,
     });
 
-    const formData = { total: 60000, dept: 'HR', approved: true };
+    const formData = { total: 60000, dept: "HR", approved: true };
     await saveTaskForm(2, { formData });
 
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, 'budget', 60000, 'number');
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, 'department', 'HR', 'string');
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, 'isApproved', true, 'boolean');
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, "budget", 60000, "number");
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, "department", "HR", "string");
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(200, "isApproved", true, "boolean");
   });
 
-  it('should only save task.formData when no binding exists', async () => {
-    const defId = insertDefinition('no_binding_flow');
+  it("should only save task.formData when no binding exists", async () => {
+    const defId = insertDefinition("no_binding_flow");
 
     mockRepo.getTaskById.mockResolvedValue({
       id: 3,
       instanceId: 300,
-      nodeId: 'orphan_node',
+      nodeId: "orphan_node",
     });
 
     mockRepo.getInstanceById.mockResolvedValue({
@@ -175,7 +181,7 @@ describe('Workflow Task Form Save Service', () => {
       definitionId: defId,
     });
 
-    const formData = { note: 'test' };
+    const formData = { note: "test" };
     const result = await saveTaskForm(3, { formData });
 
     expect(mockRepo.updateTask).toHaveBeenCalledWith(3, {
@@ -190,26 +196,26 @@ describe('Workflow Task Form Save Service', () => {
     expect(result.mappingApplied).toBe(false);
   });
 
-  it('should infer types for process variables (number/boolean/object)', async () => {
-    const defId = insertDefinition('type_test');
-    insertBinding('type_test', 'node1', 'form-004', {
+  it("should infer types for process variables (number/boolean/object)", async () => {
+    const defId = insertDefinition("type_test");
+    insertBinding("type_test", "node1", "form-004", {
       fieldMappings: {
-        count: 'varCount',
-        flag: 'varFlag',
-        meta: 'varMeta',
-        name: 'varName',
+        count: "varCount",
+        flag: "varFlag",
+        meta: "varMeta",
+        name: "varName",
       },
     });
 
     (getFormDefinition as Mock).mockReturnValue({
-      id: 'form-004',
-      schema_json: { type: 'object' },
+      id: "form-004",
+      schema_json: { type: "object" },
     });
 
     mockRepo.getTaskById.mockResolvedValue({
       id: 4,
       instanceId: 400,
-      nodeId: 'node1',
+      nodeId: "node1",
     });
 
     mockRepo.getInstanceById.mockResolvedValue({
@@ -219,18 +225,18 @@ describe('Workflow Task Form Save Service', () => {
 
     mockRepo.getVariables.mockResolvedValue({});
 
-    const formData = { count: 42, flag: true, meta: { a: 1 }, name: 'test' };
+    const formData = { count: 42, flag: true, meta: { a: 1 }, name: "test" };
     await saveTaskForm(4, { formData });
 
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, 'varCount', 42, 'number');
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, 'varFlag', true, 'boolean');
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, 'varMeta', { a: 1 }, 'json');
-    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, 'varName', 'test', 'string');
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, "varCount", 42, "number");
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, "varFlag", true, "boolean");
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, "varMeta", { a: 1 }, "json");
+    expect(mockRepo.setVariable).toHaveBeenCalledWith(400, "varName", "test", "string");
   });
 
-  it('should throw when task not found', async () => {
+  it("should throw when task not found", async () => {
     mockRepo.getTaskById.mockResolvedValue(undefined);
 
-    await expect(saveTaskForm(999, { formData: {} })).rejects.toThrow('Task 999 not found');
+    await expect(saveTaskForm(999, { formData: {} })).rejects.toThrow("Task 999 not found");
   });
 });

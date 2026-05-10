@@ -14,51 +14,23 @@ import type {
   LTMListOptions,
   LTMStats,
   LTMArchiveResult,
-} from "./ltm-backend.js";
+  LTMEntry,
+  LTMConfig,
+  ArchiveManifest,
+} from "./ltm-types.js";
 import { getMySQLAdapter, type MySQLAdapter } from "../db/mysql-adapter.js";
 
-export interface LTMEntry {
-  id: string;
-  key: string;
-  value: unknown;
-  tags: string[];
-  createdAt: number;
-  updatedAt: number;
-  accessCount: number;
-  source?: string;
-  summary?: string;
-  /** 最后一次被访问的时间（区别于 updatedAt 可能是写入更新） */
-  lastAccessedAt: number;
-}
-
-export interface LTMConfig {
-  storePath: string;
-  maxEntries: number;
-  /** 归档阈值：活跃记忆超过此数量时触发归档检查 */
-  archiveThreshold: number;
-  /** 冷记忆判定：超过此天数未访问视为冷记忆 */
-  coldDays: number;
-  /** 冷记忆判定：访问次数低于此值视为低频 */
-  coldAccessCount: number;
-  /** 归档后活跃记忆保留数量上限 */
-  activeLimit: number;
-  /** 定时归档间隔（毫秒），0 或 undefined 表示不启用定时归档 */
-  archiveIntervalMs?: number;
-  /** 可选的 Embedding Provider，启用后支持语义搜索 */
-  embeddingProvider?: EmbeddingProvider;
-}
-
-/** 归档文件元信息 */
-export interface ArchiveManifest {
-  id: string;
-  createdAt: number;
-  reason: string;
-  entryCount: number;
-  fileName: string;
-  /** 归档中包含的 key 摘要，便于快速判断是否需要回溯 */
-  keySummary: string[];
-  tagSummary: string[];
-}
+export type {
+  LTMEntry,
+  LTMConfig,
+  ArchiveManifest,
+  LTMStoreOptions,
+  LTMSearchOptions,
+  LTMListOptions,
+  LTMStats,
+  LTMArchiveResult,
+  LTMBackend,
+} from "./ltm-types.js";
 
 const DEFAULT_LTM_CONFIG: LTMConfig = {
   storePath: ".raos/ltm",

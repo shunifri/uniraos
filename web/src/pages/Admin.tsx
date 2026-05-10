@@ -245,6 +245,7 @@ function UsersPanel() {
         onCancel={() => { setShowCreate(false); form.resetFields(); }}
         onOk={() => form.submit()}
         confirmLoading={loading}
+        forceRender
       >
         <Form form={form} layout="vertical" onFinish={createUser}>
           <Form.Item name="username" label={t("username")} rules={[{ required: true }]}>
@@ -292,6 +293,7 @@ function UsersPanel() {
         onCancel={() => { setEditingUser(null); editForm.resetFields(); }}
         onOk={() => editForm.submit()}
         confirmLoading={loading}
+        forceRender
       >
         <Form form={editForm} layout="vertical" onFinish={editUser}>
           <Form.Item name="displayName" label={t("display_name")}>
@@ -560,6 +562,7 @@ function DepartmentsPanel() {
         onCancel={() => { setShowCreate(false); createForm.resetFields(); }}
         onOk={() => createForm.submit()}
         confirmLoading={loading}
+        forceRender
       >
         <Form form={createForm} layout="vertical" onFinish={createDept}>
           <Form.Item name="name" label={t("department_name")} rules={[{ required: true, message: t("department_name") + " " + t("required") }]}>
@@ -585,6 +588,7 @@ function DepartmentsPanel() {
         onCancel={() => { setEditingDept(null); editForm.resetFields(); }}
         onOk={() => editForm.submit()}
         confirmLoading={loading}
+        forceRender
       >
         <Form form={editForm} layout="vertical" onFinish={editDept}>
           <Form.Item name="name" label="部门名称" rules={[{ required: true, message: "请输入部门名称" }]}>
@@ -1051,6 +1055,7 @@ function RolesPanel() {
         onCancel={() => { setShowCreate(false); createForm.resetFields(); }}
         onOk={() => createForm.submit()}
         confirmLoading={createLoading}
+        forceRender
       >
         <Form form={createForm} layout="vertical" onFinish={createRole}>
           <Form.Item name="name" label={t("role_name")} rules={[{ required: true, message: t("role_name") + " " + t("required") }]}>

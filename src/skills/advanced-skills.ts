@@ -7,6 +7,7 @@
 
 import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import { getWorkflowRepository } from "../workflow/repository.js";
 import { Writable } from "node:stream";
 import * as fs from "node:fs";
@@ -74,7 +75,7 @@ function createMonitoringSkills(registry: SkillRegistry): void {
             data: {
               url,
               healthy: false,
-              error: error instanceof Error ? error.message : String(error),
+              error: error instanceof Error ? (error as Error).message : String(error),
             },
           };
         }
@@ -110,7 +111,7 @@ function createMonitoringSkills(registry: SkillRegistry): void {
         if (status) url.searchParams.set("filter", `alertstate="${status}"`);
 
         try {
-          const response = await fetch(url.toString());
+          const response = await fetchWithTimeout(url.toString());
           const data = (await response.json()) as { data?: { alerts?: Array<Record<string, unknown>> } };
           const alerts = data.data?.alerts ?? [];
           const limit = (params.limit as number) ?? 20;
@@ -189,7 +190,7 @@ function createMonitoringSkills(registry: SkillRegistry): void {
         }
 
         try {
-          const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+          const response = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body), retries: 1 });
           const data = (await response.json()) as {
             hits?: {
               hits?: Array<Record<string, unknown>>;
@@ -254,7 +255,7 @@ function createMonitoringSkills(registry: SkillRegistry): void {
         if (params.time) url.searchParams.set("time", params.time as string);
 
         try {
-          const response = await fetch(url.toString());
+          const response = await fetchWithTimeout(url.toString());
           const data = (await response.json()) as { data?: { result?: Array<Record<string, unknown>> }; status?: string };
 
           return {
@@ -430,7 +431,7 @@ async function createTransferSkills(registry: SkillRegistry): Promise<void> {
               if (error) {
                 resolve({
                   success: false,
-                  error: new Error(`SFTP 上传失败: ${error.message}. stderr: ${stderr}`),
+                  error: new Error(`SFTP 上传失败: ${(error as Error).message}. stderr: ${stderr}`),
                 });
               } else {
                 resolve({
@@ -654,7 +655,7 @@ async function createRPASkills(registry: SkillRegistry): Promise<void> {
           let imagePath: string;
 
           if (imageInput.startsWith("http://") || imageInput.startsWith("https://")) {
-            const resp = await fetch(imageInput);
+            const resp = await fetchWithTimeout(imageInput);
             const buf = Buffer.from(await resp.arrayBuffer());
             imagePath = path.join(os.tmpdir(), `raos-ocr-${Date.now()}.png`);
             await fs.promises.writeFile(imagePath, buf);
@@ -672,7 +673,7 @@ async function createRPASkills(registry: SkillRegistry): Promise<void> {
                 await fs.promises.unlink(imagePath);
               } catch {}
               if (error) {
-                resolve({ success: false, error: new Error(`OCR 失败: ${error.message}`) });
+                resolve({ success: false, error: new Error(`OCR 失败: ${(error as Error).message}`) });
                 return;
               }
               try {
@@ -680,7 +681,7 @@ async function createRPASkills(registry: SkillRegistry): Promise<void> {
                 await fs.promises.unlink(`${outputPrefix}.txt`);
                 resolve({ success: true, data: { text: text.trim(), lang } });
               } catch (e) {
-                resolve({ success: false, error: new Error(`读取 OCR 结果失败: ${e instanceof Error ? e.message : String(e)}`) });
+                resolve({ success: false, error: new Error(`读取 OCR 结果失败: ${e instanceof Error ? (e as Error).message : String(e)}`) });
               }
             });
           });
@@ -805,10 +806,11 @@ async function createAuthSkills(registry: SkillRegistry): Promise<void> {
         }
 
         try {
-          const response = await fetch(cfg.tokenUrl, {
+          const response = await fetchWithTimeout(cfg.tokenUrl, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: body.toString(),
+            retries: 1,
           });
           const data = (await response.json()) as Record<string, unknown>;
           if (!response.ok) {

@@ -94,7 +94,7 @@ export class ReactAgent implements Agent {
             error: execResult.error?.message,
           };
         } catch (err) {
-          result = { success: false, error: err instanceof Error ? err.message : String(err) };
+          result = { success: false, error: err instanceof Error ? (err as Error).message : String(err) };
         }
 
         if (result.success && (result.data as any)?.__userConfirm) {
@@ -215,7 +215,7 @@ export class ReactAgent implements Agent {
             const execResult = await this.deps.engine.execute(toolCall.name, params);
             result = { success: execResult.success, data: execResult.data, error: execResult.error?.message };
           } catch (err) {
-            result = { success: false, error: err instanceof Error ? err.message : String(err) };
+            result = { success: false, error: err instanceof Error ? (err as Error).message : String(err) };
           }
 
           // 检测 user_confirm：暂停等待用户确认
@@ -228,7 +228,7 @@ export class ReactAgent implements Agent {
             const userResponse = await new Promise<unknown>((resolve, reject) => {
               const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
-            }).catch((err: any) => ({ cancelled: true, message: err.message }));
+            }).catch((err: unknown) => ({ cancelled: true, message: (err as Error).message }));
             // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
             const userResult = { success: true, data: { userResponse } };
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };
@@ -266,7 +266,7 @@ export class ReactAgent implements Agent {
             const execResult = await this.deps.engine.execute(toolCall.name, params);
             result = { success: execResult.success, data: execResult.data, error: execResult.error?.message };
           } catch (err) {
-            result = { success: false, error: err instanceof Error ? err.message : String(err) };
+            result = { success: false, error: err instanceof Error ? (err as Error).message : String(err) };
           }
 
           // 检测 user_confirm
@@ -278,7 +278,7 @@ export class ReactAgent implements Agent {
             const userResponse = await new Promise<unknown>((resolve, reject) => {
               const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
               confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
-            }).catch((err: any) => ({ cancelled: true, message: err.message }));
+            }).catch((err: unknown) => ({ cancelled: true, message: (err as Error).message }));
             // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
             const userResult = { success: true, data: { userResponse } };
             yield { event: "tool_result", agentRole: this.profile.role, data: { skillName: toolCall.name, toolCallId: toolCall.id, result: userResult } };

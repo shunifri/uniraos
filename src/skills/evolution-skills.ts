@@ -7,7 +7,7 @@
  * - evolution_red_lines: Manage red line constraints
  * - evolution_check: Dry-run check if hypothetical skill generation would pass constraints
  */
-import { defineSkill, defineSystemSkill, Autonomy } from "../types/index.js";
+import { defineSystemSkill, Autonomy } from "../types/index.js";
 import type { SkillDefinition } from "../types/index.js";
 import type { EvolutionController } from "../engine/evolution-controller.js";
 import type { EmergenceDetector } from "../engine/emergence-detector.js";

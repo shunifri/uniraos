@@ -35,7 +35,7 @@ export interface TriggerConfig {
 
 export interface ActionConfig {
   type: ActionType;
-  payload: Record<string, any>;
+  payload: Record<string, unknown>;
   targetConversationId?: string;
 }
 

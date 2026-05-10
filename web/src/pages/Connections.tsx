@@ -264,6 +264,7 @@ export default function ConnectionsPage() {
         }}
         onOk={() => form.submit()}
         width={600}
+        forceRender
       >
         <Form
           form={form}

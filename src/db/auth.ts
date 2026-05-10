@@ -6,6 +6,7 @@
 import { randomBytes } from "crypto";
 import { getDb, isMySQL } from "./database.js";
 import { getUserById, type User } from "./user-repository.js";
+import { log } from "../utils/logger.js";
 
 const TOKEN_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 天
 
@@ -37,6 +38,7 @@ export async function createSession(userId: string): Promise<{ token: string; ex
     ).run(token, userId, expiresAt);
   }
 
+  log("info", "auth.session_created", { userId });
   return { token, expiresAt };
 }
 
@@ -85,6 +87,7 @@ export async function destroyUserSessions(userId: string): Promise<void> {
   } else {
     getDb().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
   }
+  log("info", "auth.sessions_destroyed", { userId });
 }
 
 /** 清理过期 session（定时调用） */

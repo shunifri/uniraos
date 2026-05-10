@@ -1,16 +1,20 @@
 import { Router } from "express";
+import type { Request, Response } from "express";
 import express from "express";
+import multer from "multer";
+import { fileTypeFromFile } from "file-type";
 import { join, dirname } from "path";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync } from "fs";
-import { requireAuth, requirePermission } from "../db/auth-middleware.js";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync, unlinkSync } from "fs";
+import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
+import type { Paragraph, TextRun } from "docx";
 import { extractPptxStyle } from "../services/pptx-style-extractor.js";
 import { getKnowledgeBase } from "../skills/knowledge-skills.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
-import type { RouteDependencies } from "./index.js";
+import type { RouteDependencies } from "./types.js";
 
 // MySQL adapter helper
 async function getMySQLAdapter() {
@@ -25,6 +29,20 @@ const fileParseCache = new Map<string, { status: "parsing" | "done" | "error"; c
 
 // MAX file size 50MB
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+// P1 安全修复：文件扩展名白名单
+const ALLOWED_EXTENSIONS = new Set([
+  ".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
+  ".mp3", ".mp4", ".wav", ".webm", ".ogg", ".mov", ".avi",
+  ".zip", ".tar", ".gz", ".rar", ".7z",
+]);
+
+function isAllowedFile(filename: string): boolean {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return ALLOWED_EXTENSIONS.has(ext);
+}
 
 function getImageDir(relativePath: string): string {
   const wsBase = join(process.cwd(), ".raos", "workspace");
@@ -68,8 +86,8 @@ function asyncParseFile(filePath: string, relativePath: string, getVisionConfig:
       fileParseCache.set(relativePath, { status: "error", error: result.error });
     }
     setTimeout(() => fileParseCache.delete(relativePath), 10 * 60 * 1000);
-  }).catch((err) => {
-    fileParseCache.set(relativePath, { status: "error", error: err.message });
+  }).catch((err: unknown) => {
+    fileParseCache.set(relativePath, { status: "error", error: err instanceof Error ? err.message : String(err) });
   });
 }
 
@@ -281,10 +299,12 @@ async function convertToDocx(md: string): Promise<Buffer> {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = docx;
 
   const tokens = marked.lexer(md);
-  const children: any[] = [];
+  const children: Paragraph[] = [];
 
   for (const token of tokens) {
     if (token.type === "heading") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // docx HeadingLevel union is complex; keeping any for simplicity
       const levelMap: Record<number, any> = {
         1: HeadingLevel.HEADING_1,
         2: HeadingLevel.HEADING_2,
@@ -317,7 +337,7 @@ async function convertToDocx(md: string): Promise<Buffer> {
         spacing: { before: 120, after: 120 },
       }));
     } else if (token.type === "blockquote") {
-      const bqText = token.tokens?.map((t: any) => t.text || t.raw || "").join("\n") || token.raw;
+      const bqText = token.tokens?.map((t: { text?: string; raw?: string }) => t.text || t.raw || "").join("\n") || token.raw;
       children.push(new Paragraph({
         children: [new TextRun({ text: bqText, italics: true, color: "666666" })],
         indent: { left: 720 },
@@ -332,7 +352,7 @@ async function convertToDocx(md: string): Promise<Buffer> {
     } else if (token.type === "space") {
       // skip
     } else {
-      const rawText = (token as any).text || (token as any).raw || "";
+      const rawText = (token as { text?: string; raw?: string }).text || (token as { raw?: string }).raw || "";
       if (rawText.trim()) {
         children.push(new Paragraph({
           children: [new TextRun({ text: rawText })],
@@ -349,6 +369,8 @@ async function convertToDocx(md: string): Promise<Buffer> {
   return Buffer.from(buf);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// docx TextRun and marked inline-token shapes are complex external types
 function parseInlineTokens(tokens: any[], TextRun: any): any[] {
   const runs: any[] = [];
   for (const t of tokens) {
@@ -375,6 +397,8 @@ function parseInlineTokens(tokens: any[], TextRun: any): any[] {
 async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
   const pptxgenjs = await import("pptxgenjs");
   const PptxGenJS = pptxgenjs.default || pptxgenjs;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // PptxGenJS constructor shape is opaque via dynamic import
   const pptx = new (PptxGenJS as any)();
   pptx.layout = "LAYOUT_WIDE";
 
@@ -384,7 +408,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
 
   if (!PPTX_THEMES[resolvedTheme]) {
     try {
-      const row = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?").get(resolvedTheme, resolvedTheme) as any;
+      const row = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE id = ? OR name = ?").get(resolvedTheme, resolvedTheme) as { colors_json: string; fonts_json: string; id: string; name: string } | undefined;
       if (row) {
         const colors = JSON.parse(row.colors_json);
         const fonts = JSON.parse(row.fonts_json);
@@ -451,7 +475,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
     }
 
     // Top decorative line
-    slide.addShape("rect" as any, {
+    slide.addShape("rect", {
       x: 0, y: 0, w: "100%", h: 0.06,
       fill: { color: theme.accentColor },
     });
@@ -472,7 +496,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
           fontFace: theme.bodyFont, align: "center", valign: "top",
         });
       }
-      slide.addShape("rect" as any, {
+      slide.addShape("rect", {
         x: 4, y: 3.0, w: 5.3, h: 0.04,
         fill: { color: theme.accentColor },
       });
@@ -484,7 +508,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
           color: theme.titleColor, fontFace: theme.titleFont,
           align: "left", valign: "middle",
         });
-        slide.addShape("rect" as any, {
+        slide.addShape("rect", {
           x: 0.6, y: 1.15, w: 1.5, h: 0.04,
           fill: { color: theme.accentColor },
         });
@@ -498,7 +522,7 @@ async function convertToPptx(md: string, themeName?: string): Promise<Buffer> {
         const tableWidth = 11.5;
         const colW = tableWidth / colCount;
 
-        const pptxRows: any[][] = tableRows.map((row, ri) => {
+        const pptxRows: Array<Array<{ text: string; options: Record<string, unknown> }>> = tableRows.map((row, ri) => {
           while (row.length < colCount) row.push("");
           return row.map((cell) => ({
             text: cell,
@@ -571,49 +595,62 @@ export function createFileRoutes(deps: RouteDependencies): Router {
   const { engine, getOrchestrator, getVisionConfig } = deps;
   const router = Router();
 
-  // ===== File upload API =====
+  // ===== P1-16 修复：流式文件上传（multer diskStorage）=====
+  const tempUploadDir = join(process.cwd(), ".raos", "temp-uploads");
+  if (!existsSync(tempUploadDir)) mkdirSync(tempUploadDir, { recursive: true });
 
-  router.post("/upload", requireAuth, requirePermission("files.write"), express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: tempUploadDir,
+      filename: (_req, file, cb) => {
+        const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname}`;
+        cb(null, unique);
+      },
+    }),
+    limits: { fileSize: MAX_FILE_SIZE, files: 10 },
+    fileFilter: (_req, file, cb) => {
+      if (isAllowedFile(file.originalname)) cb(null, true);
+      else cb(new Error(`文件类型不允许: ${file.originalname}`));
+    },
+  });
+
+  router.post("/upload", requireAuth, requirePermission("files.write"), upload.array("files"), async (req: Request, res: Response) => {
+    const uploadedFiles = req.files as Express.Multer.File[] | undefined;
+    if (!uploadedFiles || uploadedFiles.length === 0) {
+      res.status(400).json({ success: false, error: "未发现文件" });
+      return;
+    }
+
     try {
-      const contentType = req.headers["content-type"] as string;
-      const boundaryMatch = contentType?.match(/boundary=(.+)/);
-      if (!boundaryMatch) {
-        res.status(400).json({ success: false, error: "缺少 multipart boundary" });
-        return;
-      }
-
-      const files = parseMultipart(req.body as Buffer, boundaryMatch[1]);
-      console.log(`[FILE UPLOAD] 解析到的文件名:`, files.map(f => f.filename));
-      if (files.length === 0) {
-        res.status(400).json({ success: false, error: "未发现文件" });
-        return;
-      }
-
-      // 文件大小验证
-      for (const file of files) {
-        if (file.data.length > MAX_FILE_SIZE) {
-          res.status(413).json({
-            success: false,
-            error: `文件 "${file.filename}" 过大，最大允许 ${MAX_FILE_SIZE / 1024 / 1024}MB，实际 ${(file.data.length / 1024 / 1024).toFixed(2)}MB`
-          });
-          return;
-        }
-      }
-
       const mode = (req.query.mode as string) || "auto";
       const folder = (req.query.folder as string) || "";
       const results = [];
-      for (const file of files) {
-        const skillParams: Record<string, any> = {
-          filename: file.filename,
-          content: file.data.toString("base64"),
+
+      for (const file of uploadedFiles) {
+        // P1 安全修复：实际文件头 MIME 校验
+        const ft = await fileTypeFromFile(file.path);
+        if (!ft || !isAllowedFile(`.${ft.ext}`)) {
+          unlinkSync(file.path);
+          res.status(415).json({
+            success: false,
+            error: `文件 "${file.originalname}" 实际类型不允许（检测为 ${ft?.mime ?? 'unknown'}）`,
+          });
+          return;
+        }
+
+        const data = readFileSync(file.path);
+        unlinkSync(file.path); // 立即清理临时文件
+
+        const skillParams: Record<string, unknown> = {
+          filename: file.originalname,
+          content: data.toString("base64"),
           uploadedBy: req.user?.id ?? "default",
           mode,
         };
         if (folder) skillParams.targetDir = folder;
         const result = await engine.execute("file_upload", skillParams);
         if (result.success) {
-          const fileData = result.data as any;
+          const fileData = result.data as { path: string; duplicate?: boolean };
           results.push(fileData);
           if (fileData.path && !fileData.duplicate) {
             asyncParseFile(fileData.path, fileData.path, getVisionConfig);
@@ -621,20 +658,26 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         }
       }
 
-       res.json({
-         success: true,
-         data: {
-           files: results,
-           message: `已上传 ${results.length} 个文件`,
-         },
-       });
-     } catch (err) {
-       res.status(500).json({
-         success: false,
-         error: err instanceof Error ? err.message : String(err),
-       });
-     }
-   });
+      res.json({
+        success: true,
+        data: {
+          files: results,
+          message: `已上传 ${results.length} 个文件`,
+        },
+      });
+    } catch (err) {
+      // 清理任何残留的临时文件
+      if (uploadedFiles) {
+        for (const f of uploadedFiles) {
+          try { unlinkSync(f.path); } catch { /* ignore */ }
+        }
+      }
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 
    // Parse status (for async preview)
    router.get("/upload/parse-status", requireAuth, requirePermission("files.read"), (req, res) => {
@@ -825,8 +868,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         return a.name.localeCompare(b.name);
       });
       res.json({ success: true, files: result });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -836,7 +879,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     try {
       const kb = getKnowledgeBase(userId);
       const docs = await kb.listDocuments();
-      const kbNames = docs.map((d: any) => d.name);
+      const kbNames = docs.map((d) => d.name);
       const kbDocs: Record<string, { docId: string; vectorized: number; vectorTotal: number; chunkCount: number; status: string }> = {};
       const stripTs = (n: string) => n.replace(/_\d{10,15}(\.[^.]+)$/, "$1");
       for (const d of docs) {
@@ -897,7 +940,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
           // 尝试从 upload_records 获取
           const uploadRow = db
             .prepare("SELECT * FROM upload_records WHERE id = ? OR file_path LIKE ?")
-            .get(fileId, `%${fileId}%`) as any;
+            .get(fileId, `%${fileId}%`) as { id: string; original_name?: string; file_path: string; file_size: number; uploaded_by: string; created_at: number } | undefined;
 
           if (uploadRow) {
             files.push({
@@ -925,8 +968,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       }
 
       res.json({ success: true, files, total: files.length });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1025,7 +1068,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         for (const fileId of sharedFileIds) {
           const uploadRow = db
             .prepare("SELECT * FROM upload_records WHERE id = ? OR file_path LIKE ?")
-            .get(fileId, `%${fileId}%`) as any;
+            .get(fileId, `%${fileId}%`) as { id: string; original_name?: string; file_path: string; file_size: number; uploaded_by: string; created_at: number } | undefined;
 
           if (uploadRow) {
             const name = uploadRow.original_name || uploadRow.file_path.split("/").pop() || fileId;
@@ -1152,8 +1195,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     try {
       mkdirSync(absPath, { recursive: true });
       res.json({ success: true });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1174,8 +1217,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       mkdirSync(dirname(absTo), { recursive: true });
       renameSync(absFrom, absTo);
       res.json({ success: true });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1194,8 +1237,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     try {
       rmSync(absPath, { recursive: true, force: true });
       res.json({ success: true });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1282,14 +1325,14 @@ ${fileList}
           mkdirSync(dirname(absTo), { recursive: true });
           renameSync(absFrom, absTo);
           executed.push({ ...m, success: true });
-        } catch (e: any) {
-          executed.push({ ...m, success: false, error: e.message });
+        } catch (e: unknown) {
+          executed.push({ ...m, success: false, error: e instanceof Error ? e.message : String(e) });
         }
       }
 
       res.json({ success: true, message: `已整理 ${executed.filter((e) => e.success).length} 个文件`, moves: executed });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1359,29 +1402,29 @@ ${fileList}
         res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(baseName + ".pptx")}`);
         res.send(buf);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("Convert error:", e);
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
   // PPTX themes list API
-  router.get("/pptx/themes", requireAuth, requirePermission("files.read"), async (req: any, res) => {
+  router.get("/pptx/themes", requireAuth, requirePermission("files.read"), async (req: Request, res: Response) => {
     const builtIn = Object.values(PPTX_THEMES).map((t) => ({
       name: t.name, label: t.label, custom: false,
       preview: { bg: t.background, title: t.titleColor, accent: t.accentColor },
     }));
 
-    let custom: any[] = [];
+    let custom: Array<{ id: string; name: string; label: string; custom: boolean; sourceFile: string; preview: { bg: string; title: string; accent: string } }> = [];
     try {
       const userId = req.user?.id;
       if (userId) {
-        let rows: any[];
+        let rows: Array<{ id: string; name: string; colors_json: string; source_file: string }>;
         if (isMySQL()) {
           const adapter = await getMySQLAdapter();
           rows = await adapter.query("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC", [userId]);
         } else {
-          rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[];
+          rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as Array<{ id: string; name: string; colors_json: string; source_file: string }>;
         }
         custom = rows.map((r) => {
           const colors = JSON.parse(r.colors_json);
@@ -1401,7 +1444,7 @@ ${fileList}
   });
 
   // PPTX style learning
-  router.post("/pptx/themes/learn", requireAuth, requirePermission("files.write"), express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: any, res) => {
+  router.post("/pptx/themes/learn", requireAuth, requirePermission("files.write"), express.raw({ type: "multipart/form-data", limit: "50mb" }), async (req: Request, res: Response) => {
     try {
       const contentType = req.headers["content-type"] as string;
       const boundaryMatch = contentType?.match(/boundary=(.+)/);
@@ -1461,14 +1504,14 @@ ${fileList}
           sourceFile: style.sourceFile,
         },
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("PPTX style learn error:", e);
-      res.status(500).json({ success: false, error: e.message });
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
   // Delete custom PPTX theme
-  router.delete("/pptx/themes/:id", requireAuth, requirePermission("files.write"), async (req: any, res) => {
+  router.delete("/pptx/themes/:id", requireAuth, requirePermission("files.write"), async (req: Request, res: Response) => {
     try {
       const themeId = req.params.id;
       const userId = req.user?.id;
@@ -1492,8 +1535,8 @@ ${fileList}
       }
 
       res.json({ success: true, deleted: themeId });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1546,8 +1589,8 @@ ${fileList}
       res.setHeader("Content-Type", "application/zip");
       res.setHeader("Content-Disposition", `attachment; filename="files_${Date.now()}.zip"`);
       res.send(buf);
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
     }
   });
 

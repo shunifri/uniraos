@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth } from "../db/auth-middleware.js";
+import { requireAuth } from "../permissions/middleware/auth-middleware.js";
 
 const router = Router();
 
@@ -48,29 +48,26 @@ router.post("/form/validate", requireAuth, async (req, res) => {
         if (!expression) {
           return res.status(400).json({ success: false, error: "Missing expression" });
         }
-        // Safe evaluation with restricted sandbox
+        // Safe evaluation with AST interpreter (P0 安全修复：替换 new Function)
         try {
-          const fn = new Function(
-            "value", "context", "Math", "String", "Number", "Date", "Array", "Object", "JSON",
-            `"use strict"; return (${expression});`
-          );
-          const isValid = !!fn(value, context, Math, String, Number, Date, Array, Object, JSON);
+          const { safeEvaluateBoolean } = await import("../utils/safe-expression.js");
+          const isValid = safeEvaluateBoolean(expression, { value, context });
           return res.json({
             success: true,
             data: { valid: isValid, message: isValid ? null : "验证失败" },
           });
-        } catch (e: any) {
+        } catch (e: unknown) {
           return res.json({
             success: true,
-            data: { valid: false, message: `表达式错误: ${e.message}` },
+            data: { valid: false, message: `表达式错误: ${(e as Error).message}` },
           });
         }
       }
       default:
         return res.status(400).json({ success: false, error: `Unknown rule: ${rule}` });
     }
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 

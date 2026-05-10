@@ -36,7 +36,8 @@ export {
   FederatedAdoptionStrategy,
   RetireActionExecutor,
 } from "./evolution-engine.js";
-export type { ActionExecutor, EvolutionEngineConfig } from "./evolution-engine.js";
+export type { EvolutionEngineConfig } from "./evolution-engine.js";
+export type { ActionExecutor } from "./types.js";
 
 // Skills
 export { createFederationSkills } from "./federation-skills.js";

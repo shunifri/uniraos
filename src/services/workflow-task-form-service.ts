@@ -60,7 +60,7 @@ export async function saveTaskForm(
   const definitionKey = def.key;
 
   // 4. 获取节点绑定（用于向后兼容）
-  const binding = getWorkflowFormBindingByNode(definitionKey, task.nodeId);
+  const binding = await getWorkflowFormBindingByNode(definitionKey, task.nodeId);
 
   // 5. 保存到 task
   await repo.updateTask(taskId, {
@@ -137,15 +137,15 @@ export async function loadTaskForm(taskId: number): Promise<TaskFormPayload> {
   // 如果没有从节点获取到 schema，保持原有逻辑（用于向后兼容）
   if (!formSchema) {
     // 4.1 获取节点绑定
-    binding = getWorkflowFormBindingByNode(definitionKey, task.nodeId);
+    binding = await getWorkflowFormBindingByNode(definitionKey, task.nodeId);
     if (!binding) {
       throw new Error(`No form binding for node ${task.nodeId} in workflow ${definitionKey}`);
     }
 
     // 4.2 获取表单定义（优先按 ID 查询， fallback 按 key）
-    let formDef = getFormDefinition(binding.form_id);
+    let formDef = await getFormDefinition(binding.form_id);
     if (!formDef) {
-      formDef = getFormDefinitionByKey(binding.form_id);
+      formDef = await getFormDefinitionByKey(binding.form_id);
     }
     if (!formDef) throw new Error(`Form ${binding.form_id} not found`);
 

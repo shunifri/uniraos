@@ -236,3 +236,10 @@ export interface AgentDeps {
   engine: ExecutionEngine;
   provider: LLMProvider;
 }
+
+export interface ExpertProfile {
+  role: string;
+  expertise: string[];
+  personality: string;
+  preferredProtocol: Protocol;
+}
