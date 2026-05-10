@@ -15,6 +15,7 @@ import {
   EyeOutlined,
   LinkOutlined,
   BuildOutlined,
+  RocketOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
 
@@ -100,6 +101,8 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
   const [record, setRecord] = useState<DesignRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState<any | null>(null);
 
   useEffect(() => {
     if (!designId) {
@@ -278,6 +281,35 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #f0f0f0" }}>
             <Space wrap>
               <Button
+                type="primary"
+                size="small"
+                icon={<RocketOutlined />}
+                loading={applying}
+                onClick={async () => {
+                  if (!designId) return;
+                  setApplying(true);
+                  try {
+                    const result = await api.post<any>("/api/execute", {
+                      skillName: "app_designer",
+                      params: { action: "apply", designId },
+                    });
+                    if (result.success) {
+                      setApplyResult(result.data);
+                      message.success("部署完成");
+                      // 刷新设计详情
+                      loadDesign();
+                    } else {
+                      message.error(result.error || "部署失败");
+                    }
+                  } catch (err: any) {
+                    message.error(err.message || "请求失败");
+                  }
+                  setApplying(false);
+                }}
+              >
+                一键部署
+              </Button>
+              <Button
                 size="small"
                 icon={<EditOutlined />}
                 onClick={() => {
@@ -292,7 +324,7 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
               <Button size="small" icon={<FormOutlined />} onClick={() => window.open("/forms", "_blank")}>
                 表单中心
               </Button>
-              <Button size="small" icon={<NodeIndexOutlined />} onClick={() => window.open("/workflow", "_blank")}>
+              <Button size="small" icon={<NodeIndexOutlined />} onClick={() => window.open("/workflow/designer", "_blank")}>
                 工作流
               </Button>
               <Button size="small" icon={<BookOutlined />} onClick={() => window.open("/knowledge", "_blank")}>
@@ -300,6 +332,20 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
               </Button>
             </Space>
           </div>
+
+          {applyResult && (
+            <div style={{ marginTop: 12, padding: 10, background: "#f6ffed", borderRadius: 6, border: "1px solid #b7eb8f" }}>
+              <div style={{ fontWeight: 500, marginBottom: 6 }}>🚀 部署结果</div>
+              <div style={{ fontSize: 12, marginBottom: 6 }}>{applyResult.summary}</div>
+              <Space wrap>
+                {applyResult.results?.map((r: any, i: number) => (
+                  <Tag key={i} color={r.status === "created" ? "green" : r.status === "exists" ? "blue" : r.status === "skipped" ? "orange" : "red"}>
+                    {typeLabels[r.type] || r.type}: {r.name} ({r.status})
+                  </Tag>
+                ))}
+              </Space>
+            </div>
+          )}
         </div>
       )}
     </Card>

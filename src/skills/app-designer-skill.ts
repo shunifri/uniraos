@@ -15,8 +15,11 @@ import { randomUUID } from "crypto";
 import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { LLMProvider } from "../llm/types.js";
+import type { ExecutionEngine } from "../engine/index.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { getCurrentUserId } from "../user/request-context.js";
+import { createFormDefinition } from "../services/form-service.js";
+import { getWorkflowRepository } from "../workflow/repository.js";
 
 // ───────────────────────────────────────────────────────────────
 // 类型定义
@@ -109,6 +112,14 @@ interface AppDesignRecord {
   ownerId: string;
   createdAt: number;
   updatedAt: number;
+}
+
+interface ApplyResult {
+  type: "skill" | "form" | "workflow" | "knowledgeBase";
+  key: string;
+  name: string;
+  status: "created" | "exists" | "failed" | "skipped";
+  error?: string;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -232,6 +243,114 @@ export class AppDesignerService {
         designId
       );
     }
+  }
+
+  // ── 一键部署设计方案 ──
+  async applyDesign(
+    designId: string,
+    ownerId: string,
+    engine: ExecutionEngine
+  ): Promise<{ record: AppDesignRecord; results: ApplyResult[] }> {
+    const record = await this.getRecord(designId);
+    if (!record) {
+      throw new Error(`设计方案不存在: ${designId}`);
+    }
+    if (record.ownerId !== ownerId) {
+      throw new Error("无权部署此设计方案");
+    }
+
+    const results: ApplyResult[] = [];
+
+    // 1. 创建表单定义
+    for (const form of record.designJson.components.forms) {
+      try {
+        const schema = this.buildFormSchema(form);
+        await createFormDefinition({
+          key: form.key,
+          name: form.name,
+          description: form.description,
+          schemaJson: schema,
+          createdBy: ownerId,
+        });
+        results.push({ type: "form", key: form.key, name: form.name, status: "created" });
+      } catch (e: any) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("UNIQUE constraint") || msg.includes("Duplicate entry") || msg.includes("already exists")) {
+          results.push({ type: "form", key: form.key, name: form.name, status: "exists" });
+        } else {
+          results.push({ type: "form", key: form.key, name: form.name, status: "failed", error: msg });
+        }
+      }
+    }
+
+    // 2. 创建工作流定义
+    for (const workflow of record.designJson.components.workflows) {
+      try {
+        const repo = getWorkflowRepository();
+        const existing = await repo.getDefinitionByKey(workflow.key);
+        if (existing) {
+          results.push({ type: "workflow", key: workflow.key, name: workflow.name, status: "exists" });
+          continue;
+        }
+        const spec = this.buildWorkflowSpec(workflow);
+        await repo.createDefinition({
+          name: workflow.name,
+          key: workflow.key,
+          version: 1,
+          definition: spec,
+          createdBy: ownerId,
+        });
+        results.push({ type: "workflow", key: workflow.key, name: workflow.name, status: "created" });
+      } catch (e: any) {
+        const msg = e instanceof Error ? e.message : String(e);
+        results.push({ type: "workflow", key: workflow.key, name: workflow.name, status: "failed", error: msg });
+      }
+    }
+
+    // 3. 创建 Skill（通过 engine.execute 调用 skill_from_description）
+    for (const skill of record.designJson.components.skills) {
+      try {
+        const result = await engine.execute("skill_from_description", {
+          name: skill.name,
+          description: `${skill.description}\n\n业务逻辑：${skill.logic || "无详细逻辑"}`,
+        });
+        if (result.success) {
+          results.push({ type: "skill", key: skill.name, name: skill.name, status: "created" });
+        } else {
+          const errMsg = result.error instanceof Error ? result.error.message : String(result.error);
+          if (errMsg.includes("已存在") || errMsg.includes("already exists")) {
+            results.push({ type: "skill", key: skill.name, name: skill.name, status: "exists" });
+          } else {
+            results.push({ type: "skill", key: skill.name, name: skill.name, status: "failed", error: errMsg });
+          }
+        }
+      } catch (e: any) {
+        const msg = e instanceof Error ? e.message : String(e);
+        results.push({ type: "skill", key: skill.name, name: skill.name, status: "failed", error: msg });
+      }
+    }
+
+    // 4. 知识库目前只能提示用户手动上传
+    for (const kb of record.designJson.components.knowledgeBases) {
+      results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "skipped", error: "请手动前往知识库页面上传文档" });
+    }
+
+    // 5. 更新记录
+    const updatedComponents: GeneratedComponent[] = results.map((r) => ({
+      type: r.type,
+      key: r.key,
+      name: r.name,
+      status: r.status === "created" ? "created" : r.status === "exists" ? "created" : "failed",
+      error: r.error,
+    }));
+
+    const allOk = results.every((r) => r.status === "created" || r.status === "exists" || r.status === "skipped");
+    record.components = updatedComponents;
+    record.status = allOk ? "applied" : "draft";
+    record.updatedAt = Date.now();
+    await this.saveRecord(record);
+
+    return { record, results };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -449,6 +568,42 @@ ${newRequirement}
   // 私有方法：工具函数
   // ─────────────────────────────────────────────────────────────
 
+  private buildFormSchema(form: DesignForm): Record<string, unknown> {
+    const properties: Record<string, any> = {};
+    const required: string[] = [];
+    for (const field of form.fields) {
+      const prop: any = { type: field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string", title: field.title };
+      if (field.placeholder) prop.placeholder = field.placeholder;
+      if (field.options && field.options.length > 0) prop.enum = field.options;
+      if (field.defaultValue !== undefined) prop.default = field.defaultValue;
+      properties[field.name] = prop;
+      if (field.required) required.push(field.name);
+    }
+    return {
+      type: "object",
+      title: form.name,
+      description: form.description || "",
+      properties,
+      required,
+    };
+  }
+
+  private buildWorkflowSpec(workflow: DesignWorkflow): any {
+    return {
+      key: workflow.key,
+      name: workflow.name,
+      nodes: workflow.nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        name: n.name,
+        ...(n.assignee ? { assignee: n.assignee } : {}),
+        ...(n.formKey ? { formKey: n.formKey } : {}),
+        ...(n.condition ? { condition: n.condition } : {}),
+        ...(n.next ? { next: n.next } : {}),
+      })),
+    };
+  }
+
   private extractComponents(schema: DesignSchema): GeneratedComponent[] {
     const components: GeneratedComponent[] = [];
     for (const s of schema.components.skills) {
@@ -511,6 +666,7 @@ ${newRequirement}
 
 export function registerAppDesignerSkill(
   registry: SkillRegistry,
+  engine: ExecutionEngine,
   llmProvider?: () => LLMProvider | null,
 ) {
   const service = new AppDesignerService(llmProvider);
@@ -519,29 +675,31 @@ export function registerAppDesignerSkill(
     defineSystemSkill({
       name: "app_designer",
       description: `【应用级元 Skill】根据用户自然语言描述，设计完整的 RAOS 应用方案（Skill + 表单 + 工作流 + 知识库配置）。
-支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 确认。
+支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 一键部署。
 
 参数:
-  action(string): create(创建方案) | update(修正方案) | preview(预览方案) | list(列出方案) | archive(归档方案)
+  action(string): create(创建方案) | update(修正方案) | preview(预览方案) | list(列出方案) | archive(归档方案) | apply(一键部署)
   requirement(string): 需求描述（create/update 时需要）
-  designId(string): 设计方案 ID（update/preview/archive 时需要）
+  designId(string): 设计方案 ID（update/preview/archive/apply 时需要）
   name(string): 应用名称（create 时可选）
 
 使用示例:
-  1. create: {"action":"create","requirement":"帮我做一个高校招生咨询机器人，能回答政策问题、收集考生意向、根据分数推荐专业"}
+  1. create: {"action":"create","requirement":"帮我做一个高校招生咨询机器人"}
   2. preview: {"action":"preview","designId":"design_xxx"}
   3. update: {"action":"update","designId":"design_xxx","requirement":"再加一个按城市分配招生老师的功能"}
-  4. list: {"action":"list"}
+  4. apply: {"action":"apply","designId":"design_xxx"}
+  5. list: {"action":"list"}
 
 注意：
   - create/update 需要 LLM 配置
-  - 生成的方案需要用户确认后，再手动在各设计器中创建组件
+  - apply 会根据设计方案自动创建表单、工作流，并提交 Skill 生成审批
+  - 知识库文档需要手动上传
   - 设计方案会自动版本化存储`,
       paramSchema: {
         properties: {
           action: {
             type: "string",
-            enum: ["create", "update", "preview", "list", "archive"],
+            enum: ["create", "update", "preview", "list", "archive", "apply"],
             description: "操作类型",
           },
           requirement: { type: "string", description: "需求描述" },
@@ -638,6 +796,29 @@ export function registerAppDesignerSkill(
                     status: r.status,
                     updatedAt: r.updatedAt,
                   })),
+                },
+              };
+            }
+
+            case "apply": {
+              const designId = params.designId as string;
+              if (!designId) {
+                return { success: false, error: new Error("apply 操作需要提供 designId 参数") };
+              }
+              const { record, results } = await service.applyDesign(designId, userId, engine);
+              const successCount = results.filter((r) => r.status === "created").length;
+              const existCount = results.filter((r) => r.status === "exists").length;
+              const failCount = results.filter((r) => r.status === "failed").length;
+              const skipCount = results.filter((r) => r.status === "skipped").length;
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  status: record.status,
+                  summary: `创建 ${successCount} 个 | 已存在 ${existCount} 个 | 失败 ${failCount} 个 | 跳过 ${skipCount} 个`,
+                  results: results.map((r) => ({ type: r.type, key: r.key, name: r.name, status: r.status, error: r.error })),
+                  message: `🚀 部署完成！${record.status === "applied" ? "所有组件已就绪。" : "部分组件部署失败，请查看详情。"}\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="apply" />`,
                 },
               };
             }

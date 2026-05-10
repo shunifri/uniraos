@@ -196,7 +196,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
   await createIntegrationSkills(registry);
   await createAdvancedSkills(registry);
   createMetaSkills(registry, engine, () => providerManager.getProvider(), evolutionController);
-  registerAppDesignerSkill(registry, () => providerManager.getProvider());
+  registerAppDesignerSkill(registry, engine, () => providerManager.getProvider());
 
   for (const skill of createGraphSkills(sessionManager)) {
     registry.register(skill);
