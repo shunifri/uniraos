@@ -189,9 +189,10 @@ function parseMsg(m: any): ChatMsg {
 
 interface ChatPageProps {
   embedded?: boolean;
+  defaultSkill?: string;
 }
 
-export default function ChatPage({ embedded = false }: ChatPageProps) {
+export default function ChatPage({ embedded = false, defaultSkill }: ChatPageProps) {
   const t = useI18nStore((s) => s.t);
   const embeddedRole = useAuthStore((s) => s.embeddedRole);
   const panelOpen = useInboxStore((s) => s.panelOpen);
@@ -652,7 +653,12 @@ export default function ChatPage({ embedded = false }: ChatPageProps) {
         const res = await apiFetch("/api/agent/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: fullText, conversationId: convId, ...(embeddedRole ? { role: embeddedRole } : {}) }),
+          body: JSON.stringify({
+          message: fullText,
+          conversationId: convId,
+          ...(embeddedRole ? { role: embeddedRole } : {}),
+          ...(defaultSkill ? { defaultSkill } : {}),
+        }),
           signal: abortController.signal,
         });
 

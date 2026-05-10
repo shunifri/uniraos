@@ -14,10 +14,11 @@ export default function EmbedChat() {
   const [showLogin, setShowLogin] = useState(false);
 
   useEffect(() => {
-    // 1. 尝试从 URL 参数获取 token 和 role
+    // 1. 尝试从 URL 参数获取 token、role 和 skill
     const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = params.get("token");
     const roleFromUrl = params.get("role");
+    const skillFromUrl = params.get("skill");
     if (roleFromUrl) {
       useAuthStore.setState({ embeddedRole: roleFromUrl });
     }
@@ -199,7 +200,7 @@ export default function EmbedChat() {
             flexDirection: "column",
           }}
         >
-          <ChatPage embedded />
+          <ChatPage embedded defaultSkill={skillFromUrl || undefined} />
         </div>
       </AntApp>
     </ConfigProvider>

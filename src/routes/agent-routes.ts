@@ -21,8 +21,23 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
     getAgentLoop,
     getOrchestrator,
     getVisionConfig,
+    registry,
   } = deps;
   const router = Router();
+
+  /** 如果指定了 defaultSkill，在消息中注入 skill 上下文 */
+  function enrichWithDefaultSkill(message: string, defaultSkill?: string): string {
+    if (!defaultSkill) return message;
+    try {
+      const skill = registry.lookup(defaultSkill);
+      if (!skill) return message;
+      return `[系统指令：请优先使用 "${defaultSkill}" skill 处理以下请求。该 skill 功能描述：${skill.description || "无描述"}]
+
+${message}`;
+    } catch {
+      return message;
+    }
+  }
 
   async function resolveRoleAgentConfig(req: any): Promise<RoleAgentConfig | undefined> {
     const explicitRole = req.body?.role;
@@ -41,11 +56,13 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   // Agent chat (LLM + Tool Use)
   router.post("/agent/chat", requireAuth, requirePermission("chat"), async (req, res) => {
     const userId = req.user!.id;
-    const { message, mode, conversationId } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy"; conversationId?: string };
+    const { message, mode, conversationId, defaultSkill } = req.body as { message: string; mode?: "auto" | "simple" | "react" | "legacy"; conversationId?: string; defaultSkill?: string };
     if (!message) {
       res.status(400).json({ success: false, error: "message is required" });
       return;
     }
+
+    const enrichedMsg = enrichWithDefaultSkill(message, defaultSkill);
 
     if (mode === "legacy" || mode === "react") {
       const loop = getAgentLoop(userId);
@@ -54,7 +71,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         return;
       }
       try {
-        const result = await loop.run(message, { conversationId });
+        const result = await loop.run(enrichedMsg, { conversationId });
         res.json({ success: true, ...result });
       } catch (err) {
         res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -70,7 +87,7 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
 
     try {
       const roleAgentConfig = await resolveRoleAgentConfig(req);
-      const result = await orchestrator.run({ message, userId, roleAgentConfig });
+      const result = await orchestrator.run({ message: enrichedMsg, userId, roleAgentConfig });
       res.json({ success: true, ...result });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -80,10 +97,11 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
   // Agent streaming chat (SSE)
   router.post("/agent/chat/stream", requireAuth, requirePermission("chat.stream"), async (req, res) => {
     const userId = req.user!.id;
-    const { message, mode, conversationId } = req.body as {
+    const { message, mode, conversationId, defaultSkill } = req.body as {
       message: string;
       mode?: "auto" | "simple" | "react" | "legacy";
       conversationId?: string;
+      defaultSkill?: string;
     };
     console.log(`   [Chat] user=${userId}, msgLen=${message?.length ?? 0}`);
     if (!message) {
@@ -200,6 +218,9 @@ export function createAgentRoutes(deps: RouteDependencies): Router {
         enrichedMessage = `${userText}\n\n---\n## 用户上传的文件内容\n${fileContents.join("\n\n")}`;
       }
     }
+
+    // 注入 defaultSkill 上下文
+    enrichedMessage = enrichWithDefaultSkill(enrichedMessage, defaultSkill);
 
     // Track streaming text and chart data
     let currentAssistantText = "";
