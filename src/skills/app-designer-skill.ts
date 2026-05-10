@@ -1,0 +1,670 @@
+/**
+ * App Designer Skill — 应用级元 Skill
+ *
+ * 根据用户自然语言描述，设计完整的 RAOS 应用方案（Skill + 表单 + 工作流 + 知识库）。
+ * 支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 确认。
+ *
+ * 符合自迭代原则：
+ *   - 自身是 Skill，注册在 Registry 中
+ *   - 走 Evolution 审批（通过 skill_from_description 生成业务 Skill 时）
+ *   - 内部调用已有 Skill（db_query、skill_from_description 等）
+ *   - 设计方案版本化存储，可追溯、可回滚
+ */
+
+import { randomUUID } from "crypto";
+import { defineSystemSkill } from "../types/index.js";
+import type { SkillRegistry } from "../registry/index.js";
+import type { LLMProvider } from "../llm/types.js";
+import { getDb, isMySQL } from "../db/database.js";
+import { getCurrentUserId } from "../user/request-context.js";
+
+// ───────────────────────────────────────────────────────────────
+// 类型定义
+// ───────────────────────────────────────────────────────────────
+
+interface DesignSkill {
+  name: string;
+  description: string;
+  logic: string;
+  autonomy?: "MANUAL" | "AUTO_PRE" | "AUTO_POST";
+}
+
+interface DesignFormField {
+  name: string;
+  title: string;
+  type: "string" | "number" | "boolean" | "select" | "date" | "textarea" | "email" | "phone";
+  required?: boolean;
+  options?: string[];
+  defaultValue?: unknown;
+  placeholder?: string;
+}
+
+interface DesignForm {
+  key: string;
+  name: string;
+  description?: string;
+  fields: DesignFormField[];
+}
+
+interface DesignWorkflowNode {
+  id: string;
+  type: "start" | "end" | "userTask" | "serviceTask" | "exclusiveGateway";
+  name: string;
+  assignee?: string;
+  formKey?: string;
+  condition?: string;
+  next?: string[];
+}
+
+interface DesignWorkflow {
+  key: string;
+  name: string;
+  description?: string;
+  nodes: DesignWorkflowNode[];
+}
+
+interface DesignKnowledgeBase {
+  name: string;
+  description?: string;
+  documentTypes: string[];
+}
+
+interface DesignRelationship {
+  from: string;
+  to: string;
+  type: "triggers" | "submits_to" | "calls" | "binds";
+  description?: string;
+}
+
+interface DesignSchema {
+  name: string;
+  description: string;
+  components: {
+    skills: DesignSkill[];
+    forms: DesignForm[];
+    workflows: DesignWorkflow[];
+    knowledgeBases: DesignKnowledgeBase[];
+  };
+  relationships: DesignRelationship[];
+}
+
+interface GeneratedComponent {
+  type: "skill" | "form" | "workflow" | "knowledgeBase";
+  key: string;
+  name: string;
+  status: "pending" | "created" | "failed";
+  id?: string;
+  error?: string;
+}
+
+interface AppDesignRecord {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  requirement: string;
+  designJson: DesignSchema;
+  components: GeneratedComponent[];
+  status: "draft" | "applied" | "archived";
+  ownerId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ───────────────────────────────────────────────────────────────
+// MySQL 适配器延迟加载
+// ───────────────────────────────────────────────────────────────
+
+async function getMySQLAdapter() {
+  const { getMySQLAdapter: getAdapter } = await import("../db/mysql-adapter.js");
+  return getAdapter();
+}
+
+// ───────────────────────────────────────────────────────────────
+// App Designer Service
+// ───────────────────────────────────────────────────────────────
+
+export class AppDesignerService {
+  constructor(private llmProvider?: () => LLMProvider | null) {}
+
+  // ── 创建设计方案 ──
+  async createDesign(params: {
+    name?: string;
+    requirement: string;
+    ownerId: string;
+  }): Promise<AppDesignRecord> {
+    const designSchema = await this.analyzeRequirement(params.requirement, params.name);
+
+    const record: AppDesignRecord = {
+      id: `design_${randomUUID().slice(0, 12)}`,
+      name: designSchema.name,
+      description: designSchema.description,
+      version: 1,
+      requirement: params.requirement,
+      designJson: designSchema,
+      components: this.extractComponents(designSchema),
+      status: "draft",
+      ownerId: params.ownerId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await this.saveRecord(record);
+    return record;
+  }
+
+  // ── 更新设计方案（增量修正）──
+  async updateDesign(params: {
+    designId: string;
+    requirement: string;
+    ownerId: string;
+  }): Promise<AppDesignRecord> {
+    const existing = await this.getRecord(params.designId);
+    if (!existing) {
+      throw new Error(`设计方案不存在: ${params.designId}`);
+    }
+    if (existing.ownerId !== params.ownerId) {
+      throw new Error("无权修改此设计方案");
+    }
+
+    const { updatedSchema, changelog } = await this.computeDiff(
+      existing.designJson,
+      params.requirement
+    );
+
+    const updated: AppDesignRecord = {
+      ...existing,
+      name: updatedSchema.name,
+      description: updatedSchema.description,
+      version: existing.version + 1,
+      requirement: `${existing.requirement}\n\n[修正 v${existing.version + 1}]\n${params.requirement}`,
+      designJson: updatedSchema,
+      components: this.extractComponents(updatedSchema),
+      status: "draft",
+      updatedAt: Date.now(),
+    };
+
+    await this.saveRecord(updated);
+    return updated;
+  }
+
+  // ── 预览设计方案 ──
+  async previewDesign(designId: string, ownerId: string): Promise<AppDesignRecord | null> {
+    const record = await this.getRecord(designId);
+    if (!record) return null;
+    if (record.ownerId !== ownerId) return null;
+    return record;
+  }
+
+  // ── 列出用户的设计方案 ──
+  async listDesigns(ownerId: string): Promise<AppDesignRecord[]> {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query(
+        "SELECT * FROM app_designs WHERE owner_id = ? ORDER BY updated_at DESC",
+        [ownerId]
+      );
+      return (rows as any[]).map((r) => this.mapRow(r));
+    }
+    const db = getDb();
+    const rows = db
+      .prepare("SELECT * FROM app_designs WHERE owner_id = ? ORDER BY updated_at DESC")
+      .all(ownerId) as any[];
+    return rows.map((r) => this.mapRow(r));
+  }
+
+  // ── 归档设计方案 ──
+  async archiveDesign(designId: string, ownerId: string): Promise<void> {
+    const record = await this.getRecord(designId);
+    if (!record || record.ownerId !== ownerId) {
+      throw new Error("设计方案不存在或无权限");
+    }
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      await adapter.execute(
+        "UPDATE app_designs SET status = 'archived', updated_at = ? WHERE id = ?",
+        [Date.now(), designId]
+      );
+    } else {
+      const db = getDb();
+      db.prepare("UPDATE app_designs SET status = 'archived', updated_at = ? WHERE id = ?").run(
+        Date.now(),
+        designId
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 私有方法：LLM 交互
+  // ─────────────────────────────────────────────────────────────
+
+  private async analyzeRequirement(requirement: string, nameHint?: string): Promise<DesignSchema> {
+    const provider = this.llmProvider ? this.llmProvider() : null;
+    if (!provider) {
+      throw new Error("LLM 未配置，无法分析需求");
+    }
+
+    const prompt = `你是一个企业级应用架构师。请根据以下需求，设计一个基于 RAOS 智能体平台的应用方案。
+
+## 需求描述
+${requirement}
+
+## 设计约束
+1. Skill：每个 Skill 应该是一个独立的业务功能单元，接收参数、返回结果
+2. 表单：字段类型可选 string/number/boolean/select/date/textarea/email/phone
+3. 工作流：节点类型可选 start/end/userTask/serviceTask/exclusiveGateway
+4. 知识库：列出需要上传的文档类型
+
+## 输出格式
+请严格输出以下 JSON 格式（不要 markdown 标记，不要额外说明）：
+{
+  "name": "应用名称（简短）",
+  "description": "应用一句话描述",
+  "components": {
+    "skills": [
+      {
+        "name": "skill_english_name",
+        "description": "功能描述",
+        "logic": "详细业务逻辑说明（用于后续生成代码）",
+        "autonomy": "MANUAL"
+      }
+    ],
+    "forms": [
+      {
+        "key": "form_key",
+        "name": "表单名称",
+        "description": "表单用途",
+        "fields": [
+          {
+            "name": "field_name",
+            "title": "字段显示名称",
+            "type": "string",
+            "required": true,
+            "placeholder": "提示文本"
+          }
+        ]
+      }
+    ],
+    "workflows": [
+      {
+        "key": "workflow_key",
+        "name": "工作流名称",
+        "description": "流程说明",
+        "nodes": [
+          { "id": "start", "type": "start", "name": "开始", "next": ["task1"] },
+          { "id": "task1", "type": "userTask", "name": "审批任务", "assignee": "role_admin", "formKey": "form_key", "next": ["end"] },
+          { "id": "end", "type": "end", "name": "结束" }
+        ]
+      }
+    ],
+    "knowledgeBases": [
+      {
+        "name": "知识库名称",
+        "description": "知识库用途",
+        "documentTypes": ["pdf", "docx"]
+      }
+    ]
+  },
+  "relationships": [
+    { "from": "skill:skill_name", "to": "form:form_key", "type": "triggers", "description": "Skill 引导用户填写表单" },
+    { "from": "form:form_key", "to": "workflow:workflow_key", "type": "submits_to", "description": "表单提交触发工作流" }
+  ]
+}
+
+注意：
+- nameHint（如果提供）是用户建议的名称：${nameHint || "未指定"}
+- 如果需求不涉及某类组件（如不需要工作流），对应数组可为空
+- 关系中的 from/to 格式为 "type:key"`;
+
+    const response = await provider.chat([{ role: "user", content: prompt }]);
+    const content = (response.content ?? "").trim();
+    const jsonText = content.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+
+    try {
+      return JSON.parse(jsonText) as DesignSchema;
+    } catch (err) {
+      throw new Error(`LLM 返回的设计方案格式无效: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async computeDiff(
+    existing: DesignSchema,
+    newRequirement: string
+  ): Promise<{ updatedSchema: DesignSchema; changelog: string }> {
+    const provider = this.llmProvider ? this.llmProvider() : null;
+    if (!provider) {
+      throw new Error("LLM 未配置，无法计算差异");
+    }
+
+    const prompt = `你是一个应用架构师。用户对一个已有应用方案提出了修改需求。
+
+## 现有方案
+${JSON.stringify(existing, null, 2)}
+
+## 修改需求
+${newRequirement}
+
+## 任务
+1. 分析修改需求，确定需要新增、修改、删除哪些组件
+2. 输出完整的更新后方案 JSON（保持未变更部分不变）
+3. 同时输出变更日志（changelog）
+
+## 输出格式
+请严格输出以下 JSON（不要 markdown 标记）：
+{
+  "updatedSchema": { /* 完整的更新后方案，格式同现有方案 */ },
+  "changelog": "变更说明：\n1. 新增 xxx\n2. 修改 xxx\n3. 删除 xxx"
+}`;
+
+    const response = await provider.chat([{ role: "user", content: prompt }]);
+    const content = (response.content ?? "").trim();
+    const jsonText = content.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+
+    try {
+      const result = JSON.parse(jsonText) as { updatedSchema: DesignSchema; changelog: string };
+      return result;
+    } catch (err) {
+      throw new Error(`LLM 返回的更新方案格式无效: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 私有方法：数据持久化
+  // ─────────────────────────────────────────────────────────────
+
+  private async saveRecord(record: AppDesignRecord): Promise<void> {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      await adapter.execute(
+        `INSERT INTO app_designs (id, name, description, version, requirement, design_json, components, status, owner_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+         name = VALUES(name), description = VALUES(description), version = VALUES(version),
+         requirement = VALUES(requirement), design_json = VALUES(design_json),
+         components = VALUES(components), status = VALUES(status), updated_at = VALUES(updated_at)`,
+        [
+          record.id,
+          record.name,
+          record.description,
+          record.version,
+          record.requirement,
+          JSON.stringify(record.designJson),
+          JSON.stringify(record.components),
+          record.status,
+          record.ownerId,
+          record.createdAt,
+          record.updatedAt,
+        ]
+      );
+    } else {
+      const db = getDb();
+      db.prepare(
+        `INSERT OR REPLACE INTO app_designs (id, name, description, version, requirement, design_json, components, status, owner_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        record.id,
+        record.name,
+        record.description,
+        record.version,
+        record.requirement,
+        JSON.stringify(record.designJson),
+        JSON.stringify(record.components),
+        record.status,
+        record.ownerId,
+        record.createdAt,
+        record.updatedAt
+      );
+    }
+  }
+
+  private async getRecord(designId: string): Promise<AppDesignRecord | null> {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query("SELECT * FROM app_designs WHERE id = ?", [designId]);
+      if (rows.length === 0) return null;
+      return this.mapRow(rows[0]);
+    }
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM app_designs WHERE id = ?").get(designId) as any;
+    return row ? this.mapRow(row) : null;
+  }
+
+  private mapRow(row: any): AppDesignRecord {
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description || "",
+      version: row.version || 1,
+      requirement: row.requirement,
+      designJson: typeof row.design_json === "string" ? JSON.parse(row.design_json) : row.design_json,
+      components: typeof row.components === "string" ? JSON.parse(row.components) : row.components ?? [],
+      status: row.status || "draft",
+      ownerId: row.owner_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 私有方法：工具函数
+  // ─────────────────────────────────────────────────────────────
+
+  private extractComponents(schema: DesignSchema): GeneratedComponent[] {
+    const components: GeneratedComponent[] = [];
+    for (const s of schema.components.skills) {
+      components.push({ type: "skill", key: s.name, name: s.description || s.name, status: "pending" });
+    }
+    for (const f of schema.components.forms) {
+      components.push({ type: "form", key: f.key, name: f.name, status: "pending" });
+    }
+    for (const w of schema.components.workflows) {
+      components.push({ type: "workflow", key: w.key, name: w.name, status: "pending" });
+    }
+    for (const k of schema.components.knowledgeBases) {
+      components.push({ type: "knowledgeBase", key: k.name, name: k.name, status: "pending" });
+    }
+    return components;
+  }
+
+  private formatPreview(record: AppDesignRecord): string {
+    const d = record.designJson;
+    let text = `📐 应用设计方案「${d.name}」\n`;
+    text += `版本: v${record.version} | 状态: ${record.status}\n`;
+    text += `描述: ${d.description}\n\n`;
+
+    text += `🧩 组件清单:\n`;
+    if (d.components.skills.length > 0) {
+      text += `  Skills (${d.components.skills.length}):\n`;
+      for (const s of d.components.skills) text += `    • ${s.name}: ${s.description}\n`;
+    }
+    if (d.components.forms.length > 0) {
+      text += `  表单 (${d.components.forms.length}):\n`;
+      for (const f of d.components.forms) text += `    • ${f.name} (${f.fields.length} 个字段)\n`;
+    }
+    if (d.components.workflows.length > 0) {
+      text += `  工作流 (${d.components.workflows.length}):\n`;
+      for (const w of d.components.workflows) text += `    • ${w.name}\n`;
+    }
+    if (d.components.knowledgeBases.length > 0) {
+      text += `  知识库 (${d.components.knowledgeBases.length}):\n`;
+      for (const k of d.components.knowledgeBases) text += `    • ${k.name}\n`;
+    }
+
+    if (d.relationships.length > 0) {
+      text += `\n🔗 组件关联:\n`;
+      for (const r of d.relationships) text += `  ${r.from} → ${r.to} (${r.type})\n`;
+    }
+
+    text += `\n📋 原始需求:\n${record.requirement.slice(0, 500)}${record.requirement.length > 500 ? "..." : ""}`;
+    return text;
+  }
+
+  // 对外暴露格式化方法，供 Skill handler 使用
+  formatForDisplay(record: AppDesignRecord): { text: string; structured: unknown } {
+    return { text: this.formatPreview(record), structured: record };
+  }
+}
+
+// ───────────────────────────────────────────────────────────────
+// Skill 注册
+// ───────────────────────────────────────────────────────────────
+
+export function registerAppDesignerSkill(
+  registry: SkillRegistry,
+  llmProvider?: () => LLMProvider | null,
+) {
+  const service = new AppDesignerService(llmProvider);
+
+  registry.register(
+    defineSystemSkill({
+      name: "app_designer",
+      description: `【应用级元 Skill】根据用户自然语言描述，设计完整的 RAOS 应用方案（Skill + 表单 + 工作流 + 知识库配置）。
+支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 确认。
+
+参数:
+  action(string): create(创建方案) | update(修正方案) | preview(预览方案) | list(列出方案) | archive(归档方案)
+  requirement(string): 需求描述（create/update 时需要）
+  designId(string): 设计方案 ID（update/preview/archive 时需要）
+  name(string): 应用名称（create 时可选）
+
+使用示例:
+  1. create: {"action":"create","requirement":"帮我做一个高校招生咨询机器人，能回答政策问题、收集考生意向、根据分数推荐专业"}
+  2. preview: {"action":"preview","designId":"design_xxx"}
+  3. update: {"action":"update","designId":"design_xxx","requirement":"再加一个按城市分配招生老师的功能"}
+  4. list: {"action":"list"}
+
+注意：
+  - create/update 需要 LLM 配置
+  - 生成的方案需要用户确认后，再手动在各设计器中创建组件
+  - 设计方案会自动版本化存储`,
+      paramSchema: {
+        properties: {
+          action: {
+            type: "string",
+            enum: ["create", "update", "preview", "list", "archive"],
+            description: "操作类型",
+          },
+          requirement: { type: "string", description: "需求描述" },
+          designId: { type: "string", description: "设计方案ID" },
+          name: { type: "string", description: "应用名称" },
+        },
+        required: ["action"],
+      },
+      handler: async (params, context) => {
+        const action = params.action as string;
+        const userId = context.user?.id ?? getCurrentUserId();
+
+        try {
+          switch (action) {
+            case "create": {
+              const requirement = params.requirement as string;
+              if (!requirement) {
+                return { success: false, error: new Error("create 操作需要提供 requirement 参数") };
+              }
+              const record = await service.createDesign({
+                name: params.name as string | undefined,
+                requirement,
+                ownerId: userId,
+              });
+              const display = service.formatForDisplay(record);
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  version: record.version,
+                  preview: display.text,
+                  structured: display.structured,
+                  message: `✅ 应用方案「${record.name}」已创建（v${record.version}）。\n设计 ID: ${record.id}\n请使用 preview 查看详情，或使用 update 提出修改意见。`,
+                },
+              };
+            }
+
+            case "update": {
+              const designId = params.designId as string;
+              const requirement = params.requirement as string;
+              if (!designId || !requirement) {
+                return { success: false, error: new Error("update 操作需要提供 designId 和 requirement 参数") };
+              }
+              const record = await service.updateDesign({ designId, requirement, ownerId: userId });
+              const display = service.formatForDisplay(record);
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  version: record.version,
+                  preview: display.text,
+                  structured: display.structured,
+                  message: `✅ 应用方案已更新至 v${record.version}。\n设计 ID: ${record.id}\n变更已保存，请使用 preview 查看更新后的详情。`,
+                },
+              };
+            }
+
+            case "preview": {
+              const designId = params.designId as string;
+              if (!designId) {
+                return { success: false, error: new Error("preview 操作需要提供 designId 参数") };
+              }
+              const record = await service.previewDesign(designId, userId);
+              if (!record) {
+                return { success: false, error: new Error("设计方案不存在或无权限访问") };
+              }
+              const display = service.formatForDisplay(record);
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  version: record.version,
+                  status: record.status,
+                  preview: display.text,
+                  structured: display.structured,
+                },
+              };
+            }
+
+            case "list": {
+              const records = await service.listDesigns(userId);
+              return {
+                success: true,
+                data: {
+                  total: records.length,
+                  designs: records.map((r) => ({
+                    id: r.id,
+                    name: r.name,
+                    version: r.version,
+                    status: r.status,
+                    updatedAt: r.updatedAt,
+                  })),
+                },
+              };
+            }
+
+            case "archive": {
+              const designId = params.designId as string;
+              if (!designId) {
+                return { success: false, error: new Error("archive 操作需要提供 designId 参数") };
+              }
+              await service.archiveDesign(designId, userId);
+              return {
+                success: true,
+                data: { designId, message: "设计方案已归档" },
+              };
+            }
+
+            default:
+              return { success: false, error: new Error(`不支持的操作: ${action}`) };
+          }
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err : new Error(String(err)),
+          };
+        }
+      },
+    })
+  );
+
+  console.log("   App Designer skill registered (app_designer)");
+}

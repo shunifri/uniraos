@@ -1052,6 +1052,26 @@ function runMigrations(db: Database.Database): void {
     () => {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at DESC);`);
     },
+    // v18: 应用设计方案表（app_designer Skill 使用）
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS app_designs (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT,
+          version INTEGER DEFAULT 1,
+          requirement TEXT NOT NULL,
+          design_json TEXT NOT NULL,
+          components TEXT DEFAULT '[]',
+          status TEXT DEFAULT 'draft' CHECK(status IN ('draft','applied','archived')),
+          owner_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_designs_owner ON app_designs(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_app_designs_status ON app_designs(status);
+      `);
+    },
   ];
 
   // 执行未应用的迁移

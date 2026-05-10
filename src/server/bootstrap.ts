@@ -17,6 +17,7 @@ import { createProtocolSkills } from "../skills/protocol-skills.js";
 import { createKnowledgeSkills } from "../skills/knowledge-skills.js";
 import { createApiGenSkills } from "../skills/api-gen-skills.js";
 import { createMetaSkills } from "../skills/meta-skills.js";
+import { registerAppDesignerSkill } from "../skills/app-designer-skill.js";
 import { createPlanningSkill } from "../skills/planning-skill.js";
 import { createGraphSkills } from "../skills/graph-skills.js";
 import { createWorkflowSkills } from "../skills/workflow-skills.js";
@@ -195,6 +196,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
   await createIntegrationSkills(registry);
   await createAdvancedSkills(registry);
   createMetaSkills(registry, engine, () => providerManager.getProvider(), evolutionController);
+  registerAppDesignerSkill(registry, () => providerManager.getProvider());
 
   for (const skill of createGraphSkills(sessionManager)) {
     registry.register(skill);
