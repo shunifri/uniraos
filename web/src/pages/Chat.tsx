@@ -37,6 +37,7 @@ import { useInboxStore } from "@/store/inbox-store";
 import InboxPanel from "@/components/inbox/InboxPanel";
 import { apiFetch, pageImageUrl, apiCreateConversation } from "@/api";
 import ConfirmCard from "@/components/ConfirmCard";
+import AppDesignCard from "@/components/AppDesignCard";
 import { getFileIcon, formatFileSize, HighlightedPageImage } from "@/components/chat/utils";
 import type { ChatMsg, Conversation, KbReference, WebReference, FileDownloadInfo, FileDownloadData } from "@/components/chat/types";
 import DocMindPreview from "@/components/knowledge/DocMindPreview";
@@ -89,6 +90,7 @@ const markdownComponents: Record<string, React.ComponentType<any>> = {
       {children}
     </video>
   ),
+  "app-design-card": AppDesignCard,
 };
 
 // ---- Preprocess [^N] → <kbref data-index="N">[N]</kbref> for XMarkdown ----

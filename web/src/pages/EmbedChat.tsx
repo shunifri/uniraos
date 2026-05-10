@@ -12,6 +12,7 @@ import ChatPage from "@/pages/Chat";
 export default function EmbedChat() {
   const [ready, setReady] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
+  const [defaultSkill, setDefaultSkill] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     // 1. 尝试从 URL 参数获取 token、role 和 skill
@@ -19,6 +20,9 @@ export default function EmbedChat() {
     const tokenFromUrl = params.get("token");
     const roleFromUrl = params.get("role");
     const skillFromUrl = params.get("skill");
+    if (skillFromUrl) {
+      setDefaultSkill(skillFromUrl);
+    }
     if (roleFromUrl) {
       useAuthStore.setState({ embeddedRole: roleFromUrl });
     }
@@ -200,7 +204,7 @@ export default function EmbedChat() {
             flexDirection: "column",
           }}
         >
-          <ChatPage embedded defaultSkill={skillFromUrl || undefined} />
+          <ChatPage embedded defaultSkill={defaultSkill} />
         </div>
       </AntApp>
     </ConfigProvider>

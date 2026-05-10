@@ -575,7 +575,7 @@ export function registerAppDesignerSkill(
                   version: record.version,
                   preview: display.text,
                   structured: display.structured,
-                  message: `✅ 应用方案「${record.name}」已创建（v${record.version}）。\n设计 ID: ${record.id}\n请使用 preview 查看详情，或使用 update 提出修改意见。`,
+                  message: `✅ 应用方案「${record.name}」已创建（v${record.version}）。\n设计 ID: ${record.id}\n请使用 preview 查看详情，或使用 update 提出修改意见。\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="create" />`,
                 },
               };
             }
@@ -596,7 +596,7 @@ export function registerAppDesignerSkill(
                   version: record.version,
                   preview: display.text,
                   structured: display.structured,
-                  message: `✅ 应用方案已更新至 v${record.version}。\n设计 ID: ${record.id}\n变更已保存，请使用 preview 查看更新后的详情。`,
+                  message: `✅ 应用方案已更新至 v${record.version}。\n设计 ID: ${record.id}\n变更已保存，请使用 preview 查看更新后的详情。\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
                 },
               };
             }
@@ -620,6 +620,7 @@ export function registerAppDesignerSkill(
                   status: record.status,
                   preview: display.text,
                   structured: display.structured,
+                  message: `📐 应用方案「${record.name}」v${record.version} 预览\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="preview" />`,
                 },
               };
             }
