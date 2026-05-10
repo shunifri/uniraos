@@ -31,10 +31,15 @@ export class CustomSkillRepository {
   /** 创建自定义 Skill 记录 */
   async create(
     skill: SkillDefinition,
-    ownerId: string
+    ownerId: string,
+    handlerCode?: string
   ): Promise<CustomSkill> {
     const id = `custom_${randomUUID().slice(0, 12)}`;
     const now = Date.now();
+
+    // 将 handler 代码字符串嵌入 definition，以便重建时恢复
+    const definitionObj = { ...skill, _handlerCode: handlerCode };
+    const definitionJson = JSON.stringify(definitionObj);
 
     if (isMySQL()) {
       const adapter = await getMySQLAdapter();
@@ -47,7 +52,7 @@ export class CustomSkillRepository {
           skill.name,
           skill.description || "",
           skill.version || "1.0.0",
-          JSON.stringify(skill),
+          definitionJson,
           ownerId,
           skill.isSystem ? 1 : 0,
           now,
@@ -65,7 +70,7 @@ export class CustomSkillRepository {
         skill.name,
         skill.description || "",
         skill.version || "1.0.0",
-        JSON.stringify(skill),
+        definitionJson,
         ownerId,
         skill.isSystem ? 1 : 0,
         now,
@@ -178,11 +183,26 @@ export class CustomSkillRepository {
     // 根据类型选择合适的构建方法
     const builder = definition.isSystem ? defineSystemSkill : defineSkill;
 
-    // JSON 序列化会丢失函数，因此使用默认的 echo handler
-    // 未来可扩展为存储代码字符串并在沙箱中重建
-    const defaultHandler = async (params: Record<string, unknown>) => {
-      return { success: true, data: { echo: params } };
-    };
+    // 优先从 _handlerCode 恢复 handler 函数
+    let restoredHandler: import("../types/index.js").SkillHandler;
+    if (definition._handlerCode && typeof definition._handlerCode === "string") {
+      try {
+        const fn = new Function("return " + definition._handlerCode)();
+        if (typeof fn === "function") {
+          restoredHandler = fn as import("../types/index.js").SkillHandler;
+        } else {
+          throw new Error("Restored handler is not a function");
+        }
+      } catch {
+        restoredHandler = async (params: Record<string, unknown>) => {
+          return { success: true, data: { echo: params } };
+        };
+      }
+    } else {
+      restoredHandler = async (params: Record<string, unknown>) => {
+        return { success: true, data: { echo: params } };
+      };
+    }
 
     const base = {
       name: customSkill.name,
@@ -190,11 +210,11 @@ export class CustomSkillRepository {
       version: customSkill.version,
       owner: customSkill.ownerId,
       isSystem: customSkill.isSystem,
-      handler: defaultHandler,
+      handler: restoredHandler,
     };
 
-    // 用数据库记录覆盖序列化定义中的元数据，但保留 owner 和 handler
-    const merged = { ...definition, ...base, handler: definition.handler ?? defaultHandler };
+    // 用数据库记录覆盖序列化定义中的元数据，但保留恢复的 handler
+    const merged = { ...definition, ...base, handler: restoredHandler };
 
     return builder(merged);
   }

@@ -129,6 +129,16 @@ export interface FormInstanceInput {
 }
 
 export async function createFormInstance(input: FormInstanceInput) {
+  // 服务端校验：检查表单定义是否存在
+  const definition = await getFormDefinition(input.definitionId);
+  if (!definition) {
+    throw new Error(`Form definition not found: ${input.definitionId}`);
+  }
+  // 基础数据校验
+  if (input.dataJson === null || input.dataJson === undefined) {
+    throw new Error('Form data is required');
+  }
+
   const id = crypto.randomUUID();
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
@@ -182,4 +192,45 @@ export async function updateFormInstance(id: string, updates: Partial<FormInstan
     db.prepare(sql).run(...params);
   }
   return getFormInstance(id);
+}
+
+export async function submitFormInstance(id: string) {
+  const instance = await getFormInstance(id);
+  if (!instance) throw new Error('Form instance not found');
+  if (instance.status === 'submitted') throw new Error('Form instance already submitted');
+  return updateFormInstance(id, { status: 'submitted' });
+}
+
+export async function listFormInstances(options: { definitionId?: string; status?: string; page?: number; pageSize?: number; submittedBy?: string } = {}) {
+  const { definitionId, status, page = 1, pageSize = 20, submittedBy } = options;
+  let sql = 'SELECT * FROM form_instances WHERE 1=1';
+  const params: unknown[] = [];
+  if (definitionId) { sql += ' AND definition_id = ?'; params.push(definitionId); }
+  if (status) { sql += ' AND status = ?'; params.push(status); }
+  if (submittedBy) { sql += ' AND submitted_by = ?'; params.push(submittedBy); }
+  sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(pageSize, (page - 1) * pageSize);
+
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query(sql, params);
+    return (rows as any[]).map(row => ({
+      ...row,
+      data_json: typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json,
+    }));
+  }
+  const db = getDb();
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map(row => ({ ...row, data_json: JSON.parse(row.data_json) }));
+}
+
+export async function deleteFormInstance(id: string) {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    await adapter.execute('DELETE FROM form_instances WHERE id = ?', [id]);
+  } else {
+    const db = getDb();
+    db.prepare('DELETE FROM form_instances WHERE id = ?').run(id);
+  }
+  return { success: true };
 }

@@ -3,7 +3,8 @@ import { requireAuth } from '../permissions/middleware/auth-middleware.js';
 import {
   createFormDefinition, getFormDefinition, listFormDefinitions,
   updateFormDefinition, deleteFormDefinition,
-  createFormInstance, getFormInstance, updateFormInstance
+  createFormInstance, getFormInstance, updateFormInstance,
+  submitFormInstance, listFormInstances, deleteFormInstance
 } from '../services/form-service.js';
 import { resolveDataSource } from '../services/data-source-service.js';
 import { testConnection, testConnectionConfig } from '../services/database-connector.js';
@@ -97,6 +98,41 @@ router.put('/form/instances/:id', requireAuth, async (req, res) => {
     res.json({ success: true, data: instance });
   } catch (error: unknown) {
     res.status(400).json({ success: false, error: (error as Error).message });
+  }
+});
+
+router.post('/form/instances/:id/submit', requireAuth, async (req, res) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const instance = await submitFormInstance(id);
+    res.json({ success: true, data: instance });
+  } catch (error: unknown) {
+    res.status(400).json({ success: false, error: (error as Error).message });
+  }
+});
+
+router.get('/form/instances', requireAuth, async (req, res) => {
+  try {
+    const instances = await listFormInstances({
+      definitionId: req.query.definitionId as string,
+      status: req.query.status as string,
+      submittedBy: req.query.submittedBy as string,
+      page: req.query.page ? parseInt(req.query.page as string) : 1,
+      pageSize: req.query.pageSize ? parseInt(req.query.pageSize as string) : 20
+    });
+    res.json({ success: true, data: instances });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+router.delete('/form/instances/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await deleteFormInstance(id);
+    res.json({ success: true });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 

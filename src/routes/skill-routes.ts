@@ -80,10 +80,27 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
 
   // Dynamic Skill registration
   router.post("/skills", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), async (req, res) => {
-    const { name, visible, autonomy, dependencies, timeout, description } =
+    const { name, visible, autonomy, dependencies, timeout, description, paramSchema, handler } =
       req.body;
 
     try {
+      // 将 handler 代码字符串恢复为可执行函数
+      let handlerFn: import("../types/index.js").SkillHandler;
+      if (handler && typeof handler === "string") {
+        try {
+          const fn = new Function("return " + handler)();
+          if (typeof fn === "function") {
+            handlerFn = fn as import("../types/index.js").SkillHandler;
+          } else {
+            handlerFn = async (params) => ({ success: true, data: { echo: params } });
+          }
+        } catch {
+          handlerFn = async (params) => ({ success: true, data: { echo: params } });
+        }
+      } else {
+        handlerFn = async (params) => ({ success: true, data: { echo: params } });
+      }
+
       const skill = defineSkill({
         name,
         visible: visible ?? true,
@@ -92,15 +109,14 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
         timeout: timeout ?? 30000,
         description: description ?? "",
         owner: req.user!.id,
-        handler: async (params) => {
-          return { success: true, data: { echo: params } };
-        },
+        paramSchema: paramSchema ?? undefined,
+        handler: handlerFn,
       });
       registry.register(skill);
 
-      // 持久化到数据库
+      // 持久化到数据库（同时保存 handler 原始代码字符串以便重建）
       const repo = getCustomSkillRepository();
-      await repo.create(skill, req.user!.id);
+      await repo.create(skill, req.user!.id, typeof handler === "string" ? handler : undefined);
 
       syncSkillsToResources();
       res.json({ success: true, message: `Skill "${name}" registered` });

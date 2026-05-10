@@ -24,10 +24,12 @@ import {
   PlayCircleOutlined,
   FileTextOutlined,
   FormOutlined,
+  BuildOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@/store/auth';
 import { FormRenderer } from '@/components/form-engine';
 import type { RaosFormSchema } from '@/components/form-engine/types';
+import { useNavigate } from 'react-router-dom';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -67,6 +69,7 @@ interface FormInstance {
 
 const FormsPage: React.FC = () => {
   const token = useAuthStore((s) => s.token);
+  const navigate = useNavigate();
 
   // List state
   const [defs, setDefs] = useState<FormDefinition[]>([]);
@@ -337,6 +340,9 @@ const FormsPage: React.FC = () => {
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
+          <Button size="small" icon={<BuildOutlined />} onClick={() => navigate(`/forms/designer/${record.id}`)}>
+            设计
+          </Button>
           <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openPreview(record)}>
             预览
           </Button>
@@ -357,9 +363,14 @@ const FormsPage: React.FC = () => {
 
       <Card
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建表单
-          </Button>
+          <Space>
+            <Button icon={<BuildOutlined />} onClick={() => navigate('/forms/designer')}>
+              可视化设计
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建表单
+            </Button>
+          </Space>
         }
       >
         <Table

@@ -117,6 +117,43 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
   });
 
+  // POST /api/auth/visitor — 访客模式（无需手机号，生成临时身份）
+  router.post("/auth/visitor", async (req, res) => {
+    try {
+      const visitorId = `v_${randomUUID().slice(0, 12)}`;
+      const username = `visitor_${visitorId}`;
+
+      const user = await userRepo.createUser({
+        username,
+        password: randomUUID(),
+        displayName: `访客`,
+        phone: ``,
+        roleIds: ["role_viewer"],
+      });
+
+      const session = await createSession(user.id);
+      const details = await userRepo.getUserWithDetails(user.id);
+
+      const msToExpiry = session.expiresAt - Date.now();
+      res.cookie('token', session.token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: msToExpiry > 0 ? msToExpiry : 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+      });
+
+      res.json({
+        success: true,
+        token: session.token,
+        expiresAt: session.expiresAt,
+        user: details,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+    }
+  });
+
   router.post("/auth/logout", pm.requireAuth, async (req, res) => {
     const userId = req.user!.id;
     const authHeader = req.headers.authorization;

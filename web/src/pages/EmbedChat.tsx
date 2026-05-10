@@ -66,9 +66,20 @@ export default function EmbedChat() {
     };
     window.addEventListener("message", handler);
 
-    // 4. 短延时后若仍无 token，显示登录界面（而非阻塞报错）
-    const timer = setTimeout(() => {
+    // 4. 短延时后若仍无 token，自动获取访客身份（无需登录）
+    const timer = setTimeout(async () => {
       if (!resolved && !useAuthStore.getState().token) {
+        try {
+          const res = await fetch("/api/auth/visitor", { method: "POST" });
+          const data = await res.json();
+          if (data.success && data.token) {
+            resolved = true;
+            applyToken(data.token);
+            return;
+          }
+        } catch {
+          // 访客登录失败，回退到普通登录界面
+        }
         setShowLogin(true);
       }
     }, 1500);

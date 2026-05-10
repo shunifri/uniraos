@@ -25,6 +25,7 @@ const ConnectionsPage = lazy(() => import("@/pages/Connections"));
 const ApprovalsPage = lazy(() => import("@/pages/Approvals"));
 const WorkflowTaskPage = lazy(() => import("@/pages/WorkflowTaskPage"));
 const FormsPage = lazy(() => import("@/pages/FormsPage"));
+const FormDesignerPage = lazy(() => import("@/pages/FormDesigner"));
 
 function LazyFallback() {
   return (
@@ -98,6 +99,8 @@ export default function App() {
               <Route path="approvals" element={<Suspense fallback={<LazyFallback />}><ApprovalsPage /></Suspense>} />
               <Route path="workflow/tasks/:id" element={<Suspense fallback={<LazyFallback />}><WorkflowTaskPage /></Suspense>} />
               <Route path="forms" element={<Suspense fallback={<LazyFallback />}><FormsPage /></Suspense>} />
+              <Route path="forms/designer" element={<Suspense fallback={<LazyFallback />}><FormDesignerPage /></Suspense>} />
+              <Route path="forms/designer/:id" element={<Suspense fallback={<LazyFallback />}><FormDesignerPage /></Suspense>} />
             </Route>
             <Route path="/embed" element={<EmbedChat />} />
           </Routes>

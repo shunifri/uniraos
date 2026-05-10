@@ -15,6 +15,7 @@ import {
   Collapse,
   Badge,
   Radio,
+  Modal,
 } from "antd";
 import {
   PlayCircleOutlined,
@@ -27,6 +28,7 @@ import {
   CodeOutlined,
   TeamOutlined,
   AppstoreOutlined,
+  BulbOutlined,
 } from "@ant-design/icons";
 import { useAuthStore } from "@/store/auth";
 import { useI18nStore } from "@/i18n";
@@ -101,6 +103,13 @@ export default function SkillsPage() {
   >([]);
   const [shareSkill, setShareSkill] = useState<SkillInfo | null>(null);
 
+  // Skill 自动生成状态
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [generateName, setGenerateName] = useState("");
+  const [generateDescription, setGenerateDescription] = useState("");
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [generateResult, setGenerateResult] = useState<any | null>(null);
+
   useEffect(() => {
     loadSkills();
   }, []);
@@ -171,6 +180,20 @@ export default function SkillsPage() {
               {t("skills")} ({filtered.length})
             </span>
           </Flex>
+        }
+        extra={
+          <Button
+            size="small"
+            icon={<BulbOutlined />}
+            onClick={() => {
+              setGenerateOpen(true);
+              setGenerateResult(null);
+              setGenerateName("");
+              setGenerateDescription("");
+            }}
+          >
+            从描述生成
+          </Button>
         }
         style={{ width: 320, height: "100%", display: "flex", flexDirection: "column", flexShrink: 0 }}
         styles={{ body: { padding: 0, flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" } }}
@@ -351,6 +374,80 @@ export default function SkillsPage() {
         resourceId={shareSkill?.name || ""}
         resourceName={shareSkill?.name || ""}
       />
+
+      {/* Generate Skill from Description Modal */}
+      <Modal
+        title="从描述生成 Skill"
+        open={generateOpen}
+        onCancel={() => setGenerateOpen(false)}
+        width={640}
+        footer={null}
+      >
+        <Flex vertical gap={12}>
+          <Form layout="vertical">
+            <Form.Item label="Skill 名称" required>
+              <Input
+                placeholder="如: admission_consultant"
+                value={generateName}
+                onChange={(e) => setGenerateName(e.target.value)}
+              />
+            </Form.Item>
+            <Form.Item label="功能描述" required>
+              <Input.TextArea
+                rows={4}
+                placeholder="描述这个 Skill 的功能，如：根据考生的分数和省份推荐合适的大学专业..."
+                value={generateDescription}
+                onChange={(e) => setGenerateDescription(e.target.value)}
+              />
+            </Form.Item>
+          </Form>
+          <Button
+            type="primary"
+            icon={<BulbOutlined />}
+            loading={generateLoading}
+            disabled={!generateName.trim() || !generateDescription.trim()}
+            onClick={async () => {
+              setGenerateLoading(true);
+              try {
+                const data = await api.post<any>("/api/execute", {
+                  skillName: "skill_from_description",
+                  params: {
+                    name: generateName.trim(),
+                    description: generateDescription.trim(),
+                  },
+                });
+                setGenerateResult(data);
+                if (data.success) {
+                  message.success("Skill 生成成功，已提交审批");
+                } else {
+                  message.error(data.error || "生成失败");
+                }
+              } catch (err: any) {
+                message.error(err.message || "请求失败");
+              }
+              setGenerateLoading(false);
+            }}
+          >
+            生成 Skill
+          </Button>
+          {generateResult && (
+            <Collapse
+              size="small"
+              items={[
+                {
+                  key: "result",
+                  label: generateResult.success ? "生成结果" : "错误信息",
+                  children: (
+                    <pre style={{ fontSize: 12, maxHeight: 300, overflow: "auto", whiteSpace: "pre-wrap" }}>
+                      {JSON.stringify(generateResult, null, 2)}
+                    </pre>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </Flex>
+      </Modal>
 
       {/* Right: Skill Detail */}
       {selected && (
