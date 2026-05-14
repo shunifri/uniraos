@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ConfigProvider, theme as antTheme, App as AntApp, Spin } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import enUS from "antd/locale/en_US";
-import { useThemeStore } from "@/theme";
+import { useThemeStore, getThemeConfig } from "@/theme";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
 import Layout from "@/components/Layout";
@@ -55,13 +55,7 @@ export default function App() {
     <ConfigProvider
       locale={lang === "zh" ? zhCN : enUS}
       theme={{
-        algorithm: isDark ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
-        token: {
-          colorPrimary: "#1677ff",
-          borderRadius: 8,
-          fontFamily:
-            "-apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif",
-        },
+        ...getThemeConfig(isDark ? 'dark' : 'light'),
         components: {
           Layout: {
             headerBg: isDark ? "#141414" : "#fff",

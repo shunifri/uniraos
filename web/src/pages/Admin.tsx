@@ -216,22 +216,26 @@ function UsersPanel() {
           },
           {
             title: t("actions"),
+            width: 160,
+            fixed: "right" as const,
             render: (_: any, r: any) =>
               r.username !== "admin" ? (
-                <Space size="small">
+                <Space size={4}>
                   <Button
-                    type="text"
                     size="small"
                     icon={<EditOutlined />}
                     onClick={() => openEditUser(r)}
-                  />
+                  >
+                    编辑
+                  </Button>
                   <Button
-                    type="text"
                     danger
                     size="small"
                     icon={<DeleteOutlined />}
                     onClick={() => deleteUser(r.id, r.username)}
-                  />
+                  >
+                    删除
+                  </Button>
                 </Space>
               ) : null,
           },

@@ -18,6 +18,7 @@ import {
   Tooltip,
   Popconfirm,
   Segmented,
+  Dropdown,
 } from "antd";
 import {
   FolderOutlined,
@@ -37,6 +38,7 @@ import {
   ClockCircleOutlined,
   EyeOutlined,
   ShareAltOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import ShareDialog from "@/components/ShareDialog";
 import { XMarkdown } from "@ant-design/x-markdown";
@@ -493,29 +495,42 @@ export default function FilesPage() {
     {
       title: t("actions"),
       key: "actions",
-      width: 130,
+      width: 200,
+      fixed: "right" as const,
       render: (_: any, record: FileItem) => {
         const kbInfo = record.isDir ? undefined : getKbInfo(record.name);
+        const moreItems = [
+          !record.isDir && {
+            key: "download",
+            label: "下载",
+            icon: <DownloadOutlined />,
+            onClick: () => handleDownload(record),
+          },
+          {
+            key: "delete",
+            label: "删除",
+            icon: <DeleteOutlined />,
+            danger: true,
+            onClick: () => handleDelete(record.path),
+          },
+        ].filter(Boolean) as any[];
         return (
-          <Space size={0}>
+          <Space size={4}>
             {!record.isDir && kbInfo && kbInfo.status === "done" && (
-              <Tooltip title="查看文档">
-                <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => handleViewDoc(kbInfo, stripTimestamp(record.name))} />
-              </Tooltip>
+              <Button type="primary" size="small" icon={<EyeOutlined />} onClick={() => handleViewDoc(kbInfo, stripTimestamp(record.name))}>
+                查看
+              </Button>
             )}
             {!record.isDir && !kbInfo && (
-              <Tooltip title={t("files_add_to_kb")}>
-                <Button type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleAddToKb(record)} />
-              </Tooltip>
+              <Button type="primary" size="small" icon={<DatabaseOutlined />} onClick={() => handleAddToKb(record)}>
+                入库
+              </Button>
             )}
-            {!record.isDir && (
-              <Tooltip title="下载">
-                <Button type="text" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(record)} />
-              </Tooltip>
+            {moreItems.length > 0 && (
+              <Dropdown menu={{ items: moreItems.map((i) => ({ key: i.key, label: i.label, icon: i.icon, danger: i.danger, onClick: i.onClick })) }}>
+                <Button size="small" icon={<MoreOutlined />}>更多</Button>
+              </Dropdown>
             )}
-            <Popconfirm title={t("confirm")} onConfirm={() => handleDelete(record.path)}>
-              <Button type="text" danger size="small" icon={<DeleteOutlined />} />
-            </Popconfirm>
           </Space>
         );
       },

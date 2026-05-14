@@ -15,6 +15,7 @@ import {
   Modal,
   Tabs,
   Descriptions,
+  Dropdown,
 } from 'antd';
 import {
   PlusOutlined,
@@ -25,6 +26,7 @@ import {
   FileTextOutlined,
   FormOutlined,
   BuildOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@/store/auth';
 import { FormRenderer } from '@/components/form-engine';
@@ -331,24 +333,21 @@ const FormsPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 280,
+      width: 200,
+      fixed: 'right' as const,
       render: (_: any, record: FormDefinition) => (
-        <Space>
-          <Button size="small" icon={<EyeOutlined />} onClick={() => openView(record)}>
-            查看
-          </Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-          <Button size="small" icon={<BuildOutlined />} onClick={() => navigate(`/forms/designer/${record.id}`)}>
+        <Space size={4}>
+          <Button size="small" type="primary" icon={<BuildOutlined />} onClick={() => navigate(`/forms/designer/${record.id}`)}>
             设计
           </Button>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openPreview(record)}>
-            预览
-          </Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)}>
-            删除
-          </Button>
+          <Dropdown menu={{ items: [
+            { key: 'view', label: '查看', icon: <EyeOutlined />, onClick: () => openView(record) },
+            { key: 'edit', label: '编辑', icon: <EditOutlined />, onClick: () => openEdit(record) },
+            { key: 'preview', label: '预览', icon: <PlayCircleOutlined />, onClick: () => openPreview(record) },
+            { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: () => handleDelete(record.id) },
+          ]}}>
+            <Button size="small" icon={<MoreOutlined />}>更多</Button>
+          </Dropdown>
         </Space>
       ),
     },

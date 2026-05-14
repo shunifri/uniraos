@@ -15,6 +15,7 @@ import {
   Spin,
   Modal,
   Tooltip,
+  Dropdown,
 } from 'antd';
 import {
   PlusOutlined,
@@ -24,6 +25,7 @@ import {
   BuildOutlined,
   RocketOutlined,
   CodeOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@/store/auth';
 import { api } from '@/api';
@@ -249,29 +251,26 @@ const WorkflowsPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 280,
+      width: 200,
+      fixed: 'right' as const,
       render: (_: any, record: WorkflowDefinition) => (
-        <Space>
-          <Button size="small" icon={<EyeOutlined />} onClick={() => openView(record)}>
-            查看
-          </Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
-            编辑
-          </Button>
+        <Space size={4}>
           <Button
             size="small"
             type="primary"
             icon={<BuildOutlined />}
             onClick={() => navigate(`/workflow/designer/${record.key}`)}
           >
-            设计器
+            设计
           </Button>
-          <Button size="small" icon={<RocketOutlined />} onClick={() => handleTest(record.key)}>
-            测试
-          </Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)}>
-            删除
-          </Button>
+          <Dropdown menu={{ items: [
+            { key: 'view', label: '查看', icon: <EyeOutlined />, onClick: () => openView(record) },
+            { key: 'edit', label: '编辑', icon: <EditOutlined />, onClick: () => openEdit(record) },
+            { key: 'test', label: '测试', icon: <RocketOutlined />, onClick: () => handleTest(record.key) },
+            { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: () => handleDelete(record.id) },
+          ]}}>
+            <Button size="small" icon={<MoreOutlined />}>更多</Button>
+          </Dropdown>
         </Space>
       ),
     },

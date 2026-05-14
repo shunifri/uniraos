@@ -209,16 +209,18 @@ export default function ConnectionsPage() {
     {
       title: '操作',
       key: 'action',
+      width: 240,
+      fixed: 'right' as const,
       render: (_: unknown, record: ConnectionItem) => (
-        <Space>
-          <Tooltip title="测试连接">
-            <Button
-              size="small"
-              icon={<ApiOutlined />}
-              loading={testing === record.id}
-              onClick={() => handleTest(record.id)}
-            />
-          </Tooltip>
+        <Space size={4}>
+          <Button
+            size="small"
+            icon={<ApiOutlined />}
+            loading={testing === record.id}
+            onClick={() => handleTest(record.id)}
+          >
+            测试
+          </Button>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>

@@ -140,6 +140,8 @@ const ApprovalsPage: React.FC = () => {
     {
       title: "操作",
       key: "action",
+      width: 120,
+      fixed: "right" as const,
       render: (_: any, record: WorkflowTask) => (
         <Button type="primary" size="small" onClick={() => handleOpenTask(record)}>
           处理
