@@ -241,7 +241,7 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     };
 
     es.addEventListener("connected", () => {
-      console.log("[Inbox SSE] connected");
+      // debug: console.log("[Inbox SSE] connected");
       updateLastPong();
     });
 

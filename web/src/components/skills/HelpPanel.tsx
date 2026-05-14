@@ -36,8 +36,8 @@ export default function HelpPanel({ collapsed }: Props) {
     {
       name: "Context Logger",
       code: `async ({ params, context }) => {
-  console.log("User:", context.user?.name);
-  console.log("Depth:", context.depth);
+  // debug: console.log("User:", context.user?.name);
+  // debug: console.log("Depth:", context.depth);
   return { success: true, data: { traceId: context.traceId } };
 }`,
     },

@@ -16,7 +16,7 @@ interface PreviewModalProps {
 export const PreviewModal: React.FC<PreviewModalProps> = ({ open, schema, onClose }) => {
   const handleSubmit = (data: Record<string, any>) => {
     message.success("表单验证通过（预览模式）");
-    console.log("Preview submit:", data);
+    // debug: console.log("Preview submit:", data);
   };
 
   return (

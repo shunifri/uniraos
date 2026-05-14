@@ -62,7 +62,9 @@ export function runInSandbox(
   return new Promise((resolve) => {
     const startTime = Date.now();
 
-    const workerPath = join(__dirname, "worker-sandbox-worker.js");
+    // 开发/测试环境使用 .ts，生产环境（Docker/dist）使用 .js
+    const ext = process.env.NODE_ENV === "production" ? ".js" : ".ts";
+    const workerPath = join(__dirname, `worker-sandbox-worker${ext}`);
     const worker = new Worker(workerPath, {
       workerData: { code, params, hasContext: !!context, user: context?.user },
       resourceLimits: {

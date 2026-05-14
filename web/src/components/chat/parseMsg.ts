@@ -2,7 +2,7 @@ import type { ChatMsg } from "./types";
 
 export function parseMsg(m: any): ChatMsg {
   if (m.role === "assistant" && m.extra) {
-    console.log("[parseMsg] assistant extra:", JSON.stringify(m.extra).slice(0, 200));
+    // debug: console.log("[parseMsg] assistant extra:", JSON.stringify(m.extra).slice(0, 200));
   }
   return {
     id: m.id,
