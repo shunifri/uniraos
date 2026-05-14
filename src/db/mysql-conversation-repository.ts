@@ -54,7 +54,7 @@ export class MySQLConversationRepository implements ConversationRepository {
     } else if (userId) {
       await adapter.execute("DELETE FROM conversation_history WHERE user_id = ?", [userId]);
     } else {
-      await adapter.execute("DELETE FROM conversation_history");
+      throw new Error("clearHistory requires userId to prevent accidental data loss");
     }
   }
 

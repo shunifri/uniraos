@@ -87,7 +87,11 @@ export async function listFormDefinitions(options: { categoryId?: string; status
   return rows.map(row => ({ ...row, schema_json: JSON.parse(row.schema_json) }));
 }
 
-export async function updateFormDefinition(id: string, updates: Partial<FormDefinitionInput>) {
+export async function updateFormDefinition(id: string, updates: Partial<FormDefinitionInput>, userId?: string) {
+  if (userId) {
+    const existing = await getFormDefinition(id);
+    if (!existing || existing.created_by !== userId) throw new Error('表单定义不存在或无权限');
+  }
   const fields: string[] = [];
   const params: unknown[] = [];
   if (updates.name !== undefined) { fields.push('name = ?'); params.push(updates.name); }
@@ -108,7 +112,11 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
   return getFormDefinition(id);
 }
 
-export async function deleteFormDefinition(id: string) {
+export async function deleteFormDefinition(id: string, userId?: string) {
+  if (userId) {
+    const existing = await getFormDefinition(id);
+    if (!existing || existing.created_by !== userId) throw new Error('表单定义不存在或无权限');
+  }
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
     await adapter.execute('DELETE FROM form_definitions WHERE id = ?', [id]);
@@ -157,10 +165,13 @@ export async function createFormInstance(input: FormInstanceInput) {
   return getFormInstance(id);
 }
 
-export async function getFormInstance(id: string) {
+export async function getFormInstance(id: string, userId?: string) {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
-    const rows = await adapter.query('SELECT * FROM form_instances WHERE id = ?', [id]);
+    let sql = 'SELECT * FROM form_instances WHERE id = ?';
+    const params: unknown[] = [id];
+    if (userId) { sql += ' AND submitted_by = ?'; params.push(userId); }
+    const rows = await adapter.query(sql, params);
     const row = rows[0] as any;
     if (row) {
       row.data_json = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json;
@@ -168,12 +179,20 @@ export async function getFormInstance(id: string) {
     return row;
   }
   const db = getDb();
-  const row = db.prepare('SELECT * FROM form_instances WHERE id = ?').get(id) as any;
+  const sql = userId
+    ? 'SELECT * FROM form_instances WHERE id = ? AND submitted_by = ?'
+    : 'SELECT * FROM form_instances WHERE id = ?';
+  const params = userId ? [id, userId] : [id];
+  const row = db.prepare(sql).get(...params) as any;
   if (row) row.data_json = JSON.parse(row.data_json);
   return row;
 }
 
-export async function updateFormInstance(id: string, updates: Partial<FormInstanceInput>) {
+export async function updateFormInstance(id: string, updates: Partial<FormInstanceInput>, userId?: string) {
+  if (userId) {
+    const existing = await getFormInstance(id, userId);
+    if (!existing) throw new Error('表单实例不存在或无权限');
+  }
   const fields: string[] = [];
   const params: unknown[] = [];
   if (updates.dataJson !== undefined) { fields.push('data_json = ?'); params.push(JSON.stringify(updates.dataJson)); }
@@ -194,11 +213,11 @@ export async function updateFormInstance(id: string, updates: Partial<FormInstan
   return getFormInstance(id);
 }
 
-export async function submitFormInstance(id: string) {
-  const instance = await getFormInstance(id);
-  if (!instance) throw new Error('Form instance not found');
+export async function submitFormInstance(id: string, userId?: string) {
+  const instance = await getFormInstance(id, userId);
+  if (!instance) throw new Error('表单实例不存在或无权限');
   if (instance.status === 'submitted') throw new Error('Form instance already submitted');
-  return updateFormInstance(id, { status: 'submitted' });
+  return updateFormInstance(id, { status: 'submitted' }, userId);
 }
 
 export async function listFormInstances(options: { definitionId?: string; status?: string; page?: number; pageSize?: number; submittedBy?: string } = {}) {
@@ -224,7 +243,11 @@ export async function listFormInstances(options: { definitionId?: string; status
   return rows.map(row => ({ ...row, data_json: JSON.parse(row.data_json) }));
 }
 
-export async function deleteFormInstance(id: string) {
+export async function deleteFormInstance(id: string, userId?: string) {
+  if (userId) {
+    const existing = await getFormInstance(id, userId);
+    if (!existing) throw new Error('表单实例不存在或无权限');
+  }
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
     await adapter.execute('DELETE FROM form_instances WHERE id = ?', [id]);

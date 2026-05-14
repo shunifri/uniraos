@@ -91,21 +91,41 @@ export class CustomSkillRepository {
     };
   }
 
-  /** 按名称查找自定义 Skill */
-  async findByName(name: string): Promise<CustomSkill | null> {
+  /** 按 ID 查找自定义 Skill */
+  async findById(id: string): Promise<CustomSkill | null> {
     if (isMySQL()) {
       const adapter = await getMySQLAdapter();
       const rows = await adapter.query(
-        "SELECT * FROM custom_skills WHERE name = ?",
-        [name]
+        "SELECT * FROM custom_skills WHERE id = ?",
+        [id]
       );
       return rows.length > 0 ? this.mapRow(rows[0]) : null;
     }
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const row = this.sqliteDb.prepare(
-      "SELECT * FROM custom_skills WHERE name = ?"
-    ).get(name);
+      "SELECT * FROM custom_skills WHERE id = ?"
+    ).get(id);
+    return row ? this.mapRow(row) : null;
+  }
+
+  /** 按名称和所有者查找自定义 Skill */
+  async findByName(name: string, ownerId?: string): Promise<CustomSkill | null> {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      let sql = "SELECT * FROM custom_skills WHERE name = ?";
+      const params: unknown[] = [name];
+      if (ownerId) { sql += " AND owner_id = ?"; params.push(ownerId); }
+      const rows = await adapter.query(sql, params);
+      return rows.length > 0 ? this.mapRow(rows[0]) : null;
+    }
+
+    if (!this.sqliteDb) throw new Error("SQLite database not provided");
+    const sql = ownerId
+      ? "SELECT * FROM custom_skills WHERE name = ? AND owner_id = ?"
+      : "SELECT * FROM custom_skills WHERE name = ?";
+    const params = ownerId ? [name, ownerId] : [name];
+    const row = this.sqliteDb.prepare(sql).get(...params);
     return row ? this.mapRow(row) : null;
   }
 
@@ -140,8 +160,12 @@ export class CustomSkillRepository {
     return rows.map(this.mapRow);
   }
 
-  /** 删除自定义 Skill */
-  async delete(id: string): Promise<boolean> {
+  /** 删除自定义 Skill（可选按所有者验证） */
+  async delete(id: string, ownerId?: string): Promise<boolean> {
+    if (ownerId) {
+      const existing = await this.findById(id);
+      if (!existing || existing.ownerId !== ownerId) return false;
+    }
     if (isMySQL()) {
       const adapter = await getMySQLAdapter();
       const result = await adapter.execute(

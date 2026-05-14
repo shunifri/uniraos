@@ -53,7 +53,7 @@ export class SQLiteConversationRepository implements ConversationRepository {
     } else if (userId) {
       db.prepare("DELETE FROM conversation_history WHERE user_id = ?").run(userId);
     } else {
-      db.prepare("DELETE FROM conversation_history").run();
+      throw new Error("clearHistory requires userId to prevent accidental data loss");
     }
   }
 

@@ -86,14 +86,15 @@ describe("SQLiteConversationRepository", () => {
     expect(await repo.getHistory("user2", "conv1")).toHaveLength(1);
   });
 
-  it("should clear all history", async () => {
+  it("should reject clearing all history without userId", async () => {
     await repo.saveMessage("user1", "conv1", { role: "user", content: "Hello" });
     await repo.saveMessage("user2", "conv1", { role: "user", content: "Hi" });
 
-    await repo.clearHistory();
+    await expect(repo.clearHistory()).rejects.toThrow("userId");
 
-    expect(await repo.getHistory("user1", "conv1")).toHaveLength(0);
-    expect(await repo.getHistory("user2", "conv1")).toHaveLength(0);
+    // Verify data is still intact
+    expect(await repo.getHistory("user1", "conv1")).toHaveLength(1);
+    expect(await repo.getHistory("user2", "conv1")).toHaveLength(1);
   });
 
   it("should list conversations for a user", async () => {

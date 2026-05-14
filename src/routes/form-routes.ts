@@ -53,7 +53,7 @@ router.get('/form/definitions/:id', requireAuth, async (req, res) => {
 router.put('/form/definitions/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const def = await updateFormDefinition(id, req.body);
+    const def = await updateFormDefinition(id, req.body, req.user!.id);
     res.json({ success: true, data: def });
   } catch (error: unknown) {
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -63,7 +63,7 @@ router.put('/form/definitions/:id', requireAuth, async (req, res) => {
 router.delete('/form/definitions/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    await deleteFormDefinition(id);
+    await deleteFormDefinition(id, req.user!.id);
     res.json({ success: true });
   } catch (error: unknown) {
     res.status(500).json({ success: false, error: (error as Error).message });
@@ -83,7 +83,7 @@ router.post('/form/instances', requireAuth, async (req, res) => {
 router.get('/form/instances/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const instance = await getFormInstance(id);
+    const instance = await getFormInstance(id, req.user!.id);
     if (!instance) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data: instance });
   } catch (error: unknown) {
@@ -94,7 +94,7 @@ router.get('/form/instances/:id', requireAuth, async (req, res) => {
 router.put('/form/instances/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const instance = await updateFormInstance(id, req.body);
+    const instance = await updateFormInstance(id, req.body, req.user!.id);
     res.json({ success: true, data: instance });
   } catch (error: unknown) {
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -104,7 +104,7 @@ router.put('/form/instances/:id', requireAuth, async (req, res) => {
 router.post('/form/instances/:id/submit', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const instance = await submitFormInstance(id);
+    const instance = await submitFormInstance(id, req.user!.id);
     res.json({ success: true, data: instance });
   } catch (error: unknown) {
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -116,7 +116,7 @@ router.get('/form/instances', requireAuth, async (req, res) => {
     const instances = await listFormInstances({
       definitionId: req.query.definitionId as string,
       status: req.query.status as string,
-      submittedBy: req.query.submittedBy as string,
+      submittedBy: req.user!.id,
       page: req.query.page ? parseInt(req.query.page as string) : 1,
       pageSize: req.query.pageSize ? parseInt(req.query.pageSize as string) : 20
     });
@@ -129,7 +129,7 @@ router.get('/form/instances', requireAuth, async (req, res) => {
 router.delete('/form/instances/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    await deleteFormInstance(id);
+    await deleteFormInstance(id, req.user!.id);
     res.json({ success: true });
   } catch (error: unknown) {
     res.status(500).json({ success: false, error: (error as Error).message });
