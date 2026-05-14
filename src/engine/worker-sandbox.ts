@@ -62,7 +62,7 @@ export function runInSandbox(
   return new Promise((resolve) => {
     const startTime = Date.now();
 
-    const workerPath = join(__dirname, "worker-sandbox-worker.ts");
+    const workerPath = join(__dirname, "worker-sandbox-worker.js");
     const worker = new Worker(workerPath, {
       workerData: { code, params, hasContext: !!context, user: context?.user },
       resourceLimits: {

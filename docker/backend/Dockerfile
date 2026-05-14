@@ -1,6 +1,6 @@
 # =============================================================================
 # RAOS Backend Dockerfile
-# 多阶段构建，支持华为云 SWR
+# 多阶段构建：bytenode 字节码保护 + 华为云 SWR
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -10,68 +10,70 @@ FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888
 
 WORKDIR /app
 
-# 安装构建依赖
 RUN apk add --no-cache python3 make g++
 
-# 复制依赖配置
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# 安装生产依赖
-RUN npm ci --only=production && npm cache clean --force
+# 安装生产依赖 + bytenode + babel（构建需要）
+RUN npm ci --only=production && \
+    npm install bytenode @babel/core @babel/preset-env --no-save && \
+    npm cache clean --force
 
 # -----------------------------------------------------------------------------
-# 阶段 2: 构建
+# 阶段 2: 构建 + bytenode 编译
 # -----------------------------------------------------------------------------
 FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS builder
 
 WORKDIR /app
 
+RUN apk add --no-cache python3 make g++
+
 # 复制依赖
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY package*.json ./
-COPY tsconfig.json ./
+COPY --from=dependencies /app/package*.json ./
+COPY --from=dependencies /app/tsconfig.json ./
 
 # 复制源码
 COPY src ./src
 COPY web ./web
+COPY scripts/build-bytenode.cjs ./scripts/build-bytenode.cjs
 
-# 构建
+# TypeScript 编译
 RUN npm run build
+
+# bytenode 字节码编译（ESM → CJS → .jsc）
+RUN node scripts/build-bytenode.cjs
 
 # -----------------------------------------------------------------------------
 # 阶段 3: 生产运行
 # -----------------------------------------------------------------------------
 FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS production
 
-# 安装安全更新
 RUN apk update && apk upgrade && apk add --no-cache curl && rm -rf /var/cache/apk/*
 
-# 创建非 root 用户
 RUN addgroup -g 1001 -S raos && adduser -S raos -u 1001
 
 WORKDIR /app
 
 # 复制生产依赖
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY package*.json ./
+COPY --from=dependencies /app/package*.json ./
 
-# 复制构建产物
+# 复制 bytenode 编译产物（只保留字节码 + loader）
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/web/dist ./web/dist
+COPY --from=builder /app/server-loader.cjs ./server-loader.cjs
+COPY --from=builder /app/worker-loader.cjs ./worker-loader.cjs
 
 # 设置权限
 RUN chown -R raos:raos /app
 
-# 切换到非 root 用户
 USER raos
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
-# 暴露端口
 EXPOSE 3000
 
-# 启动命令
-CMD ["node", "dist/server.js"]
+# 默认启动后端服务
+CMD ["node", "server-loader.cjs"]

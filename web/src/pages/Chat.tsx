@@ -58,7 +58,7 @@ interface ConversationState {
   oldestMessageId: number | null;
   abortController: AbortController | null;
   showThinking: boolean;
-  thinkingTimer: NodeJS.Timeout | null;
+  thinkingTimer: ReturnType<typeof setTimeout> | null;
   pendingKbRefs: KbReference[];
   pendingWebRefs: WebReference[];
   attachments: Attachment[];

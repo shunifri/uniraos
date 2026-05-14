@@ -182,11 +182,13 @@ services:
   
   # RAOS 后端 API 服务
   raos-backend:
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-raos}/raos-backend:test
-    build:
-      context: .
-      dockerfile: docker/backend/Dockerfile
-      target: production
+    # 华为云 SWR 镜像（bytenode 字节码保护）
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
+    # 如需本地构建，取消下方注释
+    # build:
+    #   context: .
+    #   dockerfile: docker/backend/Dockerfile
+    #   target: production
     container_name: raos-backend
     environment:
       NODE_ENV: production
@@ -216,13 +218,18 @@ services:
       MINIO_USER: ${MINIO_USER:-raos}
       MINIO_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD is required}
       MINIO_BUCKET: raos-files
-      # Neo4j 配置
+      # Neo4j 配置（可选）
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
       NEO4J_DATABASE: raos
+      # 数据库类型
+      USE_MYSQL: "true"
       # 知识图谱存储后端: mysql 或 neo4j
       GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
+      # LLM 配置
+      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
       # JWT 密钥
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       # 日志
@@ -236,6 +243,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    volumes:
+      - raos_data:/app/.raos
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
       interval: 30s
@@ -257,15 +266,15 @@ services:
           memory: 512M
 
   # 队列消费者服务（可独立扩展）
-  # 队列消费者服务
+  # 队列消费者服务（与后端共用镜像，仅命令不同）
   raos-workers:
-    image: ${IMAGE_REGISTRY:-localhost}/${IMAGE_NAMESPACE:-raos}/raos-workers:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: docker/backend/Dockerfile
-      target: production
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
+    # build:
+    #   context: .
+    #   dockerfile: docker/backend/Dockerfile
+    #   target: production
     container_name: raos-workers
-    command: npm run worker:start
+    command: node worker-loader.cjs
     environment:
       NODE_ENV: production
       # 数据库配置（与 backend 相同）
@@ -283,13 +292,19 @@ services:
       MINIO_PORT: 9000
       MINIO_USER: ${MINIO_USER:-raos}
       MINIO_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD is required}
-      # Neo4j 配置
+      # Neo4j 配置（可选）
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
       NEO4J_DATABASE: raos
+      USE_MYSQL: "true"
       GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
+      # LLM 配置
+      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
       LOG_LEVEL: info
+    volumes:
+      - raos_data:/app/.raos
     depends_on:
       - mysql-primary
       - redis
@@ -312,14 +327,14 @@ services:
   # RAOS 前端 Web 服务
   # 前端 Web 服务
   raos-frontend:
-    # 华为云 SWR 镜像: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:test
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-raos}/raos-frontend:test
-    build:
-      context: ./web
-      dockerfile: ../docker/frontend/Dockerfile
-      args:
-        VITE_API_BASE_URL: /api
-        VITE_WS_URL: ws://localhost:3000
+    # 华为云 SWR 镜像
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:${IMAGE_TAG:-latest}
+    # build:
+    #   context: ./web
+    #   dockerfile: ../docker/frontend/Dockerfile
+    #   args:
+    #     VITE_API_BASE_URL: /api
+    #     VITE_WS_URL: ws://localhost:3000
     container_name: raos-frontend
     environment:
       NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
@@ -419,6 +434,8 @@ volumes:
   neo4j_import:
     driver: local
   neo4j_plugins:
+    driver: local
+  raos_data:
     driver: local
 
 # =============================================================================

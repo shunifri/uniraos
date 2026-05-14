@@ -12,7 +12,7 @@ WORKDIR /app
 
 # 安装依赖
 COPY web/package*.json ./
-RUN npm ci && npm cache clean --force
+RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 # 复制源码
 COPY web/ ./
@@ -36,7 +36,7 @@ FROM nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c0
 RUN apk update && apk upgrade && rm -rf /var/cache/apk/*
 
 # 复制构建产物
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /src/ui /usr/share/nginx/html
 
 # 复制 Nginx 配置
 COPY docker/frontend/nginx.conf /etc/nginx/nginx.conf
