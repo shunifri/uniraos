@@ -502,17 +502,12 @@ function generateSkillForEndpoint(
         }
 
         // 发起请求
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 25000);
-
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
+          timeoutMs: 25000,
           method: endpoint.method,
           headers,
           body: ["GET", "HEAD"].includes(endpoint.method) ? undefined : body,
-          signal: controller.signal,
         });
-
-        clearTimeout(timer);
 
         const contentType = response.headers.get("content-type") ?? "";
         let responseBody: unknown;
@@ -579,7 +574,7 @@ export function createApiGenSkills(registry: SkillRegistry): void {
           }
         } else if (params.url) {
           try {
-            const response = await fetch(params.url as string, { signal: AbortSignal.timeout(15000) });
+            const response = await fetchWithTimeout(params.url as string, { timeoutMs: 15000 });
             if (!response.ok) {
               return { success: false, error: new Error(`获取文档失败: ${response.status}`) };
             }

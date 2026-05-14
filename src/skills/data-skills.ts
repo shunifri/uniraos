@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { join, dirname, resolve } from "path";
 import { createHash } from "crypto";
 import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 import type { SkillRegistry } from "../registry/index.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { isMySQL } from "../db/database.js";
@@ -979,18 +980,14 @@ function createHttpSkills(registry: SkillRegistry): void {
           }
         }
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
-
         try {
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
+            timeoutMs: timeout,
             method,
             headers,
             body,
-            signal: controller.signal,
+            skipSsrfCheck: true, // skill 层已做白名单校验
           });
-
-          clearTimeout(timer);
 
           const contentType = response.headers.get("content-type") ?? "";
           let responseBody: unknown;
@@ -1014,7 +1011,6 @@ function createHttpSkills(registry: SkillRegistry): void {
             error: response.ok ? undefined : new Error(`HTTP ${response.status}: ${response.statusText}`),
           };
         } catch (err) {
-          clearTimeout(timer);
           return {
             success: false,
             error: err instanceof Error ? err : new Error(String(err)),

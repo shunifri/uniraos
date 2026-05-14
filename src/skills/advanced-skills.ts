@@ -55,7 +55,7 @@ function createMonitoringSkills(registry: SkillRegistry): void {
         const timer = setTimeout(() => controller.abort(), timeout);
 
         try {
-          const response = await fetch(url, { method: "GET", signal: controller.signal });
+          const response = await fetchWithTimeout(url.toString(), { method: "GET", timeoutMs: 30000 });
           clearTimeout(timer);
 
           const healthy = response.status === expectedStatus;

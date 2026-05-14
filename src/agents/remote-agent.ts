@@ -7,6 +7,7 @@
  * 可注入 TeamAgent 的 agentFactory，使团队跨越多个 RAOS 实例。
  */
 import type { Agent, AgentInput, AgentOutput, AgentProfile, AgentStreamEvent, AgentLevel } from "./types.js";
+import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
 
 export interface RemoteAgentConfig {
   /** 远程 RAOS 实例的 URL（如 http://192.168.1.100:3000） */
@@ -35,11 +36,9 @@ export class RemoteAgent implements Agent {
     const url = `${this.config.endpoint}/chat`;
     const timeout = this.config.timeout ?? 60000;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-
     try {
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
+        timeoutMs: timeout,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -51,10 +50,7 @@ export class RemoteAgent implements Agent {
           systemPrompt: this.profile.personality,
           context: input.context,
         }),
-        signal: controller.signal,
       });
-
-      clearTimeout(timer);
 
       if (!response.ok) {
         const errText = await response.text();

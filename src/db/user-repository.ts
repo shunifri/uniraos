@@ -216,18 +216,27 @@ export async function countUsers(status = "active"): Promise<number> {
   }
 }
 
+const ALLOWED_USER_FIELDS: Record<string, string> = {
+  displayName: "display_name",
+  avatar: "avatar",
+  status: "status",
+  departmentId: "department_id",
+  phone: "phone",
+  email: "email",
+};
+
 export async function updateUser(id: string, fields: { displayName?: string; avatar?: string; status?: string; departmentId?: string; phone?: string; email?: string; roleIds?: string[] }): Promise<User | null> {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
     const sets: string[] = [];
     const values: any[] = [];
 
-    if (fields.displayName !== undefined) { sets.push("display_name = ?"); values.push(fields.displayName); }
-    if (fields.avatar !== undefined) { sets.push("avatar = ?"); values.push(fields.avatar); }
-    if (fields.status !== undefined) { sets.push("status = ?"); values.push(fields.status); }
-    if (fields.departmentId !== undefined) { sets.push("department_id = ?"); values.push(fields.departmentId); }
-    if (fields.phone !== undefined) { sets.push("phone = ?"); values.push(fields.phone); }
-    if (fields.email !== undefined) { sets.push("email = ?"); values.push(fields.email); }
+    for (const [key, col] of Object.entries(ALLOWED_USER_FIELDS)) {
+      if ((fields as any)[key] !== undefined) {
+        sets.push(`${col} = ?`);
+        values.push((fields as any)[key]);
+      }
+    }
 
     if (sets.length > 0) {
       sets.push("updated_at = ?");
@@ -250,12 +259,12 @@ export async function updateUser(id: string, fields: { displayName?: string; ava
     const sets: string[] = [];
     const vals: unknown[] = [];
 
-    if (fields.displayName !== undefined) { sets.push("display_name = ?"); vals.push(fields.displayName); }
-    if (fields.avatar !== undefined) { sets.push("avatar = ?"); vals.push(fields.avatar); }
-    if (fields.status !== undefined) { sets.push("status = ?"); vals.push(fields.status); }
-    if (fields.departmentId !== undefined) { sets.push("department_id = ?"); vals.push(fields.departmentId); }
-    if (fields.phone !== undefined) { sets.push("phone = ?"); vals.push(fields.phone); }
-    if (fields.email !== undefined) { sets.push("email = ?"); vals.push(fields.email); }
+    for (const [key, col] of Object.entries(ALLOWED_USER_FIELDS)) {
+      if ((fields as any)[key] !== undefined) {
+        sets.push(`${col} = ?`);
+        vals.push((fields as any)[key]);
+      }
+    }
 
     if (sets.length > 0) {
       sets.push("updated_at = unixepoch()");

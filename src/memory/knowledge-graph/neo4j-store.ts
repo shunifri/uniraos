@@ -17,9 +17,12 @@ export class Neo4jGraphStore {
     owner: string,
     uri: string = process.env.NEO4J_URI || "bolt://localhost:7687",
     user: string = process.env.NEO4J_USER || "neo4j",
-    password: string = process.env.NEO4J_PASSWORD || "raospassword",
+    password: string = process.env.NEO4J_PASSWORD || "",
     database: string = process.env.NEO4J_DATABASE || "raos"
   ) {
+    if (!password) {
+      throw new Error("Neo4j password is required. Set NEO4J_PASSWORD environment variable.");
+    }
     this.owner = owner;
     this.database = database;
     this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password));

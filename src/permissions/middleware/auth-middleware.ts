@@ -13,7 +13,7 @@ declare global {
 
 export async function authMiddleware(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): Promise<void> {
   let token: string | undefined;
@@ -27,16 +27,22 @@ export async function authMiddleware(
     token = req.cookies.token;
   }
 
-  if (!token && req.query?.token) {
-    token = String(req.query.token);
-  }
-
   if (token) {
     const user = await validateSession(token);
     if (user) {
       req.user = user;
+      next();
+      return;
     }
+    // Token 存在但验证失败 → 拒绝请求（防止无效 token 被当作匿名访问）
+    res.status(401).json({
+      success: false,
+      error: 'Invalid or expired token',
+    });
+    return;
   }
+
+  // 未提供 token → 匿名访问，继续执行（由具体路由决定是否需要 requireAuth）
   next();
 }
 

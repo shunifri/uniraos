@@ -24,18 +24,14 @@ function createWebFetchSkills(registry: SkillRegistry): void {
         const maxLength = (params.maxLength as number) ?? 50000;
 
         try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 25000);
-
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
+            timeoutMs: 25000,
             headers: {
               "User-Agent": "RAOS-Bot/1.0 (Recursive Agent Operating System)",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             },
-            signal: controller.signal,
             redirect: "follow",
           });
-          clearTimeout(timer);
 
           if (!response.ok) {
             return { success: false, error: new Error(`HTTP ${response.status}: ${response.statusText}`) };
@@ -276,21 +272,16 @@ async function searchBaidu(query: string, count: number): Promise<Array<{ title:
   const searchUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=${Math.min(count, 10)}`;
   const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-
   try {
-    const response = await fetch(searchUrl, {
+    const response = await fetchWithTimeout(searchUrl, {
+      timeoutMs: 15000,
       headers: {
         "User-Agent": ua,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
       },
       redirect: "follow",
-      signal: controller.signal,
     });
-
-    clearTimeout(timer);
     const html = await response.text();
     const results: Array<{ title: string; url: string; snippet: string }> = [];
 
