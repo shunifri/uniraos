@@ -97,6 +97,7 @@ export class ExecutionEngine {
             departmentId: store.departmentId,
           }
         : undefined,
+      conversationId: store?.conversationId,
     };
 
     const completedSteps: CompletedStep[] = [];

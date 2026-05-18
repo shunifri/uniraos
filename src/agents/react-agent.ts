@@ -324,9 +324,14 @@ export class ReactAgent implements Agent {
       systemPrompt += input.context.memoryContext;
     }
 
-    // 注入其他上下文（排除已处理的 memoryContext）
+    // 注入计划上下文（纯文本，直接追加）
+    if (input.context?.planContext && typeof input.context.planContext === "string") {
+      systemPrompt += input.context.planContext as string;
+    }
+
+    // 注入其他上下文（排除已处理的 memoryContext 和 planContext）
     const otherContext = input.context ? Object.fromEntries(
-      Object.entries(input.context).filter(([k]) => k !== "memoryContext")
+      Object.entries(input.context).filter(([k]) => k !== "memoryContext" && k !== "planContext")
     ) : {};
     if (Object.keys(otherContext).length > 0) {
       systemPrompt += `\n\n## 上下文信息\n${JSON.stringify(otherContext, null, 2)}`;

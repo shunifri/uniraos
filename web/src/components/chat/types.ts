@@ -50,6 +50,8 @@ export interface ChatMsg {
   resultData?: Record<string, unknown>;
   /** 预解析的 user_confirm 数据（避免每次渲染 JSON.parse） */
   parsedData?: Record<string, unknown>;
+  /** 计划进度消息关联的计划 ID */
+  planId?: string;
 }
 
 export interface Conversation {

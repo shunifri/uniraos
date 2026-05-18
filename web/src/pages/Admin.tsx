@@ -42,9 +42,11 @@ import {
   PlayCircleOutlined,
   LockOutlined,
   SearchOutlined,
+  UnorderedListOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { api } from "@/api";
+import { PlanManagerPanel } from "@/components/plan/PlanManagerPanel";
 
 // ===== 类型定义 =====
 interface User {
@@ -97,6 +99,7 @@ export default function AdminPage() {
         { key: "plugins", label: <><CodeOutlined /> {t("plugins")}</>, children: <PluginsPanel /> },
         { key: "tasks", label: <>{t("tasks")}</>, children: <TasksPanel /> },
         { key: "agent-config", label: <>Agent 配置</>, children: <AgentConfigPanel /> },
+        { key: "plans", label: <><UnorderedListOutlined /> 计划</>, children: <PlanManagerPanel /> },
       ]}
     />
   );

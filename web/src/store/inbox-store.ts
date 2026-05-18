@@ -290,6 +290,21 @@ export const useInboxStore = create<InboxState>((set, get) => ({
       }
     });
 
+    es.addEventListener("plan_progress", (e) => {
+      updateLastPong();
+      try {
+        const data = JSON.parse(e.data);
+        import("antd").then(({ message }) => {
+          message.info({
+            content: data.message || `📋 计划「${data.title}」进度: ${data.progress}%`,
+            duration: 3,
+          });
+        }).catch(() => {});
+      } catch (err) {
+        console.error("[Inbox SSE] failed to parse plan_progress:", err);
+      }
+    });
+
     es.addEventListener("heartbeat", () => {
       updateLastPong();
     });

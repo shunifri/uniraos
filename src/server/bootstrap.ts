@@ -19,6 +19,7 @@ import { createApiGenSkills } from "../skills/api-gen-skills.js";
 import { createMetaSkills } from "../skills/meta-skills.js";
 import { registerAppDesignerSkill } from "../skills/app-designer-skill.js";
 import { createPlanningSkill } from "../skills/planning-skill.js";
+import { createPlanExecutionSkills } from "../skills/plan-execution-skills.js";
 import { createGraphSkills } from "../skills/graph-skills.js";
 import { createWorkflowSkills } from "../skills/workflow-skills.js";
 import { createSchedulerSkills } from "../skills/scheduler-skills.js";
@@ -256,6 +257,8 @@ export async function bootstrap(): Promise<BootstrapResult> {
   console.log("   Prompt management skills registered");
 
   createPlanningSkill(registry, engine, () => providerManager.getProvider());
+  createPlanExecutionSkills(registry);
+  console.log("   Plan execution skills registered (plan_create/list/status/execute/pause/resume/cancel/delete/resume_all)");
 
   // 加载插件
   pluginLoader.on((event) => {

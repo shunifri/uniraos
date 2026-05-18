@@ -900,6 +900,25 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
               });
               needNewBubble = true;
               currentText = "";
+            } else if (eventType === "plan_progress") {
+              // 计划进度推送：在聊天中显示进度摘要
+              const progressText = data.message || `📋 计划「${data.title}」执行中... (${data.progress}%完成)`;
+              setConvStates(prev => {
+                const currentState = prev.get(convId)!;
+                // 检查是否已经存在相同 planId 的系统进度消息，有则更新，无则追加
+                const existingIdx = currentState.messages.findIndex(
+                  (m) => m.role === "system" && m.planId === data.planId
+                );
+                if (existingIdx >= 0) {
+                  const newMessages = [...currentState.messages];
+                  newMessages[existingIdx] = { ...newMessages[existingIdx], content: progressText };
+                  return new Map(prev).set(convId, { ...currentState, messages: newMessages });
+                }
+                return new Map(prev).set(convId, {
+                  ...currentState,
+                  messages: [...removeTyping(currentState.messages), { role: "system", content: progressText, planId: data.planId }],
+                });
+              });
             }
           }
         }

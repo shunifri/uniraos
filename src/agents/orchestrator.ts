@@ -483,14 +483,44 @@ export class Orchestrator {
     // 记录用户消息（按 conversationId 隔离）
     this.appendHistory(userId, conversationId, "user", input.message);
 
+    // 检查当前对话是否有进行中的计划
+    const planContext = await this.buildPlanContext(conversationId);
+
     return {
       ...input,
       history,
       context: {
         ...input.context,
         memoryContext,
+        planContext,
       },
     };
+  }
+
+  /** 构建计划上下文 */
+  private async buildPlanContext(conversationId?: string): Promise<string> {
+    if (!conversationId) return "";
+    try {
+      const { findPlanByConversationId } = await import("../plan/plan-state.js");
+      const found = findPlanByConversationId(conversationId);
+      if (!found) return "";
+
+      const { plan } = found;
+      if (plan.meta.status === "completed" || plan.meta.status === "cancelled") return "";
+
+      const progress = Math.round(
+        ((plan.steps.filter((s) => s.status === "completed" || s.status === "skipped").length) / plan.steps.length) * 100
+      );
+
+      const currentStep = plan.steps.find((s) => s.status === "running") || plan.steps.find((s) => s.status === "pending");
+      const runningStepInfo = currentStep
+        ? `当前步骤: 步骤 ${currentStep.index + 1}/${plan.steps.length} - ${currentStep.description}`
+        : "";
+
+      return `\n\n【当前对话关联计划】\n标题: ${plan.meta.title}\n状态: ${plan.meta.status}\n进度: ${progress}% (${plan.steps.filter((s) => s.status === "completed").length}/${plan.steps.length} 已完成)\n${runningStepInfo}\n\n如果用户询问计划进度或说"继续"，请调用 plan_chat_command skill。如果用户说其他内容，正常回复即可。`;
+    } catch {
+      return "";
+    }
   }
 
   /** 记录助手回复到历史（按 conversationId 隔离） */

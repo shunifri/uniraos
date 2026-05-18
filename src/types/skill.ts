@@ -171,6 +171,8 @@ export interface ExecutionContext {
     displayName?: string;
     departmentId?: string;
   };
+  /** 关联对话 ID（系统自动注入） */
+  conversationId?: string;
   /** 静默模式：组合 Skill 内部调用时不记录 trace */
   silent?: boolean;
 }

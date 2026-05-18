@@ -8,6 +8,8 @@ import { parseDocument } from "../services/doc-parser.js";
 import type { RouteDependencies } from "./types.js";
 import { confirmQueue } from "../skills/user-confirm-skill.js";
 import { log } from "../utils/logger.js";
+import { requestContext } from "../user/request-context.js";
+import { listPlans, pausePlan, resumePlan, cancelPlan, deletePlan } from "../plan/plan-state.js";
 
 // MySQL adapter helper
 async function getMySQLAdapter() {
@@ -63,35 +65,45 @@ ${message}`;
     }
 
     const enrichedMsg = enrichWithDefaultSkill(message, defaultSkill);
+    const existing = requestContext.getStore();
+    const ctx: import("../user/request-context.js").RequestContext = {
+      userId: existing?.userId ?? req.user?.id ?? "default",
+      userName: existing?.userName,
+      userDisplayName: existing?.userDisplayName,
+      departmentId: existing?.departmentId,
+      requestId: existing?.requestId,
+      conversationId: conversationId || existing?.conversationId,
+    };
+    await requestContext.run(ctx, async () => {
+      if (mode === "legacy" || mode === "react") {
+        const loop = getAgentLoop(userId);
+        if (!loop) {
+          res.status(400).json({ success: false, error: "LLM not configured" });
+          return;
+        }
+        try {
+          const result = await loop.run(enrichedMsg, { conversationId });
+          res.json({ success: true, ...result });
+        } catch (err) {
+          res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
 
-    if (mode === "legacy" || mode === "react") {
-      const loop = getAgentLoop(userId);
-      if (!loop) {
+      const orchestrator = getOrchestrator();
+      if (!orchestrator) {
         res.status(400).json({ success: false, error: "LLM not configured" });
         return;
       }
+
       try {
-        const result = await loop.run(enrichedMsg, { conversationId });
+        const roleAgentConfig = await resolveRoleAgentConfig(req);
+        const result = await orchestrator.run({ message: enrichedMsg, userId, roleAgentConfig });
         res.json({ success: true, ...result });
       } catch (err) {
         res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
       }
-      return;
-    }
-
-    const orchestrator = getOrchestrator();
-    if (!orchestrator) {
-      res.status(400).json({ success: false, error: "LLM not configured" });
-      return;
-    }
-
-    try {
-      const roleAgentConfig = await resolveRoleAgentConfig(req);
-      const result = await orchestrator.run({ message: enrichedMsg, userId, roleAgentConfig });
-      res.json({ success: true, ...result });
-    } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
-    }
+    });
   });
 
   // Agent streaming chat (SSE)
@@ -109,6 +121,18 @@ ${message}`;
       return;
     }
 
+    const convId = conversationId || undefined;
+    const existing = requestContext.getStore();
+    const ctx: import("../user/request-context.js").RequestContext = {
+      userId: existing?.userId ?? req.user?.id ?? "default",
+      userName: existing?.userName,
+      userDisplayName: existing?.userDisplayName,
+      departmentId: existing?.departmentId,
+      requestId: existing?.requestId,
+      conversationId: convId || existing?.conversationId,
+    };
+    await requestContext.run(ctx, async () => {
+
     // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -117,6 +141,32 @@ ${message}`;
     res.flushHeaders();
 
     res.write(`event: connected\ndata: {}\n\n`);
+
+    // 检查当前对话是否有进行中的计划，如果有立即推送进度摘要
+    if (convId) {
+      try {
+        const { findPlanByConversationId } = await import("../plan/plan-state.js");
+        const found = findPlanByConversationId(convId, userId);
+        if (found && found.plan.meta.status === "running") {
+          const { plan } = found;
+          const progress = Math.round(
+            ((plan.steps.filter((s) => s.status === "completed" || s.status === "skipped").length) / plan.steps.length) * 100
+          );
+          const currentStep = plan.steps.find((s) => s.status === "running") || plan.steps.find((s) => s.status === "pending");
+          res.write(`event: plan_progress\ndata: ${JSON.stringify({
+            planId: plan.meta.planId,
+            title: plan.meta.title,
+            status: plan.meta.status,
+            progress,
+            currentStep: currentStep ? { index: currentStep.index, description: currentStep.description } : null,
+            totalSteps: plan.steps.length,
+            message: `计划正在执行中 [${progress}%] — 步骤 ${currentStep ? currentStep.index + 1 : "?"}/${plan.steps.length}: ${currentStep ? currentStep.description : ""}`,
+          })}\n\n`);
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     let closed = false;
     res.on("close", () => {
@@ -132,8 +182,6 @@ ${message}`;
     };
 
     // ===== Backend message persistence =====
-    const convId = conversationId || undefined;
-    
     async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
       if (!convId) return;
       try {
@@ -395,6 +443,7 @@ ${message}`;
     if (!closed) {
       res.end();
     }
+    });
   });
 
   // POST /api/agent/chat/confirm — resolve a pending user_confirm
@@ -651,6 +700,61 @@ ${message}`;
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: String(error) });
+    }
+  });
+
+  // ===== Plan Management REST API =====
+  router.get("/agent/plan/list", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const plans = listPlans(userId);
+      res.json({ success: true, plans });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post("/agent/plan/pause", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const { fileName } = req.body;
+      const plan = await pausePlan(fileName, userId);
+      res.json({ success: true, plan: { planId: plan.meta.planId, title: plan.meta.title, status: plan.meta.status } });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post("/agent/plan/resume", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const { fileName } = req.body;
+      const plan = await resumePlan(fileName, userId);
+      res.json({ success: true, plan: { planId: plan.meta.planId, title: plan.meta.title, status: plan.meta.status } });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post("/agent/plan/cancel", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const { fileName } = req.body;
+      const plan = await cancelPlan(fileName, userId);
+      res.json({ success: true, plan: { planId: plan.meta.planId, title: plan.meta.title, status: plan.meta.status } });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post("/agent/plan/delete", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const { fileName } = req.body;
+      deletePlan(fileName, userId);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
