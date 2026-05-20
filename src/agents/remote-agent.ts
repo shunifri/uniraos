@@ -77,7 +77,6 @@ export class RemoteAgent implements Agent {
         },
       };
     } catch (err) {
-      clearTimeout(timer);
       throw err;
     }
   }

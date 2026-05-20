@@ -323,7 +323,6 @@ async function searchBaidu(query: string, count: number): Promise<Array<{ title:
 
     return results;
   } catch (e: unknown) {
-    clearTimeout(timer);
     if ((e as Error).name === "AbortError") {
       return [{ title: "搜索超时", url: "", snippet: "百度搜索请求超时，请稍后重试" }];
     }
