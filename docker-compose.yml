@@ -152,7 +152,7 @@ services:
     image: neo4j:5.15.0-community
     container_name: raos-neo4j
     environment:
-      NEO4J_AUTH: ${NEO4J_AUTH:?NEO4J_AUTH is required}
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/raos}
       NEO4J_dbms_memory_pagecache_size: ${NEO4J_PAGE_CACHE:-512M}
       NEO4J_dbms_memory_heap_initial__size: ${NEO4J_HEAP_INIT:-512M}
       NEO4J_dbms_memory_heap_max__size: ${NEO4J_HEAP_MAX:-1G}
@@ -227,8 +227,8 @@ services:
       USE_MYSQL: "true"
       # 知识图谱存储后端: mysql 或 neo4j
       GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
-      # LLM 配置
-      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
+      # LLM 配置（可选，首次启动后也可在系统设置中配置）
+      LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       # JWT 密钥
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
@@ -299,8 +299,8 @@ services:
       NEO4J_DATABASE: raos
       USE_MYSQL: "true"
       GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
-      # LLM 配置
-      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY is required}
+      # LLM 配置（可选，首次启动后也可在系统设置中配置）
+      LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LOG_LEVEL: info
     volumes:

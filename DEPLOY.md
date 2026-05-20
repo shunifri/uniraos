@@ -23,28 +23,43 @@ raos/
 
 ## 一键部署（推荐）
 
-### 全新部署
+### 交互式向导部署（全新环境）
 
 ```bash
 # 1. 克隆代码
 git clone <repo> && cd raos
 
-# 2. 一键部署（自动构建镜像）
-./deploy/deploy.sh --build
-
-# 或使用远程镜像（跳过本地构建）
-# ./deploy/deploy.sh
+# 2. 启动交互式部署向导
+./deploy/deploy.sh
 ```
 
-`deploy.sh` 会自动完成以下操作：
-1. 检查 Docker / Docker Compose 环境
-2. 从 `.env.example` 生成 `.env`（自动随机生成密码）
-3. 构建/拉取镜像
-4. 启动基础设施（MySQL、Redis、Qdrant、RabbitMQ、MinIO、Neo4j）
-5. 等待所有服务就绪
-6. 运行数据库迁移
-7. 启动后端、Worker、前端
-8. 执行健康检查
+向导将引导你完成：
+1. **选择部署方式**：本地构建 / 拉取远程镜像 / 纯镜像快速部署
+2. **环境检查**：自动检测 Docker、端口占用、磁盘空间
+3. **配置引导**：逐行填写必填项，自动生成强密码，可确认或修改
+4. **可选配置**：LLM API Key、Neo4j 图数据库、Redis 密码等
+5. **配置摘要**：部署前显示脱敏配置，确认后执行
+6. **自动部署**：镜像准备 → 启动基础设施 → 数据库迁移 → 启动应用 → 健康检查
+
+> 💡 **LLM API Key 无需预先配置**。在向导中可选择跳过，首次启动后登录系统，在「系统设置 → LLM 配置」中填写即可。
+
+### 命令行快速部署
+
+如果你熟悉配置，也可以直接通过参数部署：
+
+```bash
+# 本地构建镜像（开发/测试环境）
+./deploy/deploy.sh --build
+
+# 拉取远程镜像（生产环境，无需等待构建）
+./deploy/deploy.sh
+
+# 非交互模式（CI/CD 自动化场景）
+./deploy/deploy.sh --non-interactive --build
+
+# 纯镜像快速部署（无源码，仅下载配置文件和镜像）
+./deploy/deploy.sh --quick
+```
 
 部署完成后访问：
 - **前端**: http://localhost
@@ -68,7 +83,24 @@ docker compose --profile monitoring up -d
 
 如果你只需要部署而不需要修改源码，可以直接拉取华为云 SWR 上的预编译镜像。后端镜像已使用 **bytenode 字节码编译**，源码不可见。
 
-### 前置准备
+### 方式 1: 交互式向导（推荐）
+
+下载部署脚本后启动交互式向导，自动下载配置文件并引导完成部署：
+
+```bash
+# 下载部署脚本
+curl -O https://raw.githubusercontent.com/your-org/raos/main/deploy/deploy.sh
+chmod +x deploy.sh
+
+# 启动交互式向导（自动下载 docker-compose.yml、.env.example 等）
+./deploy.sh --quick
+```
+
+向导会自动完成：下载配置 → 环境检查 → 引导填写环境变量 → 拉取镜像 → 启动服务 → 健康检查。
+
+### 方式 2: 手动部署
+
+如果你需要完全手动控制部署过程：
 
 #### 1. 创建部署目录并下载文件
 
@@ -89,10 +121,6 @@ curl -o docker/mysql/primary.cnf \
   https://raw.githubusercontent.com/your-org/raos/main/docker/mysql/primary.cnf
 curl -o docker/rabbitmq/rabbitmq.conf \
   https://raw.githubusercontent.com/your-org/raos/main/docker/rabbitmq/rabbitmq.conf
-
-# MySQL 初始化脚本（如存在）
-# curl -o docker/mysql/init/01-schema.sql \
-#   https://raw.githubusercontent.com/your-org/raos/main/docker/mysql/init/01-schema.sql
 ```
 
 #### 2. 配置环境变量
@@ -103,7 +131,7 @@ cp .env.example .env
 vim .env
 ```
 
-**必填环境变量（部署前必须配置）**：
+**必填环境变量**：
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
@@ -112,34 +140,34 @@ vim .env
 | `MYSQL_PASSWORD` | MySQL 应用密码 | 强密码 |
 | `RABBITMQ_PASS` | RabbitMQ 密码 | 强密码 |
 | `MINIO_PASSWORD` | MinIO 密码 | 强密码 |
-| `LLM_API_KEY` | LLM API Key | `sk-...` |
 
 **可选环境变量**：
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
+| `LLM_API_KEY` | LLM API Key（也可首次启动后在系统设置中配置） | - |
 | `LLM_BASE_URL` | LLM API 基础 URL | `https://api.openai.com/v1` |
 | `REDIS_PASSWORD` | Redis 密码（生产环境强烈建议） | 空 |
-| `NEO4J_PASSWORD` | Neo4j 密码（启用图数据库时） | 空 |
+| `NEO4J_AUTH` | Neo4j 认证（启用图数据库时） | `neo4j/raos` |
 | `GRAPH_STORE_BACKEND` | 图存储后端：`mysql` / `neo4j` | `mysql` |
 | `IMAGE_TAG` | 镜像版本标签 | `latest` |
-| `LOG_LEVEL` | 日志级别：`debug`/`info`/`warn`/`error` | `info` |
+| `LOG_LEVEL` | 日志级别 | `info` |
 
 > 快速生成强密码：`openssl rand -base64 24`
 
-### 快速启动
+#### 3. 启动服务
 
 ```bash
-# 1. 拉取镜像（首次或升级时）
+# 拉取镜像（首次或升级时）
 docker compose pull
 
-# 2. 启动所有服务
+# 启动所有服务
 docker compose up -d
 
-# 3. 查看服务状态（等待所有服务 healthy）
+# 查看服务状态（等待所有服务 healthy）
 docker compose ps
 
-# 4. 查看后端启动日志
+# 查看后端启动日志
 docker logs -f raos-backend
 ```
 
@@ -160,10 +188,12 @@ docker logs -f raos-backend
 
 #### 2. 配置 LLM
 
-进入系统设置 → LLM 配置，填写：
-- **API Key**: 与 `.env` 中的 `LLM_API_KEY` 一致
+如果部署时未在 `.env` 中配置 `LLM_API_KEY`，请在首次登录后进入 **系统设置 → LLM 配置**，填写：
+- **API Key**: 你的 LLM 服务密钥，如 `sk-...`
 - **Base URL**: 默认 `https://api.openai.com/v1`，或你的自定义代理地址
 - **模型**: 如 `gpt-4o`, `deepseek-chat` 等
+
+> 💡 推荐做法：生产环境将 `LLM_API_KEY` 留空，首次启动后由管理员在系统内配置，避免密钥硬编码在环境文件中。
 
 也可通过 API 直接配置：
 ```bash
@@ -334,7 +364,7 @@ docker run --rm -v <volume>:/target -v $(pwd)/backups/20240115_120000:/backup al
 | `RABBITMQ_PASS` | 是 | 随机生成 | RabbitMQ 密码 |
 | `MINIO_PASSWORD` | 是 | 随机生成 | MinIO 密码 |
 | `NEO4J_PASSWORD` | 否 | - | Neo4j 密码（使用 Neo4j 时必填） |
-| `LLM_API_KEY` | 是 | - | LLM API Key（OpenAI 兼容） |
+| `LLM_API_KEY` | 否 | - | LLM API Key（OpenAI 兼容，也可系统内配置） |
 | `LLM_BASE_URL` | 否 | - | LLM API 基础 URL |
 | `ALLOWED_ORIGINS` | 是 | - | CORS 白名单，逗号分隔域名 |
 | `LOG_LEVEL` | 否 | `info` | 日志级别 |
@@ -389,7 +419,7 @@ docker stats
 | `/health` 返回 503 | 检查 MySQL/Redis/Qdrant 是否正常运行：`docker compose ps` |
 | `/ready` 返回 503 | 检查数据库迁移是否成功：`docker logs raos-backend` |
 | 升级后数据丢失 | 检查是否误执行了 `docker compose down -v`；从备份恢复 |
-| LLM 无响应 | 检查 `.env` 中 LLM API Key 和额度；检查系统设置中 LLM 配置 |
+| LLM 无响应 | 检查系统设置中 LLM 配置；如通过环境变量配置，检查 `.env` 中 LLM API Key 和额度 |
 | 内存溢出 OOM | 调整 `docker-compose.yml` 中的 `deploy.resources.limits` |
 | 镜像拉取失败 / 400 Bad Request | 镜像使用 `docker buildx` 构建，确保 Docker ≥24.0；检查 SWR 登录状态 |
 | 前端页面空白 / 404 | 检查 `docker/frontend/nginx.conf` 是否存在；检查 `.raos/ui` 卷数据 |

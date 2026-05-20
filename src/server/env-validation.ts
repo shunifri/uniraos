@@ -69,10 +69,10 @@ export function validateEnv(): EnvValidationResult {
     errors.push("DOCMIND_ACCESS_KEY_ID appears invalid (too short)");
   }
 
-  // LLM API Key (at least one must be configured)
+  // LLM API Key (optional at startup — can be configured via system settings UI/API later)
   const hasLlmKey = !!(process.env.LLM_API_KEY || process.env.OPENAI_API_KEY);
   if (!hasLlmKey) {
-    errors.push("At least one LLM API key must be configured (LLM_API_KEY or OPENAI_API_KEY)");
+    warnings.push("No LLM API key found in environment (LLM_API_KEY or OPENAI_API_KEY). You can configure it later via System Settings → LLM Config.");
   }
 
   return {

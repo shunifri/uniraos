@@ -72,6 +72,20 @@ rabbitmqctl set_permissions -p / raos ".*" ".*" ".*"
 cp .env.example .env
 ```
 
+编辑 `.env`，至少配置以下必填项：
+
+| 变量 | 说明 |
+|------|------|
+| `JWT_SECRET` | JWT 签名密钥（≥32 位随机字符） |
+| `MYSQL_PASSWORD` | MySQL 密码（与上面创建的用户密码一致） |
+| `RABBITMQ_PASS` | RabbitMQ 密码 |
+| `MINIO_PASSWORD` | MinIO 密码 |
+
+**关于 LLM API Key**：
+- 可选：`.env` 中可留空 `LLM_API_KEY=`
+- 启动后登录系统，进入 **系统设置 → LLM 配置** 填写 API Key、Base URL 和模型
+- 这样可避免将密钥硬编码在本地环境文件中
+
 ## 3. 启动应用
 
 ```bash

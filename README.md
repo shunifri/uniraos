@@ -67,25 +67,37 @@ RAOS（Recursive Agent Operating System）是一个**生产级智能体操作系
 - 4C8G 以上服务器（生产建议 8C16G）
 - 20GB+ 可用磁盘空间
 
-### 生产环境部署
+### 生产环境部署（交互式向导，推荐）
 
 ```bash
 # 1. 克隆代码
 git clone <repo> && cd raos
 
-# 2. 一键部署（自动构建镜像 + 生成配置 + 启动全部服务）
-./deploy/deploy.sh --build
+# 2. 启动交互式部署向导（引导配置环境变量、选择部署方式）
+./deploy/deploy.sh
 ```
 
-`deploy.sh` 会自动完成：
+向导会自动完成：
 1. 检查 Docker / Docker Compose 环境
-2. 从 `.env.example` 生成 `.env`（自动随机生成密码）
-3. 构建/拉取镜像
-4. 启动基础设施（MySQL、Redis、Qdrant、RabbitMQ、MinIO、Neo4j）
-5. 等待所有服务就绪
-6. 运行数据库迁移
-7. 启动后端 + Worker + 前端
-8. 执行健康检查
+2. 引导生成 `.env`（自动随机生成密码，可确认/修改）
+3. 选择部署方式（本地构建 / 拉取镜像 / 纯镜像）
+4. 构建/拉取镜像
+5. 启动全部服务并执行健康检查
+
+> 💡 **首次部署无需配置 LLM API Key**，启动后登录系统，在「系统设置 → LLM 配置」中填写即可。
+
+### 其他部署方式
+
+```bash
+# 本地构建镜像（开发/测试）
+./deploy/deploy.sh --build
+
+# 非交互模式（CI/CD 自动化）
+./deploy/deploy.sh --non-interactive --build
+
+# 纯镜像快速部署（无源码，仅下载配置）
+./deploy/deploy.sh --quick
+```
 
 部署完成后访问：
 - **前端**: http://localhost
@@ -93,6 +105,8 @@ git clone <repo> && cd raos
 - **健康检查**: http://localhost:3000/health
 
 > ⚠️ 首次部署后请立即使用默认账号 `admin / admin` 登录并修改密码。
+>
+> 💡 LLM API Key 可在部署后通过系统设置配置，无需预先写入环境文件。
 
 ### 启用监控（可选）
 
