@@ -71,7 +71,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
     exit 1
   fi
 
-  JWT_SECRET=$(openssl rand -base64 48 2>/dev/null || dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64)
+  JWT_SECRET=$( (openssl rand -base64 48 2>/dev/null || dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64) | tr -d '\n')
   MYSQL_ROOT_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
   MYSQL_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
   REDIS_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
@@ -83,27 +83,27 @@ if [[ ! -f "$ENV_FILE" ]]; then
 
   if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' \
-      -e "s/JWT_SECRET=__REPLACE_IN_PRODUCTION__/JWT_SECRET=${JWT_SECRET}/" \
-      -e "s/MYSQL_ROOT_PASSWORD=.*/MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}/" \
-      -e "s/MYSQL_PASSWORD=__REPLACE_IN_PRODUCTION__/MYSQL_PASSWORD=${MYSQL_PASSWORD}/" \
-      -e "s/REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
-      -e "s/RABBITMQ_PASS=.*/RABBITMQ_PASS=${RABBITMQ_PASS}/" \
-      -e "s/MINIO_PASSWORD=.*/MINIO_PASSWORD=${MINIO_PASSWORD}/" \
-      -e "s/NEO4J_PASSWORD=.*/NEO4J_PASSWORD=${NEO4J_PASSWORD}/" \
-      -e "s/NEO4J_AUTH=.*/NEO4J_AUTH=neo4j\/${NEO4J_PASSWORD}/" \
-      -e "s/NODE_ENV=development/NODE_ENV=production/" \
+      -e "s#JWT_SECRET=__REPLACE_IN_PRODUCTION__#JWT_SECRET=${JWT_SECRET}#" \
+      -e "s#MYSQL_ROOT_PASSWORD=.*#MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}#" \
+      -e "s#MYSQL_PASSWORD=__REPLACE_IN_PRODUCTION__#MYSQL_PASSWORD=${MYSQL_PASSWORD}#" \
+      -e "s#REDIS_PASSWORD=.*#REDIS_PASSWORD=${REDIS_PASSWORD}#" \
+      -e "s#RABBITMQ_PASS=.*#RABBITMQ_PASS=${RABBITMQ_PASS}#" \
+      -e "s#MINIO_PASSWORD=.*#MINIO_PASSWORD=${MINIO_PASSWORD}#" \
+      -e "s#NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${NEO4J_PASSWORD}#" \
+      -e "s#NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}#" \
+      -e "s#NODE_ENV=development#NODE_ENV=production#" \
       "$ENV_FILE"
   else
     sed -i \
-      -e "s/JWT_SECRET=__REPLACE_IN_PRODUCTION__/JWT_SECRET=${JWT_SECRET}/" \
-      -e "s/MYSQL_ROOT_PASSWORD=.*/MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}/" \
-      -e "s/MYSQL_PASSWORD=__REPLACE_IN_PRODUCTION__/MYSQL_PASSWORD=${MYSQL_PASSWORD}/" \
-      -e "s/REDIS_PASSWORD=.*/REDIS_PASSWORD=${REDIS_PASSWORD}/" \
-      -e "s/RABBITMQ_PASS=.*/RABBITMQ_PASS=${RABBITMQ_PASS}/" \
-      -e "s/MINIO_PASSWORD=.*/MINIO_PASSWORD=${MINIO_PASSWORD}/" \
-      -e "s/NEO4J_PASSWORD=.*/NEO4J_PASSWORD=${NEO4J_PASSWORD}/" \
-      -e "s/NEO4J_AUTH=.*/NEO4J_AUTH=neo4j\/${NEO4J_PASSWORD}/" \
-      -e "s/NODE_ENV=development/NODE_ENV=production/" \
+      -e "s#JWT_SECRET=__REPLACE_IN_PRODUCTION__#JWT_SECRET=${JWT_SECRET}#" \
+      -e "s#MYSQL_ROOT_PASSWORD=.*#MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}#" \
+      -e "s#MYSQL_PASSWORD=__REPLACE_IN_PRODUCTION__#MYSQL_PASSWORD=${MYSQL_PASSWORD}#" \
+      -e "s#REDIS_PASSWORD=.*#REDIS_PASSWORD=${REDIS_PASSWORD}#" \
+      -e "s#RABBITMQ_PASS=.*#RABBITMQ_PASS=${RABBITMQ_PASS}#" \
+      -e "s#MINIO_PASSWORD=.*#MINIO_PASSWORD=${MINIO_PASSWORD}#" \
+      -e "s#NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${NEO4J_PASSWORD}#" \
+      -e "s#NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}#" \
+      -e "s#NODE_ENV=development#NODE_ENV=production#" \
       "$ENV_FILE"
   fi
 

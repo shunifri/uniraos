@@ -112,7 +112,7 @@ function generate_password() {
 }
 
 function generate_jwt_secret() {
-  openssl rand -base64 48 2>/dev/null || dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64
+  (openssl rand -base64 48 2>/dev/null || dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64) | tr -d '\n'
 }
 
 function is_weak_password() {
@@ -468,7 +468,7 @@ function step_config() {
   jwt_secret=$(generate_jwt_secret)
   echo -e "${CYAN}[JWT_SECRET]${NC} JWT 签名密钥（≥32 字符，用于 Token 签名）"
   if confirm "使用自动生成的密钥?"; then
-    sed_inplace "$ENV_FILE" "s/^JWT_SECRET=.*/JWT_SECRET=${jwt_secret}/"
+    sed_inplace "$ENV_FILE" "s#^JWT_SECRET=.*#JWT_SECRET=${jwt_secret}#"
     log_ok "JWT_SECRET 已设置"
   else
     local custom_jwt
@@ -477,7 +477,7 @@ function step_config() {
       log_warn "JWT_SECRET 至少需要 32 个字符"
       custom_jwt=$(read_input "请输入 JWT_SECRET（≥32 字符）")
     done
-    sed_inplace "$ENV_FILE" "s/^JWT_SECRET=.*/JWT_SECRET=${custom_jwt}/"
+    sed_inplace "$ENV_FILE" "s#^JWT_SECRET=.*#JWT_SECRET=${custom_jwt}#"
     log_ok "JWT_SECRET 已设置"
   fi
   echo ""
@@ -489,8 +489,8 @@ function step_config() {
 
   echo -e "${CYAN}[MySQL]${NC} 数据库密码"
   if confirm "使用自动生成的强密码?"; then
-    sed_inplace "$ENV_FILE" "s/^MYSQL_ROOT_PASSWORD=.*/MYSQL_ROOT_PASSWORD=${mysql_root_pass}/"
-    sed_inplace "$ENV_FILE" "s/^MYSQL_PASSWORD=.*/MYSQL_PASSWORD=${mysql_pass}/"
+    sed_inplace "$ENV_FILE" "s#^MYSQL_ROOT_PASSWORD=.*#MYSQL_ROOT_PASSWORD=${mysql_root_pass}#"
+    sed_inplace "$ENV_FILE" "s#^MYSQL_PASSWORD=.*#MYSQL_PASSWORD=${mysql_pass}#"
     log_ok "MySQL 密码已设置"
   else
     local custom_root custom_app
@@ -504,8 +504,8 @@ function step_config() {
       log_warn "密码太弱，请使用至少 8 位的强密码"
       custom_app=$(read_password "MySQL 应用密码")
     done
-    sed_inplace "$ENV_FILE" "s/^MYSQL_ROOT_PASSWORD=.*/MYSQL_ROOT_PASSWORD=${custom_root}/"
-    sed_inplace "$ENV_FILE" "s/^MYSQL_PASSWORD=.*/MYSQL_PASSWORD=${custom_app}/"
+    sed_inplace "$ENV_FILE" "s#^MYSQL_ROOT_PASSWORD=.*#MYSQL_ROOT_PASSWORD=${custom_root}#"
+    sed_inplace "$ENV_FILE" "s#^MYSQL_PASSWORD=.*#MYSQL_PASSWORD=${custom_app}#"
     log_ok "MySQL 密码已设置"
   fi
   echo ""
@@ -516,7 +516,7 @@ function step_config() {
 
   echo -e "${CYAN}[RabbitMQ]${NC} 消息队列密码"
   if confirm "使用自动生成的强密码?"; then
-    sed_inplace "$ENV_FILE" "s/^RABBITMQ_PASS=.*/RABBITMQ_PASS=${rabbit_pass}/"
+    sed_inplace "$ENV_FILE" "s#^RABBITMQ_PASS=.*#RABBITMQ_PASS=${rabbit_pass}#"
     log_ok "RabbitMQ 密码已设置"
   else
     local custom_rabbit
@@ -525,7 +525,7 @@ function step_config() {
       log_warn "密码太弱"
       custom_rabbit=$(read_password "RabbitMQ 密码")
     done
-    sed_inplace "$ENV_FILE" "s/^RABBITMQ_PASS=.*/RABBITMQ_PASS=${custom_rabbit}/"
+    sed_inplace "$ENV_FILE" "s#^RABBITMQ_PASS=.*#RABBITMQ_PASS=${custom_rabbit}#"
     log_ok "RabbitMQ 密码已设置"
   fi
   echo ""
@@ -536,7 +536,7 @@ function step_config() {
 
   echo -e "${CYAN}[MinIO]${NC} 对象存储密码"
   if confirm "使用自动生成的强密码?"; then
-    sed_inplace "$ENV_FILE" "s/^MINIO_PASSWORD=.*/MINIO_PASSWORD=${minio_pass}/"
+    sed_inplace "$ENV_FILE" "s#^MINIO_PASSWORD=.*#MINIO_PASSWORD=${minio_pass}#"
     log_ok "MinIO 密码已设置"
   else
     local custom_minio
@@ -545,7 +545,7 @@ function step_config() {
       log_warn "密码太弱"
       custom_minio=$(read_password "MinIO 密码")
     done
-    sed_inplace "$ENV_FILE" "s/^MINIO_PASSWORD=.*/MINIO_PASSWORD=${custom_minio}/"
+    sed_inplace "$ENV_FILE" "s#^MINIO_PASSWORD=.*#MINIO_PASSWORD=${custom_minio}#"
     log_ok "MinIO 密码已设置"
   fi
   echo ""
@@ -557,12 +557,12 @@ function step_config() {
   echo -e "${CYAN}[Redis]${NC} 缓存密码（可选，生产环境推荐配置）"
   if confirm "设置 Redis 密码?"; then
     if confirm "使用自动生成的强密码?"; then
-      sed_inplace "$ENV_FILE" "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${redis_pass}/"
+      sed_inplace "$ENV_FILE" "s#^REDIS_PASSWORD=.*#REDIS_PASSWORD=${redis_pass}#"
       log_ok "Redis 密码已设置"
     else
       local custom_redis
       custom_redis=$(read_password "Redis 密码")
-      sed_inplace "$ENV_FILE" "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${custom_redis}/"
+      sed_inplace "$ENV_FILE" "s#^REDIS_PASSWORD=.*#REDIS_PASSWORD=${custom_redis}#"
       log_ok "Redis 密码已设置"
     fi
   else
@@ -577,19 +577,19 @@ function step_config() {
   echo -e "${CYAN}[Neo4j]${NC} 图数据库密码（可选，使用知识图谱时需要）"
   if confirm "启用 Neo4j 图数据库?"; then
     if confirm "使用自动生成的强密码?"; then
-      sed_inplace "$ENV_FILE" "s/^NEO4J_AUTH=.*/NEO4J_AUTH=neo4j\/${neo4j_pass}/"
-      sed_inplace "$ENV_FILE" "s/^NEO4J_PASSWORD=.*/NEO4J_PASSWORD=${neo4j_pass}/"
+      sed_inplace "$ENV_FILE" "s#^NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${neo4j_pass}#"
+      sed_inplace "$ENV_FILE" "s#^NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${neo4j_pass}#"
       log_ok "Neo4j 密码已设置"
     else
       local custom_neo4j
       custom_neo4j=$(read_password "Neo4j 密码")
-      sed_inplace "$ENV_FILE" "s/^NEO4J_AUTH=.*/NEO4J_AUTH=neo4j\/${custom_neo4j}/"
-      sed_inplace "$ENV_FILE" "s/^NEO4J_PASSWORD=.*/NEO4J_PASSWORD=${custom_neo4j}/"
+      sed_inplace "$ENV_FILE" "s#^NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${custom_neo4j}#"
+      sed_inplace "$ENV_FILE" "s#^NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${custom_neo4j}#"
       log_ok "Neo4j 密码已设置"
     fi
     # 启用 Neo4j
     if grep -q "^GRAPH_STORE_BACKEND=" "$ENV_FILE"; then
-      sed_inplace "$ENV_FILE" "s/^GRAPH_STORE_BACKEND=.*/GRAPH_STORE_BACKEND=neo4j/"
+      sed_inplace "$ENV_FILE" "s#^GRAPH_STORE_BACKEND=.*#GRAPH_STORE_BACKEND=neo4j#"
     fi
   else
     log_info "跳过 Neo4j 配置"
@@ -604,16 +604,16 @@ function step_config() {
     local llm_key llm_base
     llm_key=$(read_input "LLM API Key")
     llm_base=$(read_input "LLM Base URL" "https://api.openai.com/v1")
-    sed_inplace "$ENV_FILE" "s/^# LLM_API_KEY=.*/LLM_API_KEY=${llm_key}/"
-    sed_inplace "$ENV_FILE" "s/^LLM_API_KEY=.*/LLM_API_KEY=${llm_key}/"
-    sed_inplace "$ENV_FILE" "s/^# LLM_BASE_URL=.*/LLM_BASE_URL=${llm_base}/"
-    sed_inplace "$ENV_FILE" "s/^LLM_BASE_URL=.*/LLM_BASE_URL=${llm_base}/"
+    sed_inplace "$ENV_FILE" "s#^# LLM_API_KEY=.*#LLM_API_KEY=${llm_key}#"
+    sed_inplace "$ENV_FILE" "s#^LLM_API_KEY=.*#LLM_API_KEY=${llm_key}#"
+    sed_inplace "$ENV_FILE" "s#^# LLM_BASE_URL=.*#LLM_BASE_URL=${llm_base}#"
+    sed_inplace "$ENV_FILE" "s#^LLM_BASE_URL=.*#LLM_BASE_URL=${llm_base}#"
     log_ok "LLM 配置已保存"
   else
     log_info "跳过 LLM 配置，后续可在系统设置中配置"
     # 确保 LLM_API_KEY 不为旧示例值
-    sed_inplace "$ENV_FILE" "s/^LLM_API_KEY=sk-your-openai-key/\# LLM_API_KEY=/"
-    sed_inplace "$ENV_FILE" "s/^OPENAI_API_KEY=sk-your-openai-key/\# OPENAI_API_KEY=/"
+    sed_inplace "$ENV_FILE" "s#^LLM_API_KEY=sk-your-openai-key#\# LLM_API_KEY=#"
+    sed_inplace "$ENV_FILE" "s#^OPENAI_API_KEY=sk-your-openai-key#\# OPENAI_API_KEY=#"
   fi
   echo ""
 
@@ -622,7 +622,7 @@ function step_config() {
   local allowed_origins
   allowed_origins=$(read_input "ALLOWED_ORIGINS" "http://localhost")
   if grep -q "^ALLOWED_ORIGINS=" "$ENV_FILE"; then
-    sed_inplace "$ENV_FILE" "s|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${allowed_origins}|"
+    sed_inplace "$ENV_FILE" "s#^ALLOWED_ORIGINS=.*#ALLOWED_ORIGINS=${allowed_origins}#"
   else
     echo "ALLOWED_ORIGINS=${allowed_origins}" >> "$ENV_FILE"
   fi
@@ -630,7 +630,7 @@ function step_config() {
   echo ""
 
   # NODE_ENV
-  sed_inplace "$ENV_FILE" "s/^NODE_ENV=development/NODE_ENV=production/"
+  sed_inplace "$ENV_FILE" "s#^NODE_ENV=development#NODE_ENV=production#"
 
   print_divider
   log_ok "环境变量配置完成"
@@ -657,14 +657,14 @@ function step_summary() {
   echo ""
 
   echo -e "${BOLD}关键配置（已脱敏）:${NC}"
-  echo -e "  JWT_SECRET:          ${JWT_SECRET:0:8}..."
-  echo -e "  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:0:4}****"
-  echo -e "  MYSQL_PASSWORD:      ${MYSQL_PASSWORD:0:4}****"
-  echo -e "  RABBITMQ_PASS:       ${RABBITMQ_PASS:0:4}****"
-  echo -e "  MINIO_PASSWORD:      ${MINIO_PASSWORD:0:4}****"
-  echo -e "  REDIS_PASSWORD:      ${REDIS_PASSWORD:0:4}****"
+  echo -e "  JWT_SECRET:          ${JWT_SECRET:-(未配置)}"
+  echo -e "  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-(未配置)}"
+  echo -e "  MYSQL_PASSWORD:      ${MYSQL_PASSWORD:-(未配置)}"
+  echo -e "  RABBITMQ_PASS:       ${RABBITMQ_PASS:-(未配置)}"
+  echo -e "  MINIO_PASSWORD:      ${MINIO_PASSWORD:-(未配置)}"
+  echo -e "  REDIS_PASSWORD:      ${REDIS_PASSWORD:-(未配置)}"
   echo -e "  NEO4J_AUTH:          ${NEO4J_AUTH:-(未配置)}"
-  echo -e "  LLM_API_KEY:         ${LLM_API_KEY:+已配置}"
+  echo -e "  LLM_API_KEY:         ${LLM_API_KEY:-(未配置)}"
   echo -e "  ALLOWED_ORIGINS:     ${ALLOWED_ORIGINS:-http://localhost}"
   echo ""
 
