@@ -78,6 +78,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   RABBITMQ_PASS=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
   MINIO_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
   NEO4J_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
+  GRAFANA_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 24)
 
   cp "${PROJECT_DIR}/.env.example" "$ENV_FILE"
 
@@ -91,6 +92,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
       -e "s#MINIO_PASSWORD=.*#MINIO_PASSWORD=${MINIO_PASSWORD}#" \
       -e "s#NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${NEO4J_PASSWORD}#" \
       -e "s#NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}#" \
+      -e "s#GRAFANA_PASSWORD=.*#GRAFANA_PASSWORD=${GRAFANA_PASSWORD}#" \
       -e "s#NODE_ENV=development#NODE_ENV=production#" \
       "$ENV_FILE"
   else
@@ -103,6 +105,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
       -e "s#MINIO_PASSWORD=.*#MINIO_PASSWORD=${MINIO_PASSWORD}#" \
       -e "s#NEO4J_PASSWORD=.*#NEO4J_PASSWORD=${NEO4J_PASSWORD}#" \
       -e "s#NEO4J_AUTH=.*#NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}#" \
+      -e "s#GRAFANA_PASSWORD=.*#GRAFANA_PASSWORD=${GRAFANA_PASSWORD}#" \
       -e "s#NODE_ENV=development#NODE_ENV=production#" \
       "$ENV_FILE"
   fi

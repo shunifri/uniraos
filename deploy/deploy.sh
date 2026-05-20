@@ -596,6 +596,30 @@ function step_config() {
   fi
   echo ""
 
+  # Grafana
+  local grafana_pass
+  grafana_pass=$(generate_password)
+
+  echo -e "${CYAN}[Grafana]${NC} 监控面板管理员密码（可选，启用监控时需要）"
+  if confirm "设置 Grafana 密码?"; then
+    if confirm "使用自动生成的强密码?"; then
+      sed_inplace "$ENV_FILE" "s#^GRAFANA_PASSWORD=.*#GRAFANA_PASSWORD=${grafana_pass}#"
+      log_ok "Grafana 密码已设置"
+    else
+      local custom_grafana
+      custom_grafana=$(read_password "Grafana 密码")
+      while is_weak_password "$custom_grafana"; do
+        log_warn "密码太弱"
+        custom_grafana=$(read_password "Grafana 密码")
+      done
+      sed_inplace "$ENV_FILE" "s#^GRAFANA_PASSWORD=.*#GRAFANA_PASSWORD=${custom_grafana}#"
+      log_ok "Grafana 密码已设置"
+    fi
+  else
+    log_info "跳过 Grafana 配置"
+  fi
+  echo ""
+
   # LLM API Key
   echo -e "${CYAN}[LLM]${NC} 大语言模型 API Key"
   echo -e "   ${YELLOW}💡 提示: 你也可以在首次启动后，登录系统并在${NC}"
@@ -664,6 +688,8 @@ function step_summary() {
   echo -e "  MINIO_PASSWORD:      ${MINIO_PASSWORD:-(未配置)}"
   echo -e "  REDIS_PASSWORD:      ${REDIS_PASSWORD:-(未配置)}"
   echo -e "  NEO4J_AUTH:          ${NEO4J_AUTH:-(未配置)}"
+  echo -e "  GRAFANA_USER:        ${GRAFANA_USER:-admin}"
+  echo -e "  GRAFANA_PASSWORD:    ${GRAFANA_PASSWORD:-(未配置)}"
   echo -e "  LLM_API_KEY:         ${LLM_API_KEY:-(未配置)}"
   echo -e "  ALLOWED_ORIGINS:     ${ALLOWED_ORIGINS:-http://localhost}"
   echo ""
