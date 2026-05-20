@@ -773,8 +773,14 @@ function step_deploy() {
       mysql_ready=true
     fi
 
-    if docker exec raos-redis redis-cli ping 2>/dev/null | grep -q PONG; then
-      redis_ready=true
+    if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+      if docker exec raos-redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG; then
+        redis_ready=true
+      fi
+    else
+      if docker exec raos-redis redis-cli ping 2>/dev/null | grep -q PONG; then
+        redis_ready=true
+      fi
     fi
 
     if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then

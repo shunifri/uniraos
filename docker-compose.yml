@@ -184,11 +184,11 @@ services:
   raos-backend:
     # 华为云 SWR 镜像（bytenode 字节码保护）
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
-    # 如需本地构建，取消下方注释
-    # build:
-    #   context: .
-    #   dockerfile: docker/backend/Dockerfile
-    #   target: production
+    # 本地构建配置（部署脚本根据模式自动选择 build 或 pull）
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: production
     container_name: raos-backend
     environment:
       NODE_ENV: production
@@ -269,10 +269,10 @@ services:
   # 队列消费者服务（与后端共用镜像，仅命令不同）
   raos-workers:
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
-    # build:
-    #   context: .
-    #   dockerfile: docker/backend/Dockerfile
-    #   target: production
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: production
     container_name: raos-workers
     command: node worker-loader.cjs
     environment:
@@ -329,12 +329,12 @@ services:
   raos-frontend:
     # 华为云 SWR 镜像
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:${IMAGE_TAG:-latest}
-    # build:
-    #   context: ./web
-    #   dockerfile: ../docker/frontend/Dockerfile
-    #   args:
-    #     VITE_API_BASE_URL: /api
-    #     VITE_WS_URL: ws://localhost:3000
+    build:
+      context: ./web
+      dockerfile: ../docker/frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_WS_URL: ws://localhost:3000
     container_name: raos-frontend
     environment:
       NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
