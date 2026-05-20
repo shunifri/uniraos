@@ -457,6 +457,19 @@ function step_config() {
       log_info "跳过配置，使用现有 .env"
       return 0
     fi
+    # 重新配置时，补齐 .env 中缺失的变量（从 .env.example 追加）
+    log_info "正在检查并补齐缺失的环境变量..."
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      # 跳过空行和纯注释行
+      [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+      local var_name=""
+      if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+        var_name="${BASH_REMATCH[1]}"
+        if ! grep -q "^${var_name}=" "$ENV_FILE"; then
+          echo "$line" >> "$ENV_FILE"
+        fi
+      fi
+    done < "$PROJECT_DIR/.env.example"
   fi
 
   echo ""
