@@ -109,8 +109,7 @@ services:
       QDRANT__SERVICE__GRPC_PORT: 6334
       QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
     healthcheck:
-      test:
-        perl -e 'use IO::Socket::INET; my $s = IO::Socket::INET->new(PeerAddr=>"localhost", PeerPort=>6333, Proto=>"tcp", Timeout=>5); exit($s ? 0 : 1);' || exit 1
+      test: ['CMD-SHELL', 'perl -e "use IO::Socket::INET; my $$s = IO::Socket::INET->new(PeerAddr=>q{localhost}, PeerPort=>6333, Proto=>q{tcp}, Timeout=>5); exit($$s ? 0 : 1);" || exit 1']
       interval: 10s
       timeout: 5s
       retries: 5
