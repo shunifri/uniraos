@@ -10,6 +10,9 @@ FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888
 
 WORKDIR /app
 
+# 国内环境配置 npm 镜像源
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 # 安装依赖
 COPY web/package*.json ./
 RUN npm ci --legacy-peer-deps && npm cache clean --force

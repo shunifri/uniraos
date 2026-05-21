@@ -12,6 +12,9 @@ WORKDIR /app
 
 RUN apk add --no-cache python3 make g++
 
+# 国内环境配置 npm 镜像源（如有需要可注释或替换）
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 COPY package*.json ./
 COPY tsconfig.json ./
 
@@ -28,6 +31,9 @@ FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888
 WORKDIR /app
 
 RUN apk add --no-cache python3 make g++
+
+# 国内环境配置 npm 镜像源
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 
 # 复制依赖
 COPY --from=dependencies /app/node_modules ./node_modules
