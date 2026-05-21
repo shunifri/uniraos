@@ -30,6 +30,12 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="${PROJECT_DIR}/.env"
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
+# Compose 文件参数（自动检测 override 文件）
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [[ -f "${PROJECT_DIR}/docker-compose.override.yml" ]]; then
+  COMPOSE_ARGS+=(-f "${PROJECT_DIR}/docker-compose.override.yml")
+fi
+
 # 模式开关
 NON_INTERACTIVE=false
 BUILD_LOCAL=false
@@ -743,7 +749,7 @@ function step_deploy() {
   echo ""
   if $BUILD_LOCAL; then
     log_info "正在本地构建镜像（这可能需要几分钟）..."
-    if ! $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build --no-cache; then
+    if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" build --no-cache; then
       log_error "镜像构建失败，请检查上方构建日志"
       echo "  常见原因:"
       echo "    1. package-lock.json 与 package.json 不一致"
@@ -754,7 +760,7 @@ function step_deploy() {
     log_ok "镜像构建完成"
   else
     log_info "正在拉取远程镜像..."
-    if ! $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull; then
+    if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" pull; then
       log_error "镜像拉取失败，请检查网络连接和镜像地址"
       exit 1
     fi
@@ -764,8 +770,15 @@ function step_deploy() {
   # 启动基础设施
   echo ""
   log_info "启动基础设施服务..."
-  $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d \
-    mysql-primary redis qdrant rabbitmq minio neo4j
+  if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
+    mysql-primary redis qdrant rabbitmq minio neo4j; then
+    log_error "基础设施服务启动失败（可能是端口冲突或镜像拉取失败）"
+    echo "  请检查上方错误信息，常见问题:"
+    echo "    1. 端口已被占用（如 3306/6379/7687 等）"
+    echo "    2. 镜像拉取超时"
+    echo "    3. docker-compose.yml 配置错误"
+    exit 1
+  fi
 
   # 等待就绪
   echo ""
@@ -825,7 +838,7 @@ function step_deploy() {
   # 数据库迁移
   echo ""
   log_info "运行数据库迁移..."
-  if ! $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm \
+  if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" run --rm \
     --entrypoint sh raos-backend -c "npm run db:migrate" 2>/dev/null; then
     log_warn "使用容器内迁移失败，尝试本地迁移..."
     if command -v npm &>/dev/null && [[ -f "$PROJECT_DIR/package.json" ]]; then
@@ -837,7 +850,7 @@ function step_deploy() {
   # 启动应用
   echo ""
   log_info "启动应用服务..."
-  $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d \
+  "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
     raos-backend raos-workers raos-frontend
   log_ok "应用服务已启动"
 }
