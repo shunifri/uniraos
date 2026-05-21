@@ -60,7 +60,7 @@ services:
       --innodb-buffer-pool-size=1G
     depends_on:
       mysql-primary:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"]
       interval: 10s
@@ -254,13 +254,13 @@ services:
       LOG_LEVEL: info
     depends_on:
       mysql-primary:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
       qdrant:
-        condition: service_healthy
+        condition: service_started
       rabbitmq:
-        condition: service_healthy
+        condition: service_started
     volumes:
       - raos_data:/app/.raos
     healthcheck:
@@ -364,7 +364,7 @@ services:
       - ./docker/frontend/ssl:/etc/nginx/ssl:ro
     depends_on:
       raos-backend:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
       interval: 30s
