@@ -749,7 +749,7 @@ function step_deploy() {
   echo ""
   if $BUILD_LOCAL; then
     log_info "正在本地构建镜像（这可能需要几分钟）..."
-    if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" build --no-cache; then
+    if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" build --no-cache; then
       log_error "镜像构建失败，请检查上方构建日志"
       echo "  常见原因:"
       echo "    1. package-lock.json 与 package.json 不一致"
@@ -760,7 +760,7 @@ function step_deploy() {
     log_ok "镜像构建完成"
   else
     log_info "正在拉取远程镜像..."
-    if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" pull; then
+    if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" pull; then
       log_error "镜像拉取失败，请检查网络连接和镜像地址"
       exit 1
     fi
@@ -770,7 +770,7 @@ function step_deploy() {
   # 启动基础设施
   echo ""
   log_info "启动基础设施服务..."
-  if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
+  if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
     mysql-primary redis qdrant rabbitmq minio neo4j; then
     log_error "基础设施服务启动失败（可能是端口冲突或镜像拉取失败）"
     echo "  请检查上方错误信息，常见问题:"
@@ -838,7 +838,7 @@ function step_deploy() {
   # 数据库迁移
   echo ""
   log_info "运行数据库迁移..."
-  if ! "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" run --rm \
+  if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" run --rm \
     --entrypoint sh raos-backend -c "npm run db:migrate" 2>/dev/null; then
     log_warn "使用容器内迁移失败，尝试本地迁移..."
     if command -v npm &>/dev/null && [[ -f "$PROJECT_DIR/package.json" ]]; then
@@ -850,7 +850,7 @@ function step_deploy() {
   # 启动应用
   echo ""
   log_info "启动应用服务..."
-  "$COMPOSE_CMD" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
+  $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
     raos-backend raos-workers raos-frontend
   log_ok "应用服务已启动"
 }
