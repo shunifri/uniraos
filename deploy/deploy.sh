@@ -743,11 +743,21 @@ function step_deploy() {
   echo ""
   if $BUILD_LOCAL; then
     log_info "正在本地构建镜像（这可能需要几分钟）..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build --no-cache
+    if ! $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build --no-cache; then
+      log_error "镜像构建失败，请检查上方构建日志"
+      echo "  常见原因:"
+      echo "    1. package-lock.json 与 package.json 不一致"
+      echo "    2. npm 依赖下载超时（国内网络建议配置 npm 镜像源）"
+      echo "    3. Dockerfile 中某个构建步骤出错"
+      exit 1
+    fi
     log_ok "镜像构建完成"
   else
     log_info "正在拉取远程镜像..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
+    if ! $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull; then
+      log_error "镜像拉取失败，请检查网络连接和镜像地址"
+      exit 1
+    fi
     log_ok "镜像拉取完成"
   fi
 
