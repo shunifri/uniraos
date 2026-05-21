@@ -330,8 +330,8 @@ services:
     # 华为云 SWR 镜像
     image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:${IMAGE_TAG:-latest}
     build:
-      context: ./web
-      dockerfile: ../docker/frontend/Dockerfile
+      context: .
+      dockerfile: docker/frontend/Dockerfile
       args:
         VITE_API_BASE_URL: /api
         VITE_WS_URL: ws://localhost:3000
