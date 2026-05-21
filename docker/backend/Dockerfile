@@ -66,6 +66,9 @@ WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=dependencies /app/package*.json ./
 
+# 移除 ESM 声明，避免生产环境将 .js 当作 ES Module 处理
+RUN sed -i '/"type": *"module"/d' package.json
+
 # 复制 bytenode 编译产物（只保留字节码 + loader）
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server-loader.cjs ./server-loader.cjs
