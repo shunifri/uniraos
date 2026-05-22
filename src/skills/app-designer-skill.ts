@@ -710,7 +710,7 @@ export function registerAppDesignerSkill(
       },
       handler: async (params, context) => {
         const action = params.action as string;
-        const userId = context.user?.id ?? getCurrentUserId();
+        const userId = context.user?.id || getCurrentUserId();
 
         try {
           switch (action) {
