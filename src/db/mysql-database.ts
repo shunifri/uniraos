@@ -890,6 +890,40 @@ export const MIGRATIONS: Migration[] = [
     down: `
       DROP TABLE IF EXISTS conversation_history;
     `
+  },
+  {
+    version: 11,
+    name: 'add_sign_group_to_workflow_tasks',
+    up: `
+      ALTER TABLE workflow_tasks ADD COLUMN sign_group VARCHAR(64) DEFAULT NULL COMMENT '会签组' AFTER due_date;
+    `,
+    down: `
+      ALTER TABLE workflow_tasks DROP COLUMN sign_group;
+    `
+  },
+  {
+    version: 12,
+    name: 'add_app_designs_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS app_designs (
+        id VARCHAR(64) PRIMARY KEY COMMENT '设计ID',
+        name VARCHAR(200) NOT NULL COMMENT '应用名称',
+        description TEXT COMMENT '应用描述',
+        version INT DEFAULT 1 COMMENT '版本号',
+        requirement TEXT NOT NULL COMMENT '需求描述',
+        design_json LONGTEXT NOT NULL COMMENT '设计JSON',
+        components LONGTEXT DEFAULT '[]' COMMENT '组件列表JSON',
+        status ENUM('draft', 'applied', 'archived') DEFAULT 'draft' COMMENT '状态：draft-草稿, applied-已应用, archived-已归档',
+        owner_id VARCHAR(64) NOT NULL COMMENT '所有者ID',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
+        updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '更新时间（毫秒）',
+        INDEX idx_app_designs_owner (owner_id) COMMENT '所有者索引',
+        INDEX idx_app_designs_status (status) COMMENT '状态索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='应用设计方案表';
+    `,
+    down: `
+      DROP TABLE IF EXISTS app_designs;
+    `
   }
 ];
 
