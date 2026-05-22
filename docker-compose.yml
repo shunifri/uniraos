@@ -229,6 +229,8 @@ services:
       QDRANT_GRPC_PORT: 6334
       # RabbitMQ 配置
       RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASS:?RABBITMQ_PASS is required}@rabbitmq:5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-raos}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
       # MinIO 配置
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
@@ -308,6 +310,8 @@ services:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASS:?RABBITMQ_PASS is required}@rabbitmq:5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-raos}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_USER: ${MINIO_USER:-raos}
