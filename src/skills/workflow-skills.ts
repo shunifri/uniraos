@@ -37,7 +37,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
           const category = params.category as string | undefined;
           const rawLimit = Number(params.limit) || 50;
           const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 50;
@@ -132,7 +132,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             }
           }
 
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
           const result = await engine.startInstance(workflowKey, userId, formData, businessKey);
 
           if (!result.success) {
@@ -190,7 +190,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
       handler: async (params, context) => {
         try {
           const scope = params.scope as string;
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
           const rawLimit = Number(params.limit) || 20;
           const safeLimit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 20;
           const query: ApprovalQueryParams = {
@@ -328,7 +328,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             return { success: false, error: new Error(`任务不存在: ${taskId}`) };
           }
 
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
 
           // 权限检查：assignee、candidate 或待认领任务
           const isAssignee = task.assignee === userId;
@@ -429,7 +429,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
         required: ["title"],
       },
       handler: async (params, context) => {
-        const userId = context.user?.id ?? "anonymous";
+        const userId = context.user?.id || "anonymous";
 
         // 独立任务不关联工作流，instance_id 为 null
         const task = await repo.createTask({
@@ -485,7 +485,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
         required: ["scope"],
       },
       handler: async (params, context) => {
-        const userId = context.user?.id ?? "anonymous";
+        const userId = context.user?.id || "anonymous";
         const query: TaskQueryParams = {
           limit: (params.limit as number) ?? 20,
           status: params.status as TaskStatus | undefined,
@@ -550,7 +550,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
           return { success: false, error: new Error(`任务不存在: ${taskId}`) };
         }
 
-        const userId = context.user?.id ?? "anonymous";
+        const userId = context.user?.id || "anonymous";
         // 权限检查：assignee、candidate 或 creator 可以更新
         const isAssignee = task.assignee === userId;
         const isCreator = (task.formData?.creator as string) === userId;
@@ -614,7 +614,7 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
         required: ["description", "name", "key"],
       },
       handler: async (params, context) => {
-        const userId = context.user?.id ?? "anonymous";
+        const userId = context.user?.id || "anonymous";
         // 权限检查：仅管理员可生成/修改工作流
         const userRoles = await getUserRoles(userId);
         const isAdmin = userRoles.some((r) =>

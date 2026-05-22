@@ -62,7 +62,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           const conversationId = context.conversationId;
           const result = createPlan(
             {
@@ -127,7 +127,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           const all = listPlans(userId);
           let items = all;
 
@@ -181,7 +181,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           // 如果没有传 fileName，尝试通过 conversationId 查找
@@ -260,7 +260,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
         }
 
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           // 如果没有传 fileName，尝试通过 conversationId 查找
@@ -315,7 +315,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           if (!fileName && context.conversationId) {
@@ -379,7 +379,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
         }
 
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           if (!fileName && context.conversationId) {
@@ -442,7 +442,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           if (!fileName && context.conversationId) {
@@ -492,7 +492,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           const deleted = deletePlan(params.fileName as string, userId);
           return {
             success: deleted,
@@ -540,7 +540,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           let fileName = params.fileName as string | undefined;
 
           if (!fileName && context.conversationId) {
@@ -668,7 +668,7 @@ export function createPlanExecutionSkills(registry: SkillRegistry): void {
         }
 
         try {
-          const userId = context.user?.id;
+          const userId = context.user?.id || "anonymous";
           const command = (params.command as string).trim();
 
           // 如果没有 conversationId，无法自动查找

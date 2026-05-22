@@ -102,7 +102,7 @@ export function createMetaSkills(
         }
 
         // 验证所有引用的 Skill 存在且用户有执行权限
-        const userId = context.user?.id ?? getCurrentUserId();
+        const userId = context.user?.id || getCurrentUserId();
         if (!userId || userId === "default") {
           return { success: false, error: new Error("需要登录用户才能创建组合 Skill") };
         }
@@ -248,7 +248,7 @@ export function createMetaSkills(
           return { success: false, error: new Error(`Skill 已存在: ${name}`) };
         }
 
-        const userId = context.user?.id ?? getCurrentUserId();
+        const userId = context.user?.id || getCurrentUserId();
         const generatedBy = userId !== "default" ? userId : "skill_from_template";
 
         // 构建可序列化的 skill 定义
@@ -485,7 +485,7 @@ Skill 描述: ${description}${exampleText}
           if (!evolutionController) {
             return { success: false, error: new Error("进化控制器未初始化，无法提交审批") };
           }
-          const userId = context.user?.id ?? getCurrentUserId();
+          const userId = context.user?.id || getCurrentUserId();
           const generatedBy = userId !== "default" ? userId : "skill_from_description";
           const approvalId = evolutionController.submitForApproval(
             name,

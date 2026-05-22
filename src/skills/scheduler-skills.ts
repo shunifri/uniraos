@@ -79,7 +79,7 @@ export function createSchedulerSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
           const trigger = params.trigger as any;
 
           // 自动计算 delayMs：如果用户说"1分钟后"但没有提供 delayMs，尝试从描述中解析
@@ -187,7 +187,7 @@ export function createSchedulerSkills(registry: SkillRegistry): void {
       },
       handler: async (params, context) => {
         try {
-          const userId = context.user?.id ?? "anonymous";
+          const userId = context.user?.id || "anonymous";
           const query = {
             userId,
             status: params.status as string | undefined,
