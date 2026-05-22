@@ -169,8 +169,17 @@ ${message}`;
     }
 
     let closed = false;
+    // SSE keepalive: 长执行期间（如 app_designer）可能数十秒无数据，
+    // 浏览器/代理会断开空闲连接。每 15 秒发注释行保活。
+    const keepaliveTimer = setInterval(() => {
+      if (!closed) {
+        res.write(':keepalive\n\n');
+      }
+    }, 15000);
+
     res.on("close", () => {
       closed = true;
+      clearInterval(keepaliveTimer);
       // TODO: Clean up any pending user_confirm for this session.
       // Currently we cannot easily map confirmIds to sessions without additional tracking.
       // confirmQueue entries will self-clean via their 2-minute timeout safety net.
