@@ -674,6 +674,7 @@ export function registerAppDesignerSkill(
   registry.register(
     defineSystemSkill({
       name: "app_designer",
+      timeout: 120000,
       description: `【应用级元 Skill】根据用户自然语言描述，设计完整的 RAOS 应用方案（Skill + 表单 + 工作流 + 知识库配置）。
 支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 一键部署。
 
