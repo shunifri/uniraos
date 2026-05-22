@@ -214,7 +214,6 @@ services:
       # 数据库配置
       MYSQL_PRIMARY_HOST: mysql-primary
       MYSQL_PRIMARY_PORT: 3306
-      MYSQL_REPLICA_HOSTS: mysql-replica:3306
       MYSQL_USER: ${MYSQL_USER:-raos}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
       MYSQL_DATABASE: raos
