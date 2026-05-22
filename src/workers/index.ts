@@ -12,7 +12,13 @@
 import { bootstrap } from "../server/bootstrap.js";
 import { initWorkerInfrastructure } from "../server/lifecycle.js";
 
-const deps = await bootstrap();
-initWorkerInfrastructure(deps);
+async function main() {
+  const deps = await bootstrap();
+  initWorkerInfrastructure(deps);
+  console.log("\n👷 Worker process started (no HTTP server)");
+}
 
-console.log("\n👷 Worker process started (no HTTP server)");
+main().catch((err) => {
+  console.error("Worker process failed:", err);
+  process.exit(1);
+});
