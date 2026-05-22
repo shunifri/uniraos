@@ -148,6 +148,101 @@ function check_port() {
   return 1
 }
 
+# 获取服务器的非回环 IP 地址（优先内网）
+function get_server_ips() {
+  local ips=""
+  # 方法1: hostname -I
+  if command -v hostname &>/dev/null && hostname -I &>/dev/null; then
+    ips=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -v '^::1' | head -5)
+  fi
+  # 方法2: ip 命令
+  if [[ -z "$ips" ]] && command -v ip &>/dev/null; then
+    ips=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | head -5)
+  fi
+  # 方法3: ifconfig
+  if [[ -z "$ips" ]] && command -v ifconfig &>/dev/null; then
+    ips=$(ifconfig 2>/dev/null | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | grep -v '127.0.0.1' | sed 's/inet //' | head -5)
+  fi
+  echo "$ips"
+}
+
+# 交互式配置 ALLOWED_ORIGINS
+function configure_allowed_origins() {
+  echo -e "${CYAN}[CORS]${NC} 配置允许访问的域名/来源"
+  echo ""
+  echo -e "  ${YELLOW}说明:${NC} 浏览器通过 CORS 安全检查来决定是否允许网页访问 API。"
+  echo -e "  如果你的服务器通过 IP 或域名访问，必须将对应地址加入白名单。"
+  echo -e "  多个来源用 ${BOLD}英文逗号${NC} 分隔，例如: http://192.168.1.100,https://raos.example.com"
+  echo ""
+
+  local detected_ips
+  detected_ips=$(get_server_ips)
+  local first_ip=""
+  if [[ -n "$detected_ips" ]]; then
+    first_ip=$(echo "$detected_ips" | head -1)
+    echo -e "  ${GREEN}检测到服务器 IP:${NC}"
+    echo "$detected_ips" | sed 's/^/    - http:\/\//'
+    echo ""
+  fi
+
+  local options=()
+  local values=()
+  local idx=1
+
+  # 选项1: localhost
+  echo -e "  ${CYAN}${idx})${NC} http://localhost （仅本机访问）"
+  options+=("localhost")
+  values+=("http://localhost")
+  ((idx++))
+
+  # 选项2: 检测到的 IP（如果有）
+  if [[ -n "$first_ip" ]]; then
+    echo -e "  ${CYAN}${idx})${NC} http://${first_ip} （内网/服务器 IP 访问）"
+    options+=("server_ip")
+    values+=("http://${first_ip}")
+    ((idx++))
+  fi
+
+  # 选项3: 自定义输入
+  echo -e "  ${CYAN}${idx})${NC} 自定义输入（支持多个，逗号分隔）"
+  options+=("custom")
+  values+=("__CUSTOM__")
+  ((idx++))
+
+  # 选项4: 允许所有（仅开发测试）
+  echo -e "  ${CYAN}${idx})${NC} * （允许所有来源，${RED}生产环境不推荐${NC}）"
+  options+=("all")
+  values+=("*")
+
+  echo ""
+  local choice
+  local max_choice=$idx
+  while true; do
+    read -rp "$(echo -e "${YELLOW}?${NC} 请选择 [1-$max_choice]: ")" choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 && "$choice" -le "$max_choice" ]]; then
+      break
+    fi
+    echo -e "${YELLOW}  请输入 1-$max_choice 之间的数字${NC}"
+  done
+
+  local selected_value="${values[$((choice-1))]}"
+
+  if [[ "$selected_value" == "__CUSTOM__" ]]; then
+    echo ""
+    local custom_input
+    read -rp "$(echo -e "${YELLOW}?${NC} 请输入允许的来源（多个用逗号分隔）: ")" custom_input
+    selected_value="${custom_input:-http://localhost}"
+    if [[ "$selected_value" != "*" && ! "$selected_value" =~ ^https?:// ]]; then
+      echo -e "${YELLOW}  提示: 建议以 http:// 或 https:// 开头，当前输入为: ${selected_value}${NC}"
+    fi
+  fi
+
+  echo ""
+  echo -e "  ${GREEN}已选择:${NC} ${BOLD}${selected_value}${NC}"
+  set_env_var "ALLOWED_ORIGINS" "${selected_value}"
+  log_ok "CORS 白名单已设置为: ${selected_value}"
+}
+
 function sed_inplace() {
   local file="$1"
   shift
@@ -681,11 +776,7 @@ function step_config() {
   echo ""
 
   # ALLOWED_ORIGINS
-  echo -e "${CYAN}[CORS]${NC} 允许访问的域名"
-  local allowed_origins
-  allowed_origins=$(read_input "ALLOWED_ORIGINS" "http://localhost")
-  set_env_var "ALLOWED_ORIGINS" "${allowed_origins}"
-  log_ok "CORS 白名单已设置"
+  configure_allowed_origins
   echo ""
 
   # NODE_ENV
