@@ -440,7 +440,15 @@ ${requirement}
     const jsonText = content.replace(/^```json\s*/, "").replace(/\s*```$/, "");
 
     try {
-      return JSON.parse(jsonText) as DesignSchema;
+      const parsed = JSON.parse(jsonText) as DesignSchema;
+      // 填充默认值，防止 LLM 遗漏字段导致后续崩溃
+      parsed.components = parsed.components || { skills: [], forms: [], workflows: [], knowledgeBases: [] };
+      parsed.components.skills = parsed.components.skills || [];
+      parsed.components.forms = parsed.components.forms || [];
+      parsed.components.workflows = parsed.components.workflows || [];
+      parsed.components.knowledgeBases = parsed.components.knowledgeBases || [];
+      parsed.relationships = parsed.relationships || [];
+      return parsed;
     } catch (err) {
       throw new Error(`LLM 返回的设计方案格式无效: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -481,6 +489,13 @@ ${newRequirement}
 
     try {
       const result = JSON.parse(jsonText) as { updatedSchema: DesignSchema; changelog: string };
+      // 填充默认值
+      result.updatedSchema.components = result.updatedSchema.components || { skills: [], forms: [], workflows: [], knowledgeBases: [] };
+      result.updatedSchema.components.skills = result.updatedSchema.components.skills || [];
+      result.updatedSchema.components.forms = result.updatedSchema.components.forms || [];
+      result.updatedSchema.components.workflows = result.updatedSchema.components.workflows || [];
+      result.updatedSchema.components.knowledgeBases = result.updatedSchema.components.knowledgeBases || [];
+      result.updatedSchema.relationships = result.updatedSchema.relationships || [];
       return result;
     } catch (err) {
       throw new Error(`LLM 返回的更新方案格式无效: ${err instanceof Error ? err.message : String(err)}`);
@@ -645,7 +660,7 @@ ${newRequirement}
       for (const k of d.components.knowledgeBases) text += `    • ${k.name}\n`;
     }
 
-    if (d.relationships.length > 0) {
+    if (d.relationships && d.relationships.length > 0) {
       text += `\n🔗 组件关联:\n`;
       for (const r of d.relationships) text += `  ${r.from} → ${r.to} (${r.type})\n`;
     }

@@ -266,7 +266,7 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
               </Collapse.Panel>
             )}
 
-            {d.relationships.length > 0 && (
+            {d.relationships && d.relationships.length > 0 && (
               <Collapse.Panel header={`组件关联 (${d.relationships.length})`} key="rels">
                 {d.relationships.map((r, i) => (
                   <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
