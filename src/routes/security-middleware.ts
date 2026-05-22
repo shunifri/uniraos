@@ -99,7 +99,7 @@ const auditSink = createFileSink({
 export function auditMiddleware(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const userId = (req as any).user?.id ?? "anonymous";
+  const userId = (req as any).user?.id || "anonymous";
   const requestId = req.headers["x-request-id"] ?? `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   // 将 requestId 注入到响应头，方便链路追踪

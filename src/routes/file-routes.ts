@@ -644,7 +644,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         const skillParams: Record<string, unknown> = {
           filename: file.originalname,
           content: data.toString("base64"),
-          uploadedBy: req.user?.id ?? "default",
+          uploadedBy: req.user?.id || "default",
           mode,
         };
         if (folder) skillParams.targetDir = folder;

@@ -68,7 +68,7 @@ router.get("/:id", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const body = req.body as Partial<Connection>;
-    const userId = (req as any).user?.id ?? "anonymous";
+    const userId = (req as any).user?.id || "anonymous";
     const repo = getWorkflowRepository();
 
     if (!body.name || !body.type || !body.config) {

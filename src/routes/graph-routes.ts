@@ -12,7 +12,7 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
   const pm = permissions.createMiddleware(permissions.service);
 
   function getGraphManager(req: any) {
-    const userId = req.user?.id ?? "default";
+    const userId = req.user?.id || "default";
     const session = sessionManager.getOrCreate(userId);
     return session.graphManager;
   }
@@ -68,7 +68,7 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
 
   // POST /api/graph/sync — sync from LTM
   router.post("/graph/sync", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), asyncHandler(async (req, res) => {
-    const userId = (req as any).user?.id ?? "default";
+    const userId = (req as any).user?.id || "default";
     const session = sessionManager.getOrCreate(userId);
     const gm = session.graphManager;
     if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
@@ -81,7 +81,7 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
 
   // POST /api/graph/clear — clear entire graph
   router.post("/graph/clear", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), asyncHandler(async (req, res) => {
-    const userId = (req as any).user?.id ?? "default";
+    const userId = (req as any).user?.id || "default";
     const session = sessionManager.getOrCreate(userId);
     const gm = session.graphManager;
     if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }

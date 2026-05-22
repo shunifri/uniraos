@@ -82,7 +82,7 @@ app.use(authMiddleware);
 app.use((req, _res, next) => {
   const user = req.user;
   requestContext.run({
-    userId: user?.id ?? "default",
+    userId: user?.id || "default",
     userName: user?.username,
     userDisplayName: user?.displayName,
     departmentId: user?.departmentId ?? undefined,

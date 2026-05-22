@@ -67,7 +67,7 @@ ${message}`;
     const enrichedMsg = enrichWithDefaultSkill(message, defaultSkill);
     const existing = requestContext.getStore();
     const ctx: import("../user/request-context.js").RequestContext = {
-      userId: existing?.userId ?? req.user?.id ?? "default",
+      userId: existing?.userId || req.user?.id || "default",
       userName: existing?.userName,
       userDisplayName: existing?.userDisplayName,
       departmentId: existing?.departmentId,
@@ -124,7 +124,7 @@ ${message}`;
     const convId = conversationId || undefined;
     const existing = requestContext.getStore();
     const ctx: import("../user/request-context.js").RequestContext = {
-      userId: existing?.userId ?? req.user?.id ?? "default",
+      userId: existing?.userId || req.user?.id || "default",
       userName: existing?.userName,
       userDisplayName: existing?.userDisplayName,
       departmentId: existing?.departmentId,
