@@ -27,6 +27,10 @@ export async function authMiddleware(
     token = req.cookies.token;
   }
 
+  if (!token && req.query?.token) {
+    token = req.query.token as string;
+  }
+
   if (token) {
     const user = await validateSession(token);
     if (user) {
