@@ -250,6 +250,8 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       # JWT 密钥
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      # CORS 白名单
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
       # 日志
       LOG_LEVEL: info
     depends_on:
