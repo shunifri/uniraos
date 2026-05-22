@@ -682,7 +682,7 @@ export const MIGRATIONS: Migration[] = [
 
       CREATE TABLE IF NOT EXISTS workflow_tasks (
         id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '任务ID',
-        instance_id BIGINT NOT NULL COMMENT '流程实例ID',
+        instance_id BIGINT COMMENT '流程实例ID',
         node_id VARCHAR(64) NOT NULL COMMENT '节点ID',
         node_name VARCHAR(128) COMMENT '节点名称',
         task_type VARCHAR(32) COMMENT '任务类型：user_task/service_task',
@@ -923,6 +923,20 @@ export const MIGRATIONS: Migration[] = [
     `,
     down: `
       DROP TABLE IF EXISTS app_designs;
+    `
+  },
+  {
+    version: 13,
+    name: 'allow_null_instance_id_in_workflow_tasks',
+    up: `
+      SET FOREIGN_KEY_CHECKS = 0;
+      ALTER TABLE workflow_tasks MODIFY COLUMN instance_id BIGINT COMMENT '流程实例ID';
+      SET FOREIGN_KEY_CHECKS = 1;
+    `,
+    down: `
+      SET FOREIGN_KEY_CHECKS = 0;
+      ALTER TABLE workflow_tasks MODIFY COLUMN instance_id BIGINT NOT NULL COMMENT '流程实例ID';
+      SET FOREIGN_KEY_CHECKS = 1;
     `
   }
 ];
