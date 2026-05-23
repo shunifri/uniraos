@@ -179,6 +179,7 @@ export class PlanAgent implements Agent {
     };
 
     // 执行计划阶段
+    const results: Array<{ step: number; success: boolean; data?: unknown; error?: string }> = [];
     for (let i = 0; i < plan.steps.length; i++) {
       const step = plan.steps[i];
 
@@ -196,6 +197,7 @@ export class PlanAgent implements Agent {
 
       try {
         const result = await this.deps.engine.execute(step.skill, step.params);
+        results.push({ step: i + 1, success: result.success, data: result.data });
 
         yield {
           event: "tool_result",
@@ -216,13 +218,16 @@ export class PlanAgent implements Agent {
           break;
         }
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        results.push({ step: i + 1, success: false, error: errMsg });
+
         yield {
           event: "tool_result",
           agentRole: this.profile.role,
           data: {
             skillName: step.skill,
             toolCallId: `step_${i + 1}`,
-            result: { success: false, error: err instanceof Error ? err.message : String(err) },
+            result: { success: false, error: errMsg },
           },
         };
 
@@ -230,10 +235,18 @@ export class PlanAgent implements Agent {
       }
     }
 
+    // 生成最终回复消息并发送给前端（包含 tool 结果中的 message，如 <app-design-card>）
+    const response = await this.synthesizeResponse(input, results);
+    yield {
+      event: "message" as any,
+      agentRole: this.profile.role,
+      data: { role: "assistant", content: response },
+    };
+
     yield {
       event: "agent_done",
       agentRole: this.profile.role,
-      data: { response: "计划执行完成" },
+      data: { response },
     };
   }
 
