@@ -235,12 +235,12 @@ export class PlanAgent implements Agent {
       }
     }
 
-    // 生成最终回复消息并发送给前端（包含 tool 结果中的 message，如 <app-design-card>）
+    // 生成最终回复消息并发送给前端（使用 text_delta，前端已兼容处理流式文本）
     const response = await this.synthesizeResponse(input, results);
     yield {
-      event: "message" as any,
+      event: "text_delta",
       agentRole: this.profile.role,
-      data: { role: "assistant", content: response },
+      data: { text: response },
     };
 
     yield {

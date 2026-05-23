@@ -14,6 +14,7 @@ import { getKnowledgeBase } from "../skills/knowledge-skills.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
+import { requestContext } from "../user/request-context.js";
 import type { RouteDependencies } from "./types.js";
 
 // MySQL adapter helper
@@ -648,7 +649,12 @@ export function createFileRoutes(deps: RouteDependencies): Router {
           mode,
         };
         if (folder) skillParams.targetDir = folder;
-        const result = await engine.execute("file_upload", skillParams);
+        const ctx = {
+          userId: req.user!.id || "default",
+          userName: req.user!.username,
+          userDisplayName: req.user!.displayName,
+        };
+        const result = await requestContext.run(ctx, () => engine.execute("file_upload", skillParams));
         if (result.success) {
           const fileData = result.data as { path: string; duplicate?: boolean };
           results.push(fileData);
@@ -724,9 +730,14 @@ export function createFileRoutes(deps: RouteDependencies): Router {
    });
 
    // List uploaded files
-  router.get("/upload", requireAuth, requirePermission("files.read"), async (_req, res) => {
+  router.get("/upload", requireAuth, requirePermission("files.read"), async (req, res) => {
     try {
-      const result = await engine.execute("file_upload_list", {});
+      const ctx = {
+        userId: req.user!.id || "default",
+        userName: req.user!.username,
+        userDisplayName: req.user!.displayName,
+      };
+      const result = await requestContext.run(ctx, () => engine.execute("file_upload_list", {}));
       res.json(result);
     } catch (err) {
       res.status(500).json({
