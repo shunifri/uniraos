@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { permissions } from "../permissions/index.js";
+import { requestContext } from "../user/request-context.js";
 import type { RouteDependencies } from "./types.js";
 
 export function createMemoryRoutes(deps: RouteDependencies): Router {
@@ -28,7 +29,8 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
 
   router.get("/memory/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), async (req, res) => {
     try {
-      const result = await engine.execute("memory_stats", {});
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("memory_stats", {}));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -126,10 +128,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     const { includeForgotten } = req.query as { includeForgotten?: string };
 
     try {
-      const result = await engine.execute("ltm_version_history", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_version_history", {
         key,
         includeForgotten: includeForgotten === "true",
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -146,11 +149,12 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     const { since, limit, reason } = req.query as { since?: string; limit?: string; reason?: string };
 
     try {
-      const result = await engine.execute("ltm_forgotten_log", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_forgotten_log", {
         since: since ? parseInt(since, 10) : undefined,
         limit: limit ? parseInt(limit, 10) : 50,
         reason,
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -176,11 +180,12 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await engine.execute("ltm_check_conflicts", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_check_conflicts", {
         key,
         value,
         topN,
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -202,11 +207,12 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await engine.execute("ltm_extract_facts", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_extract_facts", {
         text,
         entityContext,
         tags,
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -235,14 +241,15 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await engine.execute("ltm_store", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_store", {
         key,
         value,
         tags,
         summary,
         relation,
         expiresInSec,
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -282,14 +289,15 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
         }
       }
 
-      const result = await engine.execute("ltm_search", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_search", {
         query,
         limit: limit ? parseInt(limit, 10) : undefined,
         tags: parsedTags,
         rerank: rerank === "true",
         filters: parsedFilters,
         includeForgotten: includeForgotten === "true",
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
@@ -312,11 +320,12 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await engine.execute("ltm_delete", {
+      const ctx = { userId: req.user!.id || "default", userName: req.user!.username, userDisplayName: req.user!.displayName };
+      const result = await requestContext.run(ctx, () => engine.execute("ltm_delete", {
         id,
         reason,
         hard,
-      });
+      }));
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
