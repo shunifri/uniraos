@@ -3,6 +3,7 @@ import { permissions } from "../permissions/index.js";
 import { Autonomy, defineSkill } from "../types/index.js";
 import { skillsToTools } from "../llm/tool-bridge.js";
 import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
+import { requestContext } from "../user/request-context.js";
 import type { RouteDependencies } from "./types.js";
 
 export function createSkillRoutes(deps: RouteDependencies): Router {
@@ -67,7 +68,15 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
     }
 
     try {
-      const result = await engine.execute(skillName, params ?? {});
+      // 注入请求上下文，确保 skill handler 中的 getCurrentUserId() 能获取正确用户
+      const ctx = {
+        userId: req.user!.id || "default",
+        userName: req.user!.username,
+        userDisplayName: req.user!.displayName,
+        departmentId: (req.user as any)?.departmentId,
+        requestId: req.headers["x-request-id"] as string | undefined,
+      };
+      const result = await requestContext.run(ctx, () => engine.execute(skillName, params ?? {}));
       res.json(result);
     } catch (err) {
       res.status(400).json({
