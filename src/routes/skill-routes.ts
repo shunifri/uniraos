@@ -77,7 +77,16 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
         requestId: req.headers["x-request-id"] as string | undefined,
       };
       const result = await requestContext.run(ctx, () => engine.execute(skillName, params ?? {}));
-      res.json(result);
+      try {
+        res.json(result);
+      } catch (jsonErr) {
+        console.error("[skill-routes] Failed to serialize result:", jsonErr, "result keys:", Object.keys(result));
+        res.status(500).json({
+          success: false,
+          error: "Result serialization failed",
+          errorType: jsonErr instanceof Error ? jsonErr.constructor.name : "UnknownError",
+        });
+      }
     } catch (err) {
       res.status(400).json({
         success: false,

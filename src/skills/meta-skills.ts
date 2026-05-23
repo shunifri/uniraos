@@ -379,6 +379,7 @@ export function createMetaSkills(
   registry.register(
     defineSystemSkill({
       name: "skill_from_description",
+      timeout: 300000, // 5 分钟：LLM 生成代码可能很慢
       description: `【最后手段】从自然语言描述生成代码 Skill。仅在现有 Skill 无法通过组合实现需求时才使用。
 参数:
   name(string): 新 Skill 名称

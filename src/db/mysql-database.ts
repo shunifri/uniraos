@@ -912,7 +912,7 @@ export const MIGRATIONS: Migration[] = [
         version INT DEFAULT 1 COMMENT '版本号',
         requirement TEXT NOT NULL COMMENT '需求描述',
         design_json LONGTEXT NOT NULL COMMENT '设计JSON',
-        components LONGTEXT DEFAULT '[]' COMMENT '组件列表JSON',
+        components LONGTEXT COMMENT '组件列表JSON',
         status ENUM('draft', 'applied', 'archived') DEFAULT 'draft' COMMENT '状态：draft-草稿, applied-已应用, archived-已归档',
         owner_id VARCHAR(64) NOT NULL COMMENT '所有者ID',
         created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
