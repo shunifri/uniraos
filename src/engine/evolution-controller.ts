@@ -9,14 +9,15 @@
  * - 人类监督环
  * - Red Line 约束系统
  * - Genealogy 族谱 API
- * - SQLite 持久化
+ * - 统一数据库持久化（SQLite/MySQL）
  */
 import { log } from "../utils/logger.js";
-import Database from "better-sqlite3";
-import { existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
 import { getInboxService } from "../inbox/index.js";
 import { createEvolutionAdapter } from "../inbox/adapters/index.js";
+import { EvolutionRepository } from "../db/evolution-repository.js";
+import type { SkillRegistry } from "../registry/index.js";
+import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
+import { defineSkill, Autonomy } from "../types/index.js";
 
 export interface EvolutionConfig {
   /** Skill 生成 Skill 的最大深度（默认 3） */
@@ -34,7 +35,7 @@ export interface EvolutionConfig {
 const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   maxGenerationDepth: 3,
   maxGenerationsPerHour: 20,
-  requireHumanApproval: false,
+  requireHumanApproval: true,
   forbiddenPrefixes: ["__internal_", "sys_"],
   forbiddenCapabilities: ["network:outbound:*", "shell:exec:*"],
 };
@@ -56,6 +57,8 @@ interface PendingApproval {
   generatedBy: string;
   depth: number;
   createdAt: number;
+  status?: string;
+  statusUpdatedAt?: number;
 }
 
 // ===== Red Line Types =====
@@ -127,136 +130,79 @@ export class EvolutionController {
   private pendingApprovals: PendingApproval[] = [];
   private redLines: RedLineConstraint[] = [];
   private violations: RedLineViolation[] = [];
-  private db: Database.Database | null = null;
-  private dbPath: string | null = null;
+  private repository: EvolutionRepository;
+  private registry?: SkillRegistry;
 
-  constructor(config?: Partial<EvolutionConfig>, dbPath?: string) {
+  constructor(config?: Partial<EvolutionConfig>, registry?: SkillRegistry) {
     this.config = { ...DEFAULT_EVOLUTION_CONFIG, ...config };
-    this.dbPath = dbPath || null;
-    if (dbPath) {
-      this.initDatabase();
-    }
+    this.repository = EvolutionRepository.getInstance();
+    this.registry = registry;
     this.initBuiltInRedLines();
   }
 
-  /** 初始化 SQLite 数据库 */
-  private initDatabase(): void {
-    if (!this.dbPath) return;
-
+  /** 异步初始化：建表并从数据库恢复数据 */
+  async init(): Promise<void> {
     try {
-      // 确保目录存在
-      const dir = dirname(this.dbPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      this.db = new Database(this.dbPath);
-      this.db.pragma("journal_mode = WAL");
-
-      // 创建表
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS evolution_generations (
-          id TEXT PRIMARY KEY,
-          skillName TEXT NOT NULL,
-          generatedBy TEXT NOT NULL,
-          depth INTEGER NOT NULL,
-          createdAt INTEGER NOT NULL,
-          approved INTEGER NOT NULL,
-          data TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS evolution_violations (
-          id TEXT PRIMARY KEY,
-          constraintId TEXT NOT NULL,
-          description TEXT NOT NULL,
-          blocking INTEGER NOT NULL,
-          skillName TEXT NOT NULL,
-          detectedAt INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS evolution_approvals (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          description TEXT NOT NULL,
-          code TEXT,
-          capabilities TEXT,
-          generatedBy TEXT NOT NULL,
-          depth INTEGER NOT NULL,
-          createdAt INTEGER NOT NULL,
-          status TEXT NOT NULL,
-          statusUpdatedAt INTEGER
-        );
-      `);
-
-      // 从数据库恢复历史数据
-      this.loadFromDatabase();
-      log("info", "evolution.db_initialized", { path: this.dbPath });
-    } catch (err) {
-      log("error", "evolution.db_init_failed", {
-        path: this.dbPath,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /** 从数据库加载历史数据 */
-  private loadFromDatabase(): void {
-    if (!this.db) return;
-
-    try {
-      // 加载 generations
-      const genStmt = this.db.prepare("SELECT * FROM evolution_generations");
-      for (const row of genStmt.all() as any[]) {
-        this.generations.push({
-          name: row.skillName,
-          generatedBy: row.generatedBy,
-          depth: row.depth,
-          timestamp: row.createdAt,
-          approved: row.approved === 1,
-        });
-        this.currentDepth.set(row.skillName, row.depth);
-      }
-
-      // 加载 violations
-      const violStmt = this.db.prepare("SELECT * FROM evolution_violations");
-      for (const row of violStmt.all() as any[]) {
-        this.violations.push({
-          constraintId: row.constraintId,
-          description: row.description,
-          blocking: row.blocking === 1,
-          skillName: row.skillName,
-          detectedAt: row.detectedAt,
-        });
-      }
-
-      // 加载 pending approvals (status='pending')
-      const appStmt = this.db.prepare(
-        "SELECT * FROM evolution_approvals WHERE status = 'pending'"
-      );
-      for (const row of appStmt.all() as any[]) {
-        this.pendingApprovals.push({
-          id: row.id,
-          name: row.name,
-          description: row.description,
-          code: row.code || "",
-          capabilities: row.capabilities ? JSON.parse(row.capabilities) : [],
-          generatedBy: row.generatedBy,
-          depth: row.depth,
-          createdAt: row.createdAt,
-        });
-      }
-
-      log("info", "evolution.db_loaded", {
+      await this.repository.initTables();
+      await this.loadFromRepository();
+      log("info", "evolution.initialized", {
         generations: this.generations.length,
         violations: this.violations.length,
         pendingApprovals: this.pendingApprovals.length,
       });
     } catch (err) {
-      log("error", "evolution.db_load_failed", {
+      log("error", "evolution.init_failed", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
+
+  /** 从主数据库恢复历史数据 */
+  private async loadFromRepository(): Promise<void> {
+    try {
+      const genRows = await this.repository.loadGenerations();
+      for (const row of genRows) {
+        this.generations.push({
+          name: row.skillName,
+          generatedBy: row.generatedBy,
+          depth: row.depth,
+          timestamp: row.createdAt,
+          approved: row.approved,
+        });
+        this.currentDepth.set(row.skillName, row.depth);
+      }
+
+      const violRows = await this.repository.loadViolations();
+      for (const row of violRows) {
+        this.violations.push({
+          constraintId: row.constraintId,
+          description: row.description,
+          blocking: row.blocking,
+          skillName: row.skillName,
+          detectedAt: row.detectedAt,
+        });
+      }
+
+      const appRows = await this.repository.loadPendingApprovals();
+      for (const row of appRows) {
+        this.pendingApprovals.push({
+          id: row.id,
+          name: row.name,
+          description: row.description,
+          code: row.code || "",
+          capabilities: row.capabilities,
+          generatedBy: row.generatedBy,
+          depth: row.depth,
+          createdAt: row.createdAt,
+        });
+      }
+    } catch (err) {
+      log("error", "evolution.load_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
 
   /** Initialize built-in red line constraints */
   private initBuiltInRedLines(): void {
@@ -388,19 +334,19 @@ export class EvolutionController {
         newViolations.push(violation);
         this.violations.push(violation);
 
-        // 持久化到数据库
-        if (this.db) {
-          try {
-            const violationId = crypto.randomUUID();
-            this.db.prepare(
-              "INSERT INTO evolution_violations (id, constraintId, description, blocking, skillName, detectedAt) VALUES (?, ?, ?, ?, ?, ?)"
-            ).run(violationId, rl.id, violationDesc, rl.blocking ? 1 : 0, ctx.skillName, now);
-          } catch (err) {
-            log("warn", "evolution.violation_persist_failed", {
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
+        // 持久化到数据库（fire-and-forget，不阻塞 Red Line 检查）
+        void this.repository.saveViolation({
+          id: crypto.randomUUID(),
+          constraintId: rl.id,
+          description: violationDesc,
+          blocking: rl.blocking,
+          skillName: ctx.skillName,
+          detectedAt: now,
+        }).catch((err) => {
+          log("warn", "evolution.violation_persist_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
         log(rl.blocking ? "error" : "warn", "redline.violation", {
           constraintId: rl.id,
@@ -597,7 +543,7 @@ export class EvolutionController {
   }
 
   /** 记录 Skill 生成 */
-  recordGeneration(name: string, generatedBy: string): void {
+  async recordGeneration(name: string, generatedBy: string): Promise<void> {
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
     const depth = parentDepth + 1;
     const now = Date.now();
@@ -615,17 +561,20 @@ export class EvolutionController {
     this.generations.push(record);
 
     // 持久化到数据库
-    if (this.db) {
-      try {
-        const id = crypto.randomUUID();
-        this.db.prepare(
-          "INSERT INTO evolution_generations (id, skillName, generatedBy, depth, createdAt, approved, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        ).run(id, name, generatedBy, depth, now, approved ? 1 : 0, JSON.stringify(record));
-      } catch (err) {
-        log("warn", "evolution.generation_persist_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    try {
+      await this.repository.saveGeneration({
+        id: crypto.randomUUID(),
+        skillName: name,
+        generatedBy,
+        depth,
+        createdAt: now,
+        approved,
+        data: JSON.stringify(record),
+      });
+    } catch (err) {
+      log("warn", "evolution.generation_persist_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     log("info", "skill.generated", {
@@ -637,17 +586,49 @@ export class EvolutionController {
   }
 
   /** 提交人工审批 */
-  submitForApproval(
+  async submitForApproval(
     name: string,
     description: string,
     code: string,
     capabilities: string[],
     generatedBy: string,
-  ): string {
-    const id = crypto.randomUUID();
+  ): Promise<string> {
     const parentDepth = this.currentDepth.get(generatedBy) ?? 0;
     const now = Date.now();
 
+    // 去重：如果已有同名 pending 审批，更新内容而不是创建新记录
+    const existingIdx = this.pendingApprovals.findIndex((p) => p.name === name);
+    if (existingIdx >= 0) {
+      const existing = this.pendingApprovals[existingIdx];
+      existing.description = description;
+      existing.code = code;
+      existing.capabilities = capabilities;
+      existing.generatedBy = generatedBy;
+      existing.createdAt = now;
+      // 同步更新数据库
+      try {
+        await this.repository.saveApproval({
+          id: existing.id,
+          name,
+          description,
+          code,
+          capabilities,
+          generatedBy,
+          depth: existing.depth,
+          createdAt: now,
+          status: "pending",
+          statusUpdatedAt: now,
+        });
+      } catch (err) {
+        log("warn", "evolution.approval_update_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      log("info", "skill.pending_approval_updated", { id: existing.id, name, generatedBy });
+      return existing.id;
+    }
+
+    const id = crypto.randomUUID();
     const approval: PendingApproval = {
       id,
       name,
@@ -684,16 +665,23 @@ export class EvolutionController {
     });
 
     // 持久化到数据库
-    if (this.db) {
-      try {
-        this.db.prepare(
-          "INSERT INTO evolution_approvals (id, name, description, code, capabilities, generatedBy, depth, createdAt, status, statusUpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ).run(id, name, description, code, JSON.stringify(capabilities), generatedBy, approval.depth, now, "pending", now);
-      } catch (err) {
-        log("warn", "evolution.approval_persist_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    try {
+      await this.repository.saveApproval({
+        id,
+        name,
+        description,
+        code,
+        capabilities,
+        generatedBy,
+        depth: approval.depth,
+        createdAt: now,
+        status: "pending",
+        statusUpdatedAt: now,
+      });
+    } catch (err) {
+      log("warn", "evolution.approval_persist_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     log("info", "skill.pending_approval", { id, name, generatedBy });
@@ -701,22 +689,58 @@ export class EvolutionController {
   }
 
   /** 人工审批通过 */
-  approve(id: string): PendingApproval | null {
+  async approve(id: string): Promise<PendingApproval | null> {
     const idx = this.pendingApprovals.findIndex((p) => p.id === id);
     if (idx < 0) return null;
-    const item = this.pendingApprovals.splice(idx, 1)[0];
-    // 更新数据库状态
-    if (this.db) {
-      try {
-        this.db.prepare("UPDATE evolution_approvals SET status = ?, statusUpdatedAt = ? WHERE id = ?")
-          .run("approved", Date.now(), id);
-      } catch (err) {
-        log("warn", "evolution.approval_db_update_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+    const item = this.pendingApprovals[idx];
+    // CAS 原子更新：仅当 DB 状态仍为 pending 时才更新（防止并发重复审批）
+    try {
+      const updatedRows = await this.repository.updateApprovalStatus(id, "approved", Date.now());
+      if (updatedRows === 0) {
+        log("warn", "evolution.approval_race", { id, name: item.name });
+        this.pendingApprovals.splice(idx, 1);
+        return null;
       }
+      this.pendingApprovals.splice(idx, 1);
+    } catch (err) {
+      log("warn", "evolution.approval_db_update_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
     }
     log("info", "skill.approved", { id, name: item.name });
+
+    // 审批通过后自动保存到 custom_skills 并注册到 registry
+    try {
+      const repo = getCustomSkillRepository();
+      const existing = await repo.findByName(item.name);
+      if (!existing) {
+        const skillDef = defineSkill({
+          name: item.name,
+          description: item.description,
+          version: "1.0.0",
+          visible: false,
+          autonomy: Autonomy.MANUAL,
+          dependencies: [],
+          timeout: 30000,
+          retry: { maxRetries: 0, backoffMs: 1000, backoffMultiplier: 2 },
+          handler: async () => ({ success: true, data: {} }),
+        });
+        await repo.create(skillDef, item.generatedBy || "evolution", item.code);
+        if (this.registry) {
+          const reconstructed = await repo.reconstructSkill(await repo.findByName(item.name) as any);
+          if (!this.registry.lookup(item.name)) {
+            this.registry.register(reconstructed);
+            log("info", "skill.auto_registered", { name: item.name, source: "evolution_approve" });
+          }
+        }
+      }
+    } catch (regErr: any) {
+      log("warn", "evolution.approve_registration_failed", {
+        name: item.name,
+        error: regErr instanceof Error ? regErr.message : String(regErr),
+      });
+    }
 
     // 完成对应的 InboxItem
     getInboxService().completeBySource("evolution", id, { action: "approve" }).catch(() => {});
@@ -725,20 +749,24 @@ export class EvolutionController {
   }
 
   /** 人工审批拒绝 */
-  reject(id: string, reason: string): boolean {
+  async reject(id: string, reason: string): Promise<boolean> {
     const idx = this.pendingApprovals.findIndex((p) => p.id === id);
     if (idx < 0) return false;
-    const item = this.pendingApprovals.splice(idx, 1)[0];
-    // 更新数据库状态
-    if (this.db) {
-      try {
-        this.db.prepare("UPDATE evolution_approvals SET status = ?, statusUpdatedAt = ? WHERE id = ?")
-          .run("rejected", Date.now(), id);
-      } catch (err) {
-        log("warn", "evolution.approval_db_update_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+    const item = this.pendingApprovals[idx];
+    // CAS 原子更新：仅当 DB 状态仍为 pending 时才更新（防止并发重复审批）
+    try {
+      const updatedRows = await this.repository.updateApprovalStatus(id, "rejected", Date.now());
+      if (updatedRows === 0) {
+        log("warn", "evolution.approval_race", { id, name: item.name });
+        this.pendingApprovals.splice(idx, 1);
+        return false;
       }
+      this.pendingApprovals.splice(idx, 1);
+    } catch (err) {
+      log("warn", "evolution.approval_db_update_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
     }
     log("info", "skill.rejected", { id, name: item.name, reason });
 
@@ -751,6 +779,55 @@ export class EvolutionController {
   /** 获取待审批列表 */
   getPendingApprovals(): PendingApproval[] {
     return [...this.pendingApprovals];
+  }
+
+  /** 获取已审批列表（从数据库加载，用于启动时恢复） */
+  async getApprovedApprovals(): Promise<PendingApproval[]> {
+    try {
+      const rows = await this.repository.getApprovedApprovals();
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        code: row.code || "",
+        capabilities: row.capabilities,
+        generatedBy: row.generatedBy,
+        depth: row.depth,
+        createdAt: row.createdAt,
+        status: row.status,
+        statusUpdatedAt: row.statusUpdatedAt,
+      }));
+    } catch (err) {
+      log("warn", "evolution.approved_load_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
+  /** 按状态获取审批列表 */
+  async getApprovalsByStatus(status: string): Promise<PendingApproval[]> {
+    if (status === "pending") {
+      return this.getPendingApprovals();
+    }
+    try {
+      const rows = await this.repository.getApprovalsByStatus(status);
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        code: row.code || "",
+        capabilities: row.capabilities,
+        generatedBy: row.generatedBy,
+        depth: row.depth,
+        createdAt: row.createdAt,
+        status: row.status,
+        statusUpdatedAt: row.statusUpdatedAt,
+      }));
+    } catch (err) {
+      log("warn", "evolution.status_load_failed", { status, error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
   }
 
   /** 获取生成历史 */
@@ -802,20 +879,7 @@ export class EvolutionController {
     };
   }
 
-  /** 关闭数据库连接 */
-  close(): void {
-    if (this.db) {
-      try {
-        this.db.close();
-        this.db = null;
-        log("info", "evolution.db_closed", {});
-      } catch (err) {
-        log("error", "evolution.db_close_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
+
 }
 
 // 全局单例引用（供 Inbox callback 使用）

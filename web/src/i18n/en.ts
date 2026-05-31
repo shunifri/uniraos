@@ -32,6 +32,12 @@ const en: Translations = {
   login_phone_invalid: 'Please enter a valid 11-digit phone number',
   login_phone_hint: 'Enter phone number for guest access',
   logout: 'Logout',
+  change_password: 'Change Password',
+  old_password: 'Old Password',
+  new_password: 'New Password',
+  confirm_password: 'Confirm Password',
+  password_mismatch: 'Passwords do not match',
+  reset_password: 'Reset Password',
 
   // Common
   save: 'Save',

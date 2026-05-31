@@ -33,10 +33,7 @@ const skillContext = data.hasContext ? {
       params: data.params,
       context: { ...skillContext, user: data.user },
       console,
-      setTimeout,
-      clearTimeout,
-      setInterval,
-      clearInterval,
+      // setTimeout/setInterval 已移除，防止 DoS（无限循环定时器）
       Promise,
       Math,
       Date,
@@ -81,7 +78,12 @@ const skillContext = data.hasContext ? {
       timeout: 30000,
       displayErrors: true,
     });
-    parentPort!.postMessage({ success: true, data: result });
+    // 如果 skill handler 返回了标准的 { success, data, error } 对象，直接透传
+    if (result && typeof result === 'object' && 'success' in result) {
+      parentPort!.postMessage(result);
+    } else {
+      parentPort!.postMessage({ success: true, data: result });
+    }
   } catch (err: any) {
     parentPort!.postMessage({ success: false, error: err.message || String(err) });
   }

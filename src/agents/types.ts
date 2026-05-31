@@ -103,7 +103,8 @@ export interface AgentStreamEvent {
     | "agent_done"
     | "done"
     | "error"
-    | "user_confirm";
+    | "user_confirm"
+    | "kb_references";
   agentRole?: string;
   data: Record<string, unknown>;
 }

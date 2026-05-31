@@ -31,4 +31,33 @@ describe("skill-bootstrap calculate", () => {
     const result = await skill!.handler({ expression: "" });
     expect(result.success).toBe(false);
   });
+
+  it("should list available variables on Unknown identifier error", async () => {
+    const registry = new SkillRegistry();
+    loadExampleSkills(registry);
+    const skill = registry.get("calculate");
+
+    const result = await skill!.handler({
+      expression: "nonexistent + 1",
+      context: { temp: 25, city: "Shanghai" },
+    });
+    expect(result.success).toBe(false);
+    const msg = (result.error as Error).message;
+    expect(msg).toContain("Unknown identifier: nonexistent");
+    expect(msg).toContain("Available variables in context");
+    expect(msg).toContain("temp");
+    expect(msg).toContain("city");
+  });
+
+  it("should handle Unknown identifier with empty context", async () => {
+    const registry = new SkillRegistry();
+    loadExampleSkills(registry);
+    const skill = registry.get("calculate");
+
+    const result = await skill!.handler({ expression: "missingVar" });
+    expect(result.success).toBe(false);
+    const msg = (result.error as Error).message;
+    expect(msg).toContain("Unknown identifier: missingVar");
+    expect(msg).toContain("Available variables in context: [none]");
+  });
 });

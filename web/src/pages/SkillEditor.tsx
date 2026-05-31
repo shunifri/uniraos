@@ -9,6 +9,7 @@ import {
   Modal,
   Upload,
   Typography,
+  Input,
 } from "antd";
 import {
   PlusOutlined,
@@ -106,6 +107,8 @@ export default function SkillEditorPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [helpCollapsed, setHelpCollapsed] = useState(true);
   const [activeTab, setActiveTab] = useState("basic");
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -173,15 +176,21 @@ export default function SkillEditorPage() {
     }
   };
 
-  const handleSaveAs = async () => {
-    const newName = window.prompt(t("name"), form.name + "_copy");
-    if (!newName || newName.trim() === "" || existingNames.includes(newName.trim())) {
-      if (newName) message.error("Invalid or duplicate name");
+  const handleSaveAs = () => {
+    setSaveAsName(form.name + "_copy");
+    setSaveAsOpen(true);
+  };
+
+  const handleConfirmSaveAs = async () => {
+    const newName = saveAsName.trim();
+    if (!newName || existingNames.includes(newName)) {
+      message.error("Invalid or duplicate name");
       return;
     }
     try {
-      await registerSkill(formToApiPayload({ ...form, name: newName.trim() }));
+      await registerSkill(formToApiPayload({ ...form, name: newName }));
       message.success(t("skill_saved"));
+      setSaveAsOpen(false);
       await loadSkills();
     } catch (err: any) {
       message.error(err.message || t("error"));
@@ -424,6 +433,23 @@ export default function SkillEditorPage() {
       </Flex>
 
       <HelpPanel collapsed={helpCollapsed} />
+
+      <Modal
+        title={t("save_as")}
+        open={saveAsOpen}
+        onOk={handleConfirmSaveAs}
+        onCancel={() => setSaveAsOpen(false)}
+        okText={t("save")}
+        cancelText={t("cancel")}
+      >
+        <Input
+          placeholder={t("name")}
+          value={saveAsName}
+          onChange={(e) => setSaveAsName(e.target.value)}
+          onPressEnter={handleConfirmSaveAs}
+          autoFocus
+        />
+      </Modal>
     </Flex>
   );
 }

@@ -16,6 +16,17 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3000",
         changeOrigin: true,
+        // 匹配后端 skill 超时（300s）+ 缓冲，0 表示无超时
+        timeout: 0,
+        configure: (proxy, _options) => {
+          proxy.on("error", (err, req, res) => {
+            console.error("[Vite Proxy Error]", req.method, req.url, err.message);
+            if (res && !res.headersSent) {
+              res.writeHead(502, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ success: false, error: "Proxy error: " + err.message }));
+            }
+          });
+        },
       },
     },
   },

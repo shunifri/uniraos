@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Flex, App } from "antd";
+import { useSearchParams } from "react-router-dom";
+import { Flex, App, Select, Button, Space, Modal, Input } from "antd";
+import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { api, apiFetch } from "@/api";
 import KBStats from "@/components/knowledge/KBStats";
@@ -10,9 +12,19 @@ import DocumentViewerDrawer from "@/components/knowledge/DocumentViewerDrawer";
 import ShareDialog from "@/components/ShareDialog";
 import type { KBDocument, SearchResult } from "@/components/knowledge/types";
 
+interface KBCollection {
+  id: string;
+  name: string;
+  description: string;
+  ownerId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export default function KnowledgePage() {
   const t = useI18nStore((s) => s.t);
   const { message } = App.useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [stats, setStats] = useState<any>({});
   const [documents, setDocuments] = useState<KBDocument[]>([]);
@@ -29,6 +41,16 @@ export default function KnowledgePage() {
   const [viewPageImages, setViewPageImages] = useState<number[]>([]);
   const [viewLayouts, setViewLayouts] = useState<any[]>([]);
   const [shareDoc, setShareDoc] = useState<KBDocument | null>(null);
+
+  // Collections state
+  const [collections, setCollections] = useState<KBCollection[]>([]);
+  const urlCollectionId = searchParams.get("collectionId");
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | undefined>(urlCollectionId || undefined);
+  const [loadingCollections, setLoadingCollections] = useState(false);
+
+  // 创建分类弹窗
+  const [createCollectionOpen, setCreateCollectionOpen] = useState(false);
+  const [createCollectionName, setCreateCollectionName] = useState("");
 
   const handleViewDoc = async (docId: string, docName: string) => {
     setViewLoading(true);
@@ -71,19 +93,38 @@ export default function KnowledgePage() {
     setViewLoading(false);
   };
 
+  const loadCollections = useCallback(async () => {
+    setLoadingCollections(true);
+    try {
+      const data = await api.get<any>("/api/knowledge/collections");
+      if (data.success) {
+        setCollections(data.data?.collections || []);
+      }
+    } catch (err: unknown) {
+      console.warn('Failed to load collections:', err);
+    }
+    setLoadingCollections(false);
+  }, []);
+
   const loadStats = useCallback(async () => {
     try {
-      const data = await api.get<any>("/api/knowledge/stats");
+      const url = selectedCollectionId
+        ? `/api/knowledge/stats?collectionId=${encodeURIComponent(selectedCollectionId)}`
+        : "/api/knowledge/stats";
+      const data = await api.get<any>(url);
       if (data.success) setStats(data);
     } catch (err: unknown) { 
       console.warn('Knowledge operation failed:', err);
     }
-  }, []);
+  }, [selectedCollectionId]);
 
   const loadDocuments = useCallback(async () => {
     setLoadingDocs(true);
     try {
-      const data = await api.get<any>("/api/knowledge/documents");
+      const url = selectedCollectionId
+        ? `/api/knowledge/documents?collectionId=${encodeURIComponent(selectedCollectionId)}`
+        : "/api/knowledge/documents";
+      const data = await api.get<any>(url);
       if (data.success) {
         setDocuments(data.documents || []);
       }
@@ -91,12 +132,21 @@ export default function KnowledgePage() {
       console.warn('Knowledge operation failed:', err);
     }
     setLoadingDocs(false);
-  }, []);
+  }, [selectedCollectionId]);
+
+  // URL 参数变化时自动选中对应集合
+  useEffect(() => {
+    const cid = searchParams.get("collectionId");
+    if (cid && cid !== selectedCollectionId) {
+      setSelectedCollectionId(cid);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
+    loadCollections();
     loadStats();
     loadDocuments();
-  }, [loadStats, loadDocuments]);
+  }, [loadCollections, loadStats, loadDocuments]);
 
   // Polling when documents are processing
   useEffect(() => {
@@ -177,7 +227,11 @@ export default function KnowledgePage() {
         success: boolean;
         results?: Array<{ docId: string; docName: string; content: string; score: number }>;
       }
-      const data = await api.get<SearchResponse>(`/api/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=10`);
+      let url = `/api/knowledge/search?q=${encodeURIComponent(searchQuery)}&limit=10`;
+      if (selectedCollectionId) {
+        url += `&collectionId=${encodeURIComponent(selectedCollectionId)}`;
+      }
+      const data = await api.get<SearchResponse>(url);
       if (data.success) {
         setSearchResults(data.results || []);
       }
@@ -210,6 +264,7 @@ export default function KnowledgePage() {
         name: kbName,
         path: filePath,
         tags: importTags ? importTags.split(",").map((t: string) => t.trim()).filter(Boolean) : [],
+        collectionId: selectedCollectionId,
       });
       if (data.success) {
         if (data.chunkCount === 0 && !data.updated && !data.parsing) {
@@ -242,6 +297,18 @@ export default function KnowledgePage() {
     } catch (e: any) { message.error(e.message); }
   };
 
+  const handleChangeCollection = async (docId: string, collectionId: string | null) => {
+    try {
+      const data = await api.put<any>(`/api/knowledge/documents/${docId}`, { collectionId });
+      if (data.success) {
+        message.success("分类修改成功");
+        loadDocuments();
+      } else {
+        message.error(data.error || "修改失败");
+      }
+    } catch (e: any) { message.error(e.message); }
+  };
+
   const handleOpenShare = (doc: KBDocument) => {
     setShareDoc(doc);
   };
@@ -256,8 +323,91 @@ export default function KnowledgePage() {
     setRebuilding(false);
   };
 
+  const handleCreateCollection = () => {
+    setCreateCollectionName("");
+    setCreateCollectionOpen(true);
+  };
+
+  const handleConfirmCreateCollection = async () => {
+    const name = createCollectionName.trim();
+    if (!name) {
+      message.warning("请输入分类名称");
+      return;
+    }
+    try {
+      const data = await api.post<any>("/api/knowledge/collections", { name, description: "" });
+      if (data.success) {
+        message.success("分类创建成功");
+        setCreateCollectionOpen(false);
+        loadCollections();
+      } else {
+        message.error(data.error || "创建失败");
+      }
+    } catch (e: any) { message.error(e.message); }
+  };
+
+  const handleDeleteCollection = (collectionId: string) => {
+    Modal.confirm({
+      title: "删除分类",
+      content: "确定删除此分类？分类内的文档将移回默认知识库。",
+      okText: "删除",
+      okType: "danger",
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          const data = await api.del<any>(`/api/knowledge/collections/${collectionId}`);
+          if (data.success) {
+            message.success("分类已删除");
+            if (selectedCollectionId === collectionId) {
+              setSelectedCollectionId(undefined);
+            }
+            loadCollections();
+            loadDocuments();
+            loadStats();
+          } else {
+            message.error(data.error || "删除失败");
+          }
+        } catch (e: any) { message.error(e.message); }
+      },
+    });
+  };
+
   return (
     <Flex vertical gap={16} style={{ maxWidth: 960, margin: "0 auto", padding: "16px 0" }}>
+      {/* Collection Selector */}
+      <Flex justify="space-between" align="center">
+        <Space>
+          <Select
+            style={{ minWidth: 200 }}
+            placeholder="选择知识库分类"
+            loading={loadingCollections}
+            value={selectedCollectionId}
+            onChange={(val) => {
+              setSelectedCollectionId(val);
+              // 清除 URL 中的 collectionId 参数，避免手动切换后被覆盖
+              if (searchParams.has("collectionId")) {
+                const next = new URLSearchParams(searchParams);
+                next.delete("collectionId");
+                setSearchParams(next, { replace: true });
+              }
+            }}
+            allowClear
+            options={[
+              { label: "全部分类", value: undefined },
+              ...collections.map((c) => ({ label: c.name, value: c.id })),
+            ]}
+          />
+          <Button icon={<PlusOutlined />} onClick={handleCreateCollection}>
+            新建分类
+          </Button>
+        </Space>
+        {selectedCollectionId && collections.find((c) => c.id === selectedCollectionId)?.name !== "默认知识库" && (
+          <Button danger icon={<DeleteOutlined />} onClick={() => handleDeleteCollection(selectedCollectionId)}>
+            删除分类
+          </Button>
+        )}
+      </Flex>
+
       <KBStats stats={stats} />
       <ImportSection
         importing={importing}
@@ -275,6 +425,7 @@ export default function KnowledgePage() {
       />
       <DocumentTable
         documents={documents}
+        collections={collections}
         loading={loadingDocs}
         onRefresh={loadDocuments}
         onRebuild={handleRebuild}
@@ -282,6 +433,7 @@ export default function KnowledgePage() {
         onDelete={handleDelete}
         onOpenShare={handleOpenShare}
         onViewDoc={handleViewDoc}
+        onChangeCollection={handleChangeCollection}
       />
       <ShareDialog
         open={!!shareDoc}
@@ -300,6 +452,22 @@ export default function KnowledgePage() {
         onClose={() => { setViewDoc(null); setViewPageImages([]); setViewLayouts([]); }}
         onTabChange={setViewTab}
       />
+      <Modal
+        title="新建知识库分类"
+        open={createCollectionOpen}
+        onOk={handleConfirmCreateCollection}
+        onCancel={() => setCreateCollectionOpen(false)}
+        okText="创建"
+        cancelText="取消"
+      >
+        <Input
+          placeholder="请输入分类名称"
+          value={createCollectionName}
+          onChange={(e) => setCreateCollectionName(e.target.value)}
+          onPressEnter={handleConfirmCreateCollection}
+          autoFocus
+        />
+      </Modal>
     </Flex>
   );
 }

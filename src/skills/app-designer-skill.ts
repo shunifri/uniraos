@@ -18,8 +18,9 @@ import type { LLMProvider } from "../llm/types.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { getCurrentUserId } from "../user/request-context.js";
-import { createFormDefinition } from "../services/form-service.js";
+import { createFormDefinition, getFormDefinitionByKey } from "../services/form-service.js";
 import { getWorkflowRepository } from "../workflow/repository.js";
+import { validateWorkflowSpec } from "../routes/workflow-definition-routes.js";
 
 // ───────────────────────────────────────────────────────────────
 // 类型定义
@@ -51,12 +52,15 @@ interface DesignForm {
 
 interface DesignWorkflowNode {
   id: string;
-  type: "start" | "end" | "userTask" | "serviceTask" | "exclusiveGateway";
+  type: "start" | "end" | "userTask" | "serviceTask" | "exclusiveGateway" | "parallelGateway";
   name: string;
   assignee?: string;
   formKey?: string;
   condition?: string;
+  conditions?: string[];
   next?: string[];
+  mode?: "split" | "join";
+  branches?: string[];
 }
 
 interface DesignWorkflow {
@@ -70,6 +74,7 @@ interface DesignKnowledgeBase {
   name: string;
   description?: string;
   documentTypes: string[];
+  collectionId?: string; // 部署后由系统自动填充
 }
 
 interface DesignRelationship {
@@ -82,6 +87,7 @@ interface DesignRelationship {
 interface DesignSchema {
   name: string;
   description: string;
+  systemPrompt?: string;
   components: {
     skills: DesignSkill[];
     forms: DesignForm[];
@@ -119,6 +125,8 @@ interface ApplyResult {
   key: string;
   name: string;
   status: "created" | "exists" | "failed" | "skipped";
+  id?: string;
+  message?: string;
   error?: string;
 }
 
@@ -160,6 +168,32 @@ export class AppDesignerService {
       updatedAt: Date.now(),
     };
 
+    await this.saveRecord(record);
+    return record;
+  }
+
+  // ── 更新自定义系统提示词 ──
+  async updateSystemPrompt(designId: string, systemPrompt: string, ownerId: string): Promise<AppDesignRecord> {
+    const record = await this.getRecord(designId);
+    if (!record) throw new Error(`设计方案不存在: ${designId}`);
+    if (record.ownerId !== ownerId) throw new Error("无权修改此设计方案");
+    record.designJson.systemPrompt = systemPrompt;
+    record.updatedAt = Date.now();
+    await this.saveRecord(record);
+    return record;
+  }
+
+  // ── 更新组件关联关系 ──
+  async updateRelationships(
+    designId: string,
+    relationships: DesignRelationship[],
+    ownerId: string
+  ): Promise<AppDesignRecord> {
+    const record = await this.getRecord(designId);
+    if (!record) throw new Error(`设计方案不存在: ${designId}`);
+    if (record.ownerId !== ownerId) throw new Error("无权修改此设计方案");
+    record.designJson.relationships = relationships;
+    record.updatedAt = Date.now();
     await this.saveRecord(record);
     return record;
   }
@@ -245,6 +279,145 @@ export class AppDesignerService {
     }
   }
 
+  // ── 级联删除设计方案（及关联组件） ──
+  async deleteDesign(designId: string, ownerId: string): Promise<{ deleted: string[]; errors: string[] }> {
+    const record = await this.getRecord(designId);
+    if (!record || record.ownerId !== ownerId) {
+      throw new Error("设计方案不存在或无权限");
+    }
+
+    const deleted: string[] = [];
+    const errors: string[] = [];
+
+    // 解析 components 获取已部署的组件
+    const components = record.components ?? [];
+
+    // 1. 先清理 workflow_form_bindings（解除表单和工作流的关联），否则表单删除会失败
+    for (const comp of components.filter((c) => c.type === "workflow" && c.status === "created")) {
+      try {
+        const { deleteWorkflowFormBindingsByDefinitionKey } = await import("../services/workflow-form-service.js");
+        await deleteWorkflowFormBindingsByDefinitionKey(comp.key);
+      } catch (e: any) {
+        console.warn(`[deleteDesign] 清理 workflow_form_bindings 警告: ${e.message || String(e)}`);
+      }
+    }
+
+    // 2. 删除工作流定义（必须先于表单删除，因为 workflow_form_bindings 已清理）
+    for (const comp of components.filter((c) => c.type === "workflow" && c.status === "created")) {
+      try {
+        const { getWorkflowRepository } = await import("../workflow/repository.js");
+        const repo = getWorkflowRepository();
+        const def = await repo.getDefinitionByKey(comp.key);
+        if (def) {
+          await repo.deleteDefinition(def.id);
+          deleted.push(`workflow:${comp.key}`);
+        }
+      } catch (e: any) {
+        errors.push(`workflow:${comp.key} — ${e.message || String(e)}`);
+      }
+    }
+
+    // 3. 删除表单定义（workflow_form_bindings 已清理，不会再被引用）
+    for (const comp of components.filter((c) => c.type === "form" && c.status === "created")) {
+      try {
+        const { deleteFormDefinition, getFormDefinitionByKey } = await import("../services/form-service.js");
+        const formDef = await getFormDefinitionByKey(comp.key);
+        if (formDef) {
+          await deleteFormDefinition(formDef.id, ownerId);
+          deleted.push(`form:${comp.key}`);
+        }
+      } catch (e: any) {
+        errors.push(`form:${comp.key} — ${e.message || String(e)}`);
+      }
+    }
+
+    // 3. 删除自定义 Skill
+    for (const comp of components.filter((c) => c.type === "skill" && c.status === "created")) {
+      try {
+        const { getCustomSkillRepository } = await import("../db/custom-skill-repository.js");
+        const repo = getCustomSkillRepository();
+        await repo.deleteByName(comp.key, ownerId);
+        deleted.push(`skill:${comp.key}`);
+      } catch (e: any) {
+        errors.push(`skill:${comp.key} — ${e.message || String(e)}`);
+      }
+    }
+
+    // 4. 删除知识库集合（先删集合内文档，再删集合）
+    for (const comp of components.filter((c) => c.type === "knowledgeBase" && c.status === "created")) {
+      try {
+        const kb = record.designJson.components.knowledgeBases.find((k: any) => k.name === comp.key);
+        const collectionId = kb?.collectionId;
+        if (collectionId) {
+          // 4.1 查询集合内所有文档并逐个删除（含向量、文件）
+          const { getKnowledgeBase } = await import("./knowledge-skills.js");
+          const kbInstance = getKnowledgeBase(ownerId);
+          let docRows: Array<{ doc_id: string }> = [];
+          if (isMySQL()) {
+            const adapter = await getMySQLAdapter();
+            docRows = await adapter.query<{ doc_id: string }>(
+              "SELECT doc_id FROM kb_documents WHERE collection_id = ? AND owner_id = ?",
+              [collectionId, ownerId]
+            );
+          } else {
+            const db = getDb();
+            docRows = db.prepare("SELECT doc_id FROM kb_documents WHERE collection_id = ? AND owner_id = ?").all(collectionId, ownerId) as Array<{ doc_id: string }>;
+          }
+          for (const row of docRows) {
+            try {
+              await kbInstance.deleteDocument(row.doc_id);
+            } catch (docErr: any) {
+              console.warn(`[deleteDesign] Failed to delete KB doc ${row.doc_id}: ${docErr.message}`);
+            }
+          }
+
+          // 4.2 删除集合本身
+          const { deleteKBCollection } = await import("../services/kb-collection-service.js");
+          await deleteKBCollection(collectionId, ownerId);
+          deleted.push(`knowledgeBase:${comp.key}`);
+        }
+      } catch (e: any) {
+        errors.push(`knowledgeBase:${comp.key} — ${e.message || String(e)}`);
+      }
+    }
+
+    // 5. 删除应用记录
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      await adapter.execute("DELETE FROM app_designs WHERE id = ?", [designId]);
+    } else {
+      const db = getDb();
+      db.prepare("DELETE FROM app_designs WHERE id = ?").run(designId);
+    }
+    deleted.push(`app:${designId}`);
+
+    return { deleted, errors };
+  }
+
+  // ── 关联知识库集合 ──
+  async linkKbCollection(
+    designId: string,
+    kbName: string,
+    collectionId: string,
+    ownerId: string,
+  ): Promise<AppDesignRecord> {
+    const record = await this.getRecord(designId);
+    if (!record) {
+      throw new Error(`设计方案不存在: ${designId}`);
+    }
+    if (record.ownerId !== ownerId) {
+      throw new Error("无权操作此设计方案");
+    }
+    const kb = record.designJson.components.knowledgeBases.find((k) => k.name === kbName);
+    if (!kb) {
+      throw new Error(`知识库 "${kbName}" 不存在于设计方案中`);
+    }
+    kb.collectionId = collectionId;
+    record.updatedAt = Date.now();
+    await this.saveRecord(record);
+    return record;
+  }
+
   // ── 一键部署设计方案 ──
   async applyDesign(
     designId: string,
@@ -260,23 +433,38 @@ export class AppDesignerService {
     }
 
     const results: ApplyResult[] = [];
+    const createdFormKeys = new Set<string>();
+    const formKeyToId = new Map<string, string>();
 
     // 1. 创建表单定义
     for (const form of record.designJson.components.forms) {
       try {
         const schema = this.buildFormSchema(form);
-        await createFormDefinition({
+        const created = await createFormDefinition({
           key: form.key,
           name: form.name,
           description: form.description,
           schemaJson: schema,
           createdBy: ownerId,
         });
+        createdFormKeys.add(form.key);
+        if (created?.id) formKeyToId.set(form.key, created.id);
         results.push({ type: "form", key: form.key, name: form.name, status: "created" });
       } catch (e: any) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("UNIQUE constraint") || msg.includes("Duplicate entry") || msg.includes("already exists")) {
-          results.push({ type: "form", key: form.key, name: form.name, status: "exists" });
+          // 检查现有表单的 schema 是否与设计一致，防止引用错误的表单
+          const existing = await getFormDefinitionByKey(form.key);
+          const designedSchema = this.buildFormSchema(form);
+          const existingSchema = existing?.schema_json;
+          const schemasMatch = this.deepEqual(existingSchema, designedSchema);
+          if (schemasMatch) {
+            createdFormKeys.add(form.key);
+            if (existing?.id) formKeyToId.set(form.key, existing.id);
+            results.push({ type: "form", key: form.key, name: form.name, status: "exists" });
+          } else {
+            results.push({ type: "form", key: form.key, name: form.name, status: "failed", error: `表单 "${form.key}" 已存在但 schema 不匹配，请先删除旧表单或修改设计` });
+          }
         } else {
           results.push({ type: "form", key: form.key, name: form.name, status: "failed", error: msg });
         }
@@ -292,7 +480,7 @@ export class AppDesignerService {
           results.push({ type: "workflow", key: workflow.key, name: workflow.name, status: "exists" });
           continue;
         }
-        const spec = this.buildWorkflowSpec(workflow);
+        const spec = this.buildWorkflowSpec(workflow, createdFormKeys);
         await repo.createDefinition({
           name: workflow.name,
           key: workflow.key,
@@ -300,6 +488,25 @@ export class AppDesignerService {
           definition: spec,
           createdBy: ownerId,
         });
+        // 为工作流中引用了已创建表单的 user_task 节点创建 form_bindings
+        try {
+          const { createWorkflowFormBinding } = await import("../services/workflow-form-service.js");
+          for (const node of workflow.nodes) {
+            if (node.type === "userTask" && node.formKey && createdFormKeys.has(node.formKey)) {
+              const formDefId = formKeyToId.get(node.formKey);
+              if (formDefId) {
+                await createWorkflowFormBinding({
+                  definitionKey: workflow.key,
+                  nodeId: node.id,
+                  formId: formDefId,
+                  isRequired: true,
+                }).catch(() => {}); // 忽略已存在的绑定
+              }
+            }
+          }
+        } catch (bindingErr) {
+          console.warn(`[applyDesign] workflow_form_bindings creation warning:`, bindingErr);
+        }
         results.push({ type: "workflow", key: workflow.key, name: workflow.name, status: "created" });
       } catch (e: any) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -307,13 +514,18 @@ export class AppDesignerService {
       }
     }
 
-    // 3. 创建 Skill（通过 engine.execute 调用 skill_from_description）
+    // 3. 创建 Skill（通过 skill_from_description 自动生成可执行代码，autoRegister 模式跳过审批直接注册）
     for (const skill of record.designJson.components.skills) {
       try {
+        // 构建包含应用上下文的描述，让 LLM 生成更具体的代码
+        const appContext = this.buildSkillContext(skill, record);
         const result = await engine.execute("skill_from_description", {
           name: skill.name,
-          description: `${skill.description}\n\n业务逻辑：${skill.logic || "无详细逻辑"}`,
-        });
+          description: `${skill.description}\n\n业务逻辑：${skill.logic || "无详细逻辑"}\n\n应用上下文：${appContext}`,
+          // 生产环境：走 evolution 审批流程，不自动注册
+          autoRegister: false,
+        } as any);
+        console.log(`[applyDesign] skill_from_description result for ${skill.name}: success=${result.success}, error=${result.error instanceof Error ? result.error.message : result.error}`);
         if (result.success) {
           results.push({ type: "skill", key: skill.name, name: skill.name, status: "created" });
         } else {
@@ -330,9 +542,32 @@ export class AppDesignerService {
       }
     }
 
-    // 4. 知识库目前只能提示用户手动上传
+    // 4. 自动创建知识库集合
     for (const kb of record.designJson.components.knowledgeBases) {
-      results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "skipped", error: "请手动前往知识库页面上传文档" });
+      try {
+        const result = await engine.execute("kb_collection_create", {
+          name: kb.name,
+          description: kb.description || `${kb.name}（应用「${record.name}」自动创建）`,
+          owner: ownerId,
+        });
+        if (result.success) {
+          const collectionId = ((result.data as any)?.collection as any)?.id as string | undefined;
+          if (collectionId) {
+            kb.collectionId = collectionId;
+          }
+          results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "created", id: collectionId, message: `知识库集合「${kb.name}」已创建，请前往知识库页面上传文档` });
+        } else {
+          const errMsg = result.error instanceof Error ? result.error.message : String(result.error);
+          if (errMsg.includes("已存在") || errMsg.includes("already exists") || errMsg.includes("Duplicate entry") || errMsg.includes("UNIQUE constraint")) {
+            results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "exists", message: "知识库集合已存在" });
+          } else {
+            results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "failed", error: errMsg });
+          }
+        }
+      } catch (e: any) {
+        const msg = e instanceof Error ? e.message : String(e);
+        results.push({ type: "knowledgeBase", key: kb.name, name: kb.name, status: "failed", error: msg });
+      }
     }
 
     // 5. 更新记录
@@ -341,6 +576,7 @@ export class AppDesignerService {
       key: r.key,
       name: r.name,
       status: r.status === "created" ? "created" : r.status === "exists" ? "created" : "failed",
+      id: r.id,
       error: r.error,
     }));
 
@@ -371,7 +607,15 @@ ${requirement}
 ## 设计约束
 1. Skill：每个 Skill 应该是一个独立的业务功能单元，接收参数、返回结果
 2. 表单：字段类型可选 string/number/boolean/select/date/textarea/email/phone
-3. 工作流：节点类型可选 start/end/userTask/serviceTask/exclusiveGateway
+3. 工作流：节点类型可选 start/end/userTask/serviceTask/exclusiveGateway/parallelGateway
+   - start: 必须有 next（单个目标）
+   - end: 无 next
+   - userTask/serviceTask: 可有 next（单个目标）
+   - exclusiveGateway: 必须有 condition（条件表达式）和 next（多个分支目标数组）
+   - parallelGateway: 有 mode 字段（"split" 或 "join"）
+     - split 模式: 必须有 branches（分支节点ID数组），不需要 next
+     - join 模式: 必须有 next（单个目标），不需要 branches
+   - 【重要】condition 中的变量必须使用 \${variable} 语法，如 "\${amount} >= 5000"、"\${status} == 'approved'"
 4. 知识库：列出需要上传的文档类型
 
 ## 输出格式
@@ -410,8 +654,10 @@ ${requirement}
         "name": "工作流名称",
         "description": "流程说明",
         "nodes": [
-          { "id": "start", "type": "start", "name": "开始", "next": ["task1"] },
-          { "id": "task1", "type": "userTask", "name": "审批任务", "assignee": "role_admin", "formKey": "form_key", "next": ["end"] },
+          { "id": "start", "type": "start", "name": "开始", "next": ["gateway1"] },
+          { "id": "gateway1", "type": "exclusiveGateway", "name": "金额判断", "condition": "\${amount} >= 5000", "next": ["high_task", "low_task"] },
+          { "id": "high_task", "type": "userTask", "name": "高额审批", "assignee": "role_manager", "next": ["end"] },
+          { "id": "low_task", "type": "userTask", "name": "普通审批", "assignee": "role_employee", "next": ["end"] },
           { "id": "end", "type": "end", "name": "结束" }
         ]
       }
@@ -583,40 +829,262 @@ ${newRequirement}
   // 私有方法：工具函数
   // ─────────────────────────────────────────────────────────────
 
+  /** 深度比较两个值是否相等（忽略对象键顺序） */
+  /** 为 design skill 构建应用上下文，帮助 LLM 生成更具体的代码
+   * 基于 skill 的 description 和当前应用的所有组件（表单/知识库/工作流）自动推断上下文
+   */
+  private buildSkillContext(skill: DesignSkill, record: AppDesignRecord): string {
+    const parts: string[] = [];
+    const forms = record.designJson.components.forms ?? [];
+    const kbs = record.designJson.components.knowledgeBases ?? [];
+    const workflows = record.designJson.components.workflows ?? [];
+    const desc = (skill.description || "").toLowerCase();
+    const name = skill.name.toLowerCase();
+
+    // ── 通用上下文：所有 skill 都能看到的应用组件信息 ──
+    if (forms.length > 0) {
+      const formKeys = forms.map((f) => f.key).join(", ");
+      parts.push(`本应用关联的表单：${formKeys}`);
+      const fields = forms.map((f) => `${f.key}(${f.fields.map((fld) => `${fld.name}:${fld.type}`).join(", ")})`).join("；");
+      parts.push(`各表单字段：${fields}`);
+    }
+    if (kbs.length > 0) {
+      const kbNames = kbs.map((k) => k.name).join(", ");
+      parts.push(`本应用关联的知识库：${kbNames}`);
+    }
+    if (workflows.length > 0) {
+      const wfNames = workflows.map((w) => w.name).join(", ");
+      parts.push(`本应用关联的工作流：${wfNames}`);
+    }
+
+    // ── 基于 description 关键词推断 skill 类型，提供对应实现指引 ──
+    const isQuerySkill = desc.includes("查询") || desc.includes("统计") || desc.includes("分析") || desc.includes("数据") || name.includes("query") || name.includes("data");
+    const isKbSkill = desc.includes("知识") || desc.includes("文档") || desc.includes("资料") || desc.includes("问答") || name.includes("kb") || name.includes("knowledge");
+    const isFormSkill = desc.includes("表单") || desc.includes("填写") || desc.includes("登记") || desc.includes("报名") || desc.includes("申请") || name.includes("form") || name.includes("registration");
+    const isWorkflowSkill = desc.includes("审批") || desc.includes("流程") || desc.includes("审核") || desc.includes("发起") || name.includes("approval") || name.includes("workflow");
+
+    if (isQuerySkill && forms.length > 0) {
+      parts.push("【实现方式】如需查询表单数据，调用 form_data_query(skillName='form_data_query', params={formKey, queryType, filters, groupBy, metrics, startDate, endDate})。");
+      parts.push("form_data_query 参数：formKey(表单key), queryType('list'|'count'|'group'|'stats'|'schema'), filters(字段过滤), groupBy(分组字段数组), metrics(统计指标), startDate/endDate(时间范围)");
+      parts.push("【重要】form_data_query 是系统级通用 Skill，自动适配 MySQL/SQLite。禁止直接调用 db_query 或 mysql_query 操作 form_instances 表。");
+    }
+
+    if (isKbSkill && kbs.length > 0) {
+      const kbIds = kbs.map((k) => k.collectionId).filter(Boolean);
+      if (kbIds.length > 0) {
+        parts.push(`本应用知识库 collectionId：${kbIds.join(", ")}`);
+        parts.push("【实现方式】如需查询知识库，调用 kb_search(skillName='kb_search', params={collectionId, query, limit})");
+      }
+    }
+
+    if (isFormSkill && forms.length > 0) {
+      const firstForm = forms[0];
+      parts.push(`【实现方式】如需引导用户填写表单，调用 user_confirm(skillName='user_confirm', params={type: 'form', formKey: '${firstForm.key}', title: '${firstForm.name}'})`);
+      parts.push("如需提交表单数据，调用 form_submit(skillName='form_submit', params={formKey, data})");
+    }
+
+    if (isWorkflowSkill && workflows.length > 0) {
+      const firstWf = workflows[0];
+      parts.push(`【实现方式】如需发起审批，调用 approval_submit(skillName='approval_submit', params={workflowKey: '${firstWf.key}', formData: {...}})`);
+    }
+
+    return parts.join("。");
+  }
+
+  private deepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a == null || b == null) return a === b;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== "object") return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+
+    if (Array.isArray(a)) {
+      const aa = a as unknown[];
+      const bb = b as unknown[];
+      if (aa.length !== bb.length) return false;
+      for (let i = 0; i < aa.length; i++) {
+        if (!this.deepEqual(aa[i], bb[i])) return false;
+      }
+      return true;
+    }
+
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const aKeys = Object.keys(ao);
+    const bKeys = Object.keys(bo);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+      if (!bKeys.includes(key)) return false;
+      if (!this.deepEqual(ao[key], bo[key])) return false;
+    }
+    return true;
+  }
+
   private buildFormSchema(form: DesignForm): Record<string, unknown> {
     const properties: Record<string, any> = {};
     const required: string[] = [];
+
+    const widgetMap: Record<string, string> = {
+      string: "input",
+      number: "number",
+      boolean: "switch",
+      select: "select",
+      date: "datePicker",
+      textarea: "textarea",
+      email: "input",
+      phone: "input",
+    };
+
     for (const field of form.fields) {
-      const prop: any = { type: field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string", title: field.title };
-      if (field.placeholder) prop.placeholder = field.placeholder;
-      if (field.options && field.options.length > 0) prop.enum = field.options;
+      // 字段名校验：只允许字母、数字、下划线
+      if (!/^[a-zA-Z0-9_]+$/.test(field.name)) {
+        throw new Error(`表单 "${form.key}" 的字段名 "${field.name}" 非法，只允许字母、数字、下划线`);
+      }
+      const prop: any = {
+        type: field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string",
+        title: field.title,
+      };
+
+      // UI 组件映射（与主站 form-engine 对齐）
+      const widget = widgetMap[field.type];
+      if (widget) prop["ui:widget"] = widget;
+
+      // 特殊类型 format 标记（用于前端验证和输入类型区分）
+      if (field.type === "email") prop.format = "email";
+      if (field.type === "phone") prop.format = "mobile";
+
+      // placeholder 使用 ui:placeholder（form-engine 标准）
+      if (field.placeholder) prop["ui:placeholder"] = field.placeholder;
+
+      // 选项使用 x-dataSource（form-engine 标准），同时保留 enum 作为后备
+      if (field.options && field.options.length > 0) {
+        prop.enum = field.options;
+        prop["x-dataSource"] = {
+          type: "static",
+          options: field.options.map((opt: string) => ({ label: opt, value: opt })),
+        };
+      }
+
       if (field.defaultValue !== undefined) prop.default = field.defaultValue;
       properties[field.name] = prop;
       if (field.required) required.push(field.name);
     }
+
     return {
       type: "object",
       title: form.name,
       description: form.description || "",
       properties,
       required,
+      actions: [
+        { type: "submit", label: "提交", primary: true },
+        { type: "cancel", label: "取消" },
+      ],
     };
   }
 
-  private buildWorkflowSpec(workflow: DesignWorkflow): any {
-    return {
+  private buildWorkflowSpec(workflow: DesignWorkflow, createdFormKeys?: Set<string>): any {
+    const typeMap: Record<string, string> = {
+      start: "start_event",
+      end: "end_event",
+      userTask: "user_task",
+      serviceTask: "service_task",
+      exclusiveGateway: "exclusive_gateway",
+      parallelGateway: "parallel_gateway",
+    };
+
+    // 预校验：收集所有节点 ID
+    const nodeIds = new Set(workflow.nodes.map((n) => n.id));
+    const startNodes = workflow.nodes.filter((n) => n.type === "start");
+    const endNodes = workflow.nodes.filter((n) => n.type === "end");
+    if (startNodes.length !== 1) {
+      throw new Error(`工作流 "${workflow.key}" 必须有且仅有一个 start 节点`);
+    }
+    if (endNodes.length === 0) {
+      throw new Error(`工作流 "${workflow.key}" 至少需要一个 end 节点`);
+    }
+
+    const nodes = workflow.nodes.map((n) => {
+      const backendType = typeMap[n.type] || n.type;
+      const node: any = {
+        id: n.id,
+        type: backendType,
+        name: n.name,
+      };
+
+      // assignee → 后端保留（格式校验）
+      if (n.assignee) {
+        if (!/^(role_|user_|dept_)/.test(n.assignee)) {
+          throw new Error(`工作流 "${workflow.key}" 节点 "${n.id}" 的 assignee "${n.assignee}" 格式非法，必须以 role_ / user_ / dept_ 开头`);
+        }
+        node.assignee = n.assignee;
+      }
+
+      // formKey → formDefinitionId（仅当表单已成功创建时才引用）
+      if (n.formKey && (!createdFormKeys || createdFormKeys.has(n.formKey))) {
+        node.formDefinitionId = n.formKey;
+      }
+
+      // parallelGateway 特殊处理
+      if (n.type === "parallelGateway") {
+        node.mode = n.mode || "split";
+        if (n.branches && n.branches.length > 0) {
+          // 校验 branches 中的节点 ID 必须存在于工作流中
+          for (const branchId of n.branches) {
+            if (!nodeIds.has(branchId)) {
+              throw new Error(`工作流 "${workflow.key}" 并行网关 "${n.id}" 的分支 "${branchId}" 不存在于节点列表中`);
+            }
+          }
+          node.branches = n.branches;
+        }
+      }
+
+      // next 处理 + 目标节点存在性校验
+      if (n.next && Array.isArray(n.next) && n.next.length > 0) {
+        for (const targetId of n.next) {
+          if (!nodeIds.has(targetId)) {
+            throw new Error(`工作流 "${workflow.key}" 节点 "${n.id}" 的 next 目标 "${targetId}" 不存在于节点列表中`);
+          }
+        }
+        if (n.type === "exclusiveGateway") {
+          // exclusiveGateway: next 数组 → conditions
+          // 支持单个 condition（第一个分支）或 conditions 数组
+          const conditions = n.conditions as string[] | undefined;
+          // 校验：conditions 数量应等于 next 数量（不足时用 "default" 补充）
+          if (conditions && conditions.length > 0 && conditions.length !== n.next.length) {
+            throw new Error(`工作流 "${workflow.key}" 排他网关 "${n.id}" 的条件数量 (${conditions.length}) 与分支数量 (${n.next.length}) 不一致`);
+          }
+          node.conditions = n.next.map((targetId, idx) => ({
+            expression: conditions?.[idx] ?? (n.condition && idx === 0 ? n.condition : "default"),
+            next: targetId,
+          }));
+        } else if (n.type === "parallelGateway") {
+          // parallelGateway: join 模式需要 next，split 模式不需要
+          if (n.mode === "join") {
+            node.next = n.next[0];
+          }
+        } else {
+          // 其他节点: next 数组第一个元素 → next 字符串
+          node.next = n.next[0];
+        }
+      }
+
+      return node;
+    });
+
+    const spec = {
       key: workflow.key,
       name: workflow.name,
-      nodes: workflow.nodes.map((n) => ({
-        id: n.id,
-        type: n.type,
-        name: n.name,
-        ...(n.assignee ? { assignee: n.assignee } : {}),
-        ...(n.formKey ? { formKey: n.formKey } : {}),
-        ...(n.condition ? { condition: n.condition } : {}),
-        ...(n.next ? { next: n.next } : {}),
-      })),
+      nodes,
     };
+
+    // 预验证，确保转换后的格式正确
+    const validation = validateWorkflowSpec(spec);
+    if (!validation.valid) {
+      throw new Error(`Workflow validation failed: ${validation.errors.join("; ")}`);
+    }
+
+    return spec;
   }
 
   private extractComponents(schema: DesignSchema): GeneratedComponent[] {
@@ -665,7 +1133,8 @@ ${newRequirement}
       for (const r of d.relationships) text += `  ${r.from} → ${r.to} (${r.type})\n`;
     }
 
-    text += `\n📋 原始需求:\n${record.requirement.slice(0, 500)}${record.requirement.length > 500 ? "..." : ""}`;
+    const req = record.requirement || "";
+    text += `\n📋 原始需求:\n${req.slice(0, 500)}${req.length > 500 ? "..." : ""}`;
     return text;
   }
 
@@ -694,10 +1163,12 @@ export function registerAppDesignerSkill(
 支持持续迭代升级：创建 → 预览 → 修正 → 再预览 → 一键部署。
 
 参数:
-  action(string): create(创建方案) | update(修正方案) | preview(预览方案) | list(列出方案) | archive(归档方案) | apply(一键部署)
+  action(string): create(创建方案) | update(修正方案) | preview(预览方案) | list(列出方案) | archive(归档方案) | delete(删除方案) | apply(一键部署) | link_kb_collection(关联知识库集合)
   requirement(string): 需求描述（create/update 时需要）
-  designId(string): 设计方案 ID（update/preview/archive/apply 时需要）
+  designId(string): 设计方案 ID（update/preview/archive/delete/apply/link_kb_collection 时需要）
   name(string): 应用名称（create 时可选）
+  kbName(string): 知识库名称（link_kb_collection 时需要）
+  collectionId(string): 知识库集合 ID（link_kb_collection 时需要）
 
 使用示例:
   1. create: {"action":"create","requirement":"帮我做一个高校招生咨询机器人"}
@@ -705,22 +1176,26 @@ export function registerAppDesignerSkill(
   3. update: {"action":"update","designId":"design_xxx","requirement":"再加一个按城市分配招生老师的功能"}
   4. apply: {"action":"apply","designId":"design_xxx"}
   5. list: {"action":"list"}
+  6. link_kb_collection: {"action":"link_kb_collection","designId":"design_xxx","kbName":"课程资料","collectionId":"kbc_xxx"}
 
 注意：
   - create/update 需要 LLM 配置
-  - apply 会根据设计方案自动创建表单、工作流，并提交 Skill 生成审批
+  - apply 会根据设计方案自动创建表单、工作流、知识库集合，并提交 Skill 生成审批
   - 知识库文档需要手动上传
   - 设计方案会自动版本化存储`,
       paramSchema: {
         properties: {
           action: {
             type: "string",
-            enum: ["create", "update", "preview", "list", "archive", "apply"],
+            enum: ["create", "update", "preview", "list", "archive", "delete", "apply", "link_kb_collection", "update_system_prompt"],
             description: "操作类型",
           },
           requirement: { type: "string", description: "需求描述" },
           designId: { type: "string", description: "设计方案ID" },
           name: { type: "string", description: "应用名称" },
+          kbName: { type: "string", description: "知识库名称（link_kb_collection 时使用）" },
+          collectionId: { type: "string", description: "知识库集合 ID（link_kb_collection 时使用）" },
+          systemPrompt: { type: "string", description: "自定义系统提示词（update_system_prompt 时使用）" },
         },
         required: ["action"],
       },
@@ -771,6 +1246,27 @@ export function registerAppDesignerSkill(
                   preview: display.text,
                   structured: display.structured,
                   message: `✅ 应用方案已更新至 v${record.version}。\n设计 ID: ${record.id}\n变更已保存，请使用 preview 查看更新后的详情。\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
+                },
+              };
+            }
+
+            case "update_system_prompt": {
+              const designId = params.designId as string;
+              const systemPrompt = params.systemPrompt as string;
+              if (!designId) {
+                return { success: false, error: new Error("update_system_prompt 操作需要提供 designId 参数") };
+              }
+              const record = await service.updateSystemPrompt(designId, systemPrompt || "", userId);
+              const display = service.formatForDisplay(record);
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  version: record.version,
+                  preview: display.text,
+                  structured: display.structured,
+                  message: `✅ 应用角色设定已更新。\n设计 ID: ${record.id}\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
                 },
               };
             }
@@ -839,6 +1335,41 @@ export function registerAppDesignerSkill(
               };
             }
 
+            case "link_kb_collection": {
+              const designId = params.designId as string;
+              const kbName = params.kbName as string;
+              const collectionId = params.collectionId as string;
+              if (!designId || !kbName || !collectionId) {
+                return { success: false, error: new Error("link_kb_collection 操作需要提供 designId、kbName 和 collectionId 参数") };
+              }
+              const record = await service.linkKbCollection(designId, kbName, collectionId, userId);
+              return {
+                success: true,
+                data: { designId, kbName, collectionId, message: `知识库「${kbName}」已关联到集合 ${collectionId}` },
+              };
+            }
+
+            case "update_relationships": {
+              const designId = params.designId as string;
+              const relationships = params.relationships as DesignRelationship[];
+              if (!designId || !Array.isArray(relationships)) {
+                return { success: false, error: new Error("update_relationships 操作需要提供 designId 和 relationships 参数") };
+              }
+              const record = await service.updateRelationships(designId, relationships, userId);
+              const display = service.formatForDisplay(record);
+              return {
+                success: true,
+                data: {
+                  designId: record.id,
+                  name: record.name,
+                  version: record.version,
+                  preview: display.text,
+                  structured: display.structured,
+                  message: `✅ 组件关联关系已更新。\n设计 ID: ${record.id}\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
+                },
+              };
+            }
+
             case "archive": {
               const designId = params.designId as string;
               if (!designId) {
@@ -848,6 +1379,23 @@ export function registerAppDesignerSkill(
               return {
                 success: true,
                 data: { designId, message: "设计方案已归档" },
+              };
+            }
+
+            case "delete": {
+              const designId = params.designId as string;
+              if (!designId) {
+                return { success: false, error: new Error("delete 操作需要提供 designId 参数") };
+              }
+              const { deleted, errors } = await service.deleteDesign(designId, userId);
+              return {
+                success: true,
+                data: {
+                  designId,
+                  deleted,
+                  errors,
+                  message: `应用「${designId}」已删除。级联清理 ${deleted.length} 个组件${errors.length > 0 ? `，${errors.length} 个组件清理失败` : ""}。`,
+                },
               };
             }
 

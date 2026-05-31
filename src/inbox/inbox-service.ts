@@ -86,21 +86,35 @@ export class InboxService {
   async completeItem(id: string, result?: any): Promise<InboxItem | null> {
     const item = await this.repo.findById(id);
     if (!item) return null;
+    // 状态守卫：只能完成 unread/pending/read 状态的项目
+    if (!["unread", "pending", "read"].includes(item.status)) {
+      log("warn", "inbox_item_complete_skipped", { id, status: item.status });
+      return item;
+    }
 
-    await this.repo.updateStatus(id, "completed", Date.now());
-    log("info", "inbox_item_completed", { id, category: item.category });
-
-    inboxEventBus.emitInboxEvent({ type: "item_updated", userId: item.userId, itemId: id, status: "completed" });
-
-    // 如果是 workflow_task，需要回调 workflow engine
+    // 先执行回调（workflow/evolution），回调成功后再原子标记为 completed
+    // 这样如果回调失败，inbox item 不会变成 completed 而 workflow 未推进
     if (item.category === "workflow_task" && item.sourceId) {
-      await this.callbackWorkflow(item, result);
+      const callbackOk = await this.callbackWorkflow(item, result);
+      if (!callbackOk) {
+        return item; // 回调失败，保持原状态
+      }
+    }
+    if (item.category === "evolution_approval" && item.sourceId) {
+      const callbackOk = await this.callbackEvolution(item, result);
+      if (!callbackOk) {
+        return item; // 回调失败，保持原状态
+      }
     }
 
-    // 如果是 evolution_approval，需要回调 evolution controller
-    if (item.category === "evolution_approval" && item.sourceId) {
-      await this.callbackEvolution(item, result);
+    // 原子更新：仅当状态仍为可完成状态时才标记为 completed（防止 TOCTOU 竞态）
+    const updatedRows = await this.repo.updateStatusIf(id, "completed", ["unread", "pending", "read"], Date.now());
+    if (updatedRows === 0) {
+      log("warn", "inbox_item_complete_race", { id, status: item.status });
+      return this.repo.findById(id);
     }
+    log("info", "inbox_item_completed", { id, category: item.category });
+    inboxEventBus.emitInboxEvent({ type: "item_updated", userId: item.userId, itemId: id, status: "completed" });
 
     return this.repo.findById(id);
   }
@@ -111,7 +125,17 @@ export class InboxService {
   async dismissItem(id: string): Promise<void> {
     const item = await this.repo.findById(id);
     if (!item) return;
-    await this.repo.updateStatus(id, "dismissed", Date.now());
+    // 状态守卫：已 completed/dismissed 的项目不再重复处理
+    if (["completed", "dismissed"].includes(item.status)) {
+      log("warn", "inbox_item_dismiss_skipped", { id, status: item.status });
+      return;
+    }
+    // 原子更新：仅当状态仍为可处理状态时才标记为 dismissed（防止 TOCTOU 竞态）
+    const updatedRows = await this.repo.updateStatusIf(id, "dismissed", ["unread", "pending", "read"]);
+    if (updatedRows === 0) {
+      log("warn", "inbox_item_dismiss_race", { id, status: item.status });
+      return;
+    }
     log("info", "inbox_item_dismissed", { id });
     inboxEventBus.emitInboxEvent({ type: "item_updated", userId: item.userId, itemId: id, status: "dismissed" });
   }
@@ -123,6 +147,16 @@ export class InboxService {
     const item = await this.repo.findBySourceAndSourceId(source, sourceId);
     if (!item) return null;
     return this.completeItem(item.id, result);
+  }
+
+  /**
+   * 通过 source + sourceId 忽略/关闭（用于流程取消等场景）
+   */
+  async dismissBySource(source: string, sourceId: string): Promise<InboxItem | null> {
+    const item = await this.repo.findBySourceAndSourceId(source, sourceId);
+    if (!item) return null;
+    await this.dismissItem(item.id);
+    return this.repo.findById(item.id);
   }
 
   /**
@@ -226,7 +260,9 @@ export class InboxService {
           await this.router.deliverToIM(item);
           break;
         case "push":
-          // TODO: Phase 4 实现推送通知
+          // push 通道尚未实现，紧急消息回退到 inbox 兜底，避免消息丢失
+          log("warn", "inbox_push_fallback_to_inbox", { id: item.id, priority: item.priority });
+          await this.router.deliverToInbox(item);
           break;
       }
     } catch (err: any) {
@@ -311,42 +347,63 @@ ${context ? `该用户近期同类审批历史:\n${context}\n` : ""}
     }
   }
 
-  private async callbackWorkflow(item: InboxItem, result?: any): Promise<void> {
+  private async callbackWorkflow(item: InboxItem, result?: any): Promise<boolean> {
     try {
       const { getWorkflowEngine } = await import("../workflow/engine.js");
       const engine = getWorkflowEngine();
       if (item.sourceId) {
         const taskId = parseInt(item.sourceId, 10);
         if (!isNaN(taskId)) {
-          // 从 result 中提取 action 和 userId
-          const action = result?.action || "approve";
+          const action = result?.action;
+          if (!action) {
+            log("error", "inbox_callback_workflow_missing_action", { itemId: item.id, taskId });
+            return false;
+          }
           const formData = result?.formData || {};
           const comment = result?.comment || "";
           const userId = result?.userId || item.userId;
-          await engine.completeTask(taskId, { action, formData, comment }, userId);
+          const completeResult = await engine.completeTask(taskId, { action, formData, comment }, userId);
+          if (!completeResult.success) {
+            log("error", "inbox_callback_workflow_failed", { itemId: item.id, taskId, error: completeResult.error?.message });
+            return false;
+          }
           log("info", "inbox_callback_workflow_completed", { itemId: item.id, taskId });
+          return true;
         }
       }
+      return true;
     } catch (err: any) {
       log("error", "inbox_callback_workflow_failed", { itemId: item.id, error: err.message });
+      return false;
     }
   }
 
-  private async callbackEvolution(item: InboxItem, result?: any): Promise<void> {
+  private async callbackEvolution(item: InboxItem, result?: any): Promise<boolean> {
     try {
       const { getGlobalEvolutionController } = await import("../engine/evolution-controller.js");
       const controller = getGlobalEvolutionController();
       if (controller && item.sourceId) {
         const action = result?.action || "approve";
         if (action === "approve") {
-          controller.approve(item.sourceId);
+          const approveResult = await controller.approve(item.sourceId);
+          if (!approveResult) {
+            log("error", "inbox_callback_evolution_failed", { itemId: item.id, approvalId: item.sourceId, action, reason: "approve returned null/false" });
+            return false;
+          }
         } else if (action === "reject") {
-          controller.reject(item.sourceId, result?.reason || "通过 Inbox 拒绝");
+          const rejectResult = await controller.reject(item.sourceId, result?.reason || "通过 Inbox 拒绝");
+          if (!rejectResult) {
+            log("error", "inbox_callback_evolution_failed", { itemId: item.id, approvalId: item.sourceId, action, reason: "reject returned false" });
+            return false;
+          }
         }
         log("info", "inbox_callback_evolution_completed", { itemId: item.id, approvalId: item.sourceId, action });
+        return true;
       }
+      return true;
     } catch (err: any) {
       log("error", "inbox_callback_evolution_failed", { itemId: item.id, error: err.message });
+      return false;
     }
   }
 

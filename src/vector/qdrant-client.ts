@@ -37,7 +37,8 @@ export class QdrantVectorClient {
     this.client = new QdrantClient({
       url: this.config.url,
       apiKey: this.config.apiKey,
-      timeout: 10, // P1 修复：10 秒超时（Qdrant 单位：秒）
+      timeout: 30,
+      checkCompatibility: false, // 跳过客户端-服务端版本检查，避免超时
     });
   }
 

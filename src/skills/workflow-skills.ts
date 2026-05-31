@@ -13,6 +13,7 @@ import { BUILTIN_TEMPLATES, getBuiltinTemplate } from "../workflow/templates.js"
 import type { TaskAction, ApprovalQueryParams, TaskQueryParams, InstanceStatus, TaskStatus } from "../workflow/types.js";
 import { generateWorkflow } from "../workflow/workflow-llm-generator.js";
 import { getUserRoles } from "../db/user-repository.js";
+import { permissions } from "../permissions/index.js";
 
 export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () => LLMProvider | null): void {
   const engine = getWorkflowEngine();
@@ -266,6 +267,11 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             };
           }
 
+          // scope === "all" 需要管理员权限
+          if (scope === "all" && !(await permissions.isAdmin(userId))) {
+            return { success: false, error: new Error("无权查询全部审批，需要管理员权限") };
+          }
+
           const { items, total } = await repo.listInstances(query);
           return {
             success: true,
@@ -363,9 +369,21 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
             };
           }
 
-          // 委派操作暂不支持
-          if (action === "delegate") {
-            return { success: false, error: new Error("委派功能暂不支持") };
+          // 委派操作
+          if (action === "delegate" && transferTo) {
+            const result = await engine.delegateTask(taskId, transferTo, comment, userId);
+            if (!result.success) {
+              return { success: false, error: result.error };
+            }
+            return {
+              success: true,
+              data: {
+                taskId,
+                action: "delegate",
+                delegatedTo: transferTo,
+                message: `已委派给 ${transferTo} 处理`,
+              },
+            };
           }
 
           // 完成审批任务
@@ -496,6 +514,11 @@ export function createWorkflowSkills(registry: SkillRegistry, getProvider?: () =
           query.assignee = userId;
         }
         // created_by_me 和 all 暂时不区分（独立任务的 creator 在 formData 中）
+
+        // scope === "all" 需要管理员权限
+        if (scope === "all" && !(await permissions.isAdmin(userId))) {
+          return { success: false, error: new Error("无权查询全部任务，需要管理员权限") };
+        }
 
         if (params.dueBefore) {
           query.dueBefore = new Date(params.dueBefore as string).getTime();

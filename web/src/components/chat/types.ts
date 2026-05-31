@@ -36,6 +36,14 @@ export interface WebReference {
 }
 
 // ---- Chat message types ----
+export interface ChatAttachment {
+  name: string;
+  path: string;
+  size?: number;
+  type?: string;
+  status?: "done" | "error" | "uploading";
+}
+
 export interface ChatMsg {
   id?: number; // DB id，用于分页
   role: "user" | "assistant" | "tool" | "system" | "thinking" | "strategy" | "user_confirm";
@@ -52,6 +60,8 @@ export interface ChatMsg {
   parsedData?: Record<string, unknown>;
   /** 计划进度消息关联的计划 ID */
   planId?: string;
+  /** 用户消息附带的附件元数据（持久化后刷新可恢复） */
+  attachments?: ChatAttachment[];
 }
 
 export interface Conversation {

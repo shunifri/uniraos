@@ -31,7 +31,7 @@ export interface AgentLoopConfig {
   autoMemory: boolean;
 }
 
-const MEMORY_AWARE_PROMPT = `你是 RAOS 的智能体，一个自然、友善的 AI 助手。
+const MEMORY_AWARE_PROMPT = `你是当前对话的 AI 助手。如果前面有【应用名称】/【角色锁定】等专属角色设定，严格遵循该设定，禁止以通用 AI 助手身份自我介绍；否则作为 RAOS 通用智能体服务。
 
 ## 对话风格
 - 像真人朋友一样简洁自然地说话
@@ -66,6 +66,11 @@ const MEMORY_AWARE_PROMPT = `你是 RAOS 的智能体，一个自然、友善的
 - 文档/PPT 使用 .md 格式，系统会自动提供 PDF/DOCX/PPTX 转换
 - 表格用 markdown 语法（| 列1 | 列2 |），禁止 HTML 标签
 - 图片用 ![描述](链接)，视频直接放 URL 链接
+
+## Skill 使用规则
+- 调用 skill 时严格遵守其 description 和 paramSchema 中的参数格式
+- calculate skill 的 expression 只支持数字运算、变量访问、比较、三元条件、Math.* 函数
+- 组合 skill 中使用 calculate 时，expression 直接使用 outputKey 或 skill 名作为变量名（如 geo_ip.city），禁止使用 $steps.xxx 或 context.xxx 语法
 
 ## Skill 创建
 - 所有功能集中在一个 skill 中，禁止拆分
@@ -162,36 +167,27 @@ export class AgentLoop {
     return skillName === "skill_compose" || skillName === "skill_from_description" || skillName === "skill_from_template";
   }
 
-  /** 检查当前对话是否已被禁止创建 Skill */
-  private isSkillCreationBlocked(skillName: string, conversationId: string, toolParams?: Record<string, unknown>): boolean {
-    if (!this.isSkillCreationCall(skillName)) return false;
+  /**
+   * 原子性检查并记录 Skill 创建尝试
+   * 将原来的 isSkillCreationBlocked + recordSkillCreationAttempt 合并为原子操作，
+   * 防止并发请求同时通过检查后重复记录。
+   */
+  private checkAndRecordSkillCreation(skillName: string, conversationId: string, toolParams?: Record<string, unknown>): { blocked: boolean; reason?: "max_attempts" | "different_skill"; existingSkillName?: string } {
+    if (!this.isSkillCreationCall(skillName)) return { blocked: false };
+    const newSkillName = (toolParams?.name as string) || "unknown";
     const state = this.skillCreationState.get(conversationId);
     if (!state) {
-      // 第一次创建，允许
-      return false;
+      this.skillCreationState.set(conversationId, { skillName: newSkillName, attempts: 1 });
+      return { blocked: false };
     }
-    // 已创建过，检查是否是同一个 Skill 的重试
-    const newSkillName = (toolParams?.name as string) || "";
-    if (newSkillName && state.skillName && newSkillName !== state.skillName) {
-      // 试图创建不同的 Skill，拦截
-      return true;
+    if (state.skillName && newSkillName !== state.skillName) {
+      return { blocked: true, reason: "different_skill", existingSkillName: state.skillName };
     }
-    // 同一个 Skill 的重试，检查次数
     if (state.attempts >= 3) {
-      return true;
+      return { blocked: true, reason: "max_attempts", existingSkillName: state.skillName };
     }
-    return false;
-  }
-
-  /** 记录一次 Skill 创建尝试 */
-  private recordSkillCreationAttempt(conversationId: string, toolParams?: Record<string, unknown>): void {
-    const state = this.skillCreationState.get(conversationId);
-    const skillName = (toolParams?.name as string) || "unknown";
-    if (!state) {
-      this.skillCreationState.set(conversationId, { skillName, attempts: 1 });
-    } else {
-      state.attempts += 1;
-    }
+    state.attempts += 1;
+    return { blocked: false };
   }
 
   constructor(
@@ -411,8 +407,13 @@ export class AgentLoop {
 
     const conversationHistory = this.getHistory(chatOptions?.conversationId);
 
+    // 支持通过 chatOptions.systemPrompt 追加应用设定（嵌入场景）
+    // 应用设定前置，默认提示（工具规范、ReAct 指令等）后置，两者都生效
+    const baseSystemPrompt = chatOptions?.systemPrompt
+      ? `${chatOptions.systemPrompt}\n\n${this.config.systemPrompt}`
+      : this.config.systemPrompt;
     const messages: Message[] = [
-      { role: "system", content: this.config.systemPrompt + memoryContext + timeContext + planContext },
+      { role: "system", content: baseSystemPrompt + memoryContext + timeContext + planContext },
       ...conversationHistory,
       { role: "user", content: userMessage },
     ];
@@ -542,9 +543,9 @@ export class AgentLoop {
               ? (toolCall.arguments.params as Record<string, unknown>)
               : toolCall.arguments;
             // 硬性拦截：一个对话只能创建 1 个 Skill，同名可重试最多 3 次
-            if (this.isSkillCreationBlocked(toolCall.name, convId, params)) {
-              const state = this.skillCreationState.get(convId);
-              if (state && state.attempts >= 3) {
+            const creationCheck = this.checkAndRecordSkillCreation(toolCall.name, convId, params);
+            if (creationCheck.blocked) {
+              if (creationCheck.reason === "max_attempts") {
                 result = {
                   success: false,
                   error: "【系统拦截】当前对话已尝试 3 次 Skill 创建（含重试）均未成功，已放弃创建。规则：一个对话只能创建一个 Skill，最多尝试 3 次。",
@@ -552,11 +553,10 @@ export class AgentLoop {
               } else {
                 result = {
                   success: false,
-                  error: `【系统拦截】当前对话已创建 Skill "${state?.skillName}"，禁止再创建其他 Skill。规则：所有功能必须集中在一个 Skill 中。如需修改当前 Skill，请使用相同名称重试。`,
+                  error: `【系统拦截】当前对话已创建 Skill "${creationCheck.existingSkillName}"，禁止再创建其他 Skill。规则：所有功能必须集中在一个 Skill 中。如需修改当前 Skill，请使用相同名称重试。`,
                 };
               }
             } else {
-              this.recordSkillCreationAttempt(convId, params);
               result = await this.engine.execute(toolCall.name, params);
               if (toolCall.name === "kb_search" && result.success) {
                 const data = (result as any).data;
@@ -574,14 +574,9 @@ export class AgentLoop {
             const confirmData = (result as any).data;
             yield { event: "user_confirm", data: confirmData };
 
-            // Wait for user response via confirmQueue (with timeout)
-            const CONFIRM_TIMEOUT_MS = 300000; // 5 minutes
+            // Wait for user response via confirmQueue，不设超时
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => {
-                confirmQueue.delete(confirmData.confirmId);
-                reject(new Error("用户确认超时"));
-              }, CONFIRM_TIMEOUT_MS);
-              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+              confirmQueue.set(confirmData.confirmId, { resolve, reject });
             }).catch((err) => ({ cancelled: true, message: err.message }));
 
             // Replace the tool result with the user's response
@@ -632,7 +627,8 @@ export class AgentLoop {
               ? (toolCall.arguments.params as Record<string, unknown>)
               : toolCall.arguments;
             // 硬性拦截：一个对话只能创建一个 Skill
-            if (this.isSkillCreationBlocked(toolCall.name, convId2)) {
+            const creationCheck2 = this.checkAndRecordSkillCreation(toolCall.name, convId2, params);
+            if (creationCheck2.blocked) {
               result = {
                 success: false,
                 error: "【系统拦截】当前对话已创建过 Skill，禁止继续创建。规则：一个对话只能创建一个 Skill，创建成功后停止并等待用户反馈。如需创建其他 Skill，请开启新对话。",
@@ -649,14 +645,9 @@ export class AgentLoop {
             const confirmData = (result as any).data;
             yield { event: "user_confirm", data: confirmData };
 
-            // Wait for user response via confirmQueue (with timeout)
-            const CONFIRM_TIMEOUT_MS = 300000; // 5 minutes
+            // Wait for user response via confirmQueue，不设超时
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => {
-                confirmQueue.delete(confirmData.confirmId);
-                reject(new Error("用户确认超时"));
-              }, CONFIRM_TIMEOUT_MS);
-              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+              confirmQueue.set(confirmData.confirmId, { resolve, reject });
             }).catch((err) => ({ cancelled: true, message: err.message }));
 
             const userResult: ExecutionResult = {
@@ -718,8 +709,12 @@ export class AgentLoop {
     const conversationHistory = this.getHistory(chatOptions?.conversationId);
 
     // 构建消息列表：system + 历史 + 新消息
+    // 应用设定前置，默认提示（工具规范、ReAct 指令等）后置，两者都生效
+    const baseSystemPrompt = chatOptions?.systemPrompt
+      ? `${chatOptions.systemPrompt}\n\n${this.config.systemPrompt}`
+      : this.config.systemPrompt;
     const messages: Message[] = [
-      { role: "system", content: this.config.systemPrompt + memoryContext + timeContext + planContext },
+      { role: "system", content: baseSystemPrompt + memoryContext + timeContext + planContext },
       ...conversationHistory,
       { role: "user", content: userMessage },
     ];
@@ -795,7 +790,8 @@ export class AgentLoop {
             ? (toolCall.arguments.params as Record<string, unknown>)
             : toolCall.arguments;
           // 硬性拦截：一个对话只能创建一个 Skill
-          if (this.isSkillCreationBlocked(toolCall.name, convId3)) {
+          const creationCheck3 = this.checkAndRecordSkillCreation(toolCall.name, convId3, params);
+          if (creationCheck3.blocked) {
             result = {
               success: false,
               error: "【系统拦截】当前对话已创建过 Skill，禁止继续创建。规则：一个对话只能创建一个 Skill，创建成功后停止并等待用户反馈。如需创建其他 Skill，请开启新对话。",

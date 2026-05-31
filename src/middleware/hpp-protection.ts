@@ -6,8 +6,8 @@
 import type { Request, Response, NextFunction } from "express";
 
 /**
- * 检测请求体/查询字符串中的数组污染
- * 对于期望字符串的字段，如果发现数组则拒绝
+ * 检测查询字符串和 URL-encoded 请求体中的数组污染。
+ * JSON 请求体中的数组是合法数据类型，不检查。
  */
 export function hppProtectionMiddleware(
   allowedArrayFields: string[] = [],
@@ -25,6 +25,23 @@ export function hppProtectionMiddleware(
         error: `Parameter pollution detected for fields: ${fields}`,
       });
       return;
+    }
+
+    // 仅对 URL-encoded / multipart 请求体检查重复键（JSON 中的数组是合法的）
+    const contentType = req.headers?.["content-type"] || "";
+    const isJsonBody = contentType.includes("application/json");
+    if (!isJsonBody && req.body && typeof req.body === "object") {
+      const pollutedBodyParams = Object.entries(req.body).filter(
+        ([key, value]) => Array.isArray(value) && !allowedArrayFields.includes(key),
+      );
+      if (pollutedBodyParams.length > 0) {
+        const fields = pollutedBodyParams.map(([k]) => k).join(", ");
+        res.status(400).json({
+          success: false,
+          error: `Parameter pollution detected for body fields: ${fields}`,
+        });
+        return;
+      }
     }
 
     next();

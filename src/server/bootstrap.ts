@@ -10,13 +10,14 @@ import { createMemorySkills } from "../memory/memory-skills.js";
 import { createMultimodalSkills } from "../llm/multimodal-skills.js";
 import { createDataSkills } from "../skills/data-skills.js";
 import { createDatabaseSkills } from "../skills/db-skills.js";
+import { createFormSkills } from "../skills/form-skills.js";
 import { createWebSkills } from "../skills/web-skills.js";
 import { createDocumentSkills } from "../skills/document-skills.js";
 import { createChartSkills } from "../skills/chart-skills.js";
 import { createProtocolSkills } from "../skills/protocol-skills.js";
 import { createKnowledgeSkills } from "../skills/knowledge-skills.js";
 import { createApiGenSkills } from "../skills/api-gen-skills.js";
-import { createMetaSkills } from "../skills/meta-skills.js";
+import { createMetaSkills, createSkillFromApproval } from "../skills/meta-skills.js";
 import { registerAppDesignerSkill } from "../skills/app-designer-skill.js";
 import { createPlanningSkill } from "../skills/planning-skill.js";
 import { createPlanExecutionSkills } from "../skills/plan-execution-skills.js";
@@ -50,6 +51,9 @@ import { ProviderManager } from "./provider-manager.js";
 import { loadExampleSkills, syncSkillsToResources } from "./skill-bootstrap.js";
 import { DocMindParser } from "../services/docmind-parser.js";
 import { initParsingQueue, getParsingQueue } from "../services/parsing-queue.js";
+import { ingestQueue } from "../utils/ingest-queue.js";
+import { isMySQL } from "../db/database.js";
+import { getMySQLAdapter } from "../db/mysql-adapter.js";
 import type { LLMProvider, LLMProviderConfig, MultimodalProvider } from "../llm/types.js";
 
 export interface BootstrapResult {
@@ -113,11 +117,9 @@ export async function bootstrap(): Promise<BootstrapResult> {
     }
   }
 
-  const evolutionController = new EvolutionController(
-    undefined,
-    join(process.cwd(), ".raos", "evolution.db")
-  );
+  const evolutionController = new EvolutionController(undefined, registry);
   setGlobalEvolutionController(evolutionController);
+  await evolutionController.init();
   const emergenceDetector = new EmergenceDetector();
   engine.setEmergenceDetector(emergenceDetector);
   const promptManager = new PromptManager();
@@ -183,6 +185,7 @@ export async function bootstrap(): Promise<BootstrapResult> {
 
   await createDataSkills(registry);
   await createDatabaseSkills(registry);
+  createFormSkills(registry);
   createWebSkills(registry);
   createDocumentSkills(registry);
   createChartSkills(registry);
@@ -272,33 +275,56 @@ export async function bootstrap(): Promise<BootstrapResult> {
     void syncSkillsToResources(registry);
   });
 
-  // 从数据库加载用户自定义 Skill
-  void (async () => {
-    try {
-      const repo = getCustomSkillRepository();
-      const customSkills = await repo.findAll();
-      let loadedCount = 0;
-      for (const customSkill of customSkills) {
-        try {
-          const skill = await repo.reconstructSkill(customSkill);
-          if (!registry.lookup(skill.name)) {
-            registry.register(skill);
-            loadedCount++;
-          } else {
-            console.log(`   Custom skill "${skill.name}" already registered, skipping`);
-          }
-        } catch (error) {
-          console.warn(`   Failed to load custom skill ${customSkill.name}:`, error);
+  // 从数据库加载用户自定义 Skill（阻塞：确保 server 启动前完成加载）
+  try {
+    const repo = getCustomSkillRepository();
+    const customSkills = await repo.findAll();
+    let loadedCount = 0;
+    for (const customSkill of customSkills) {
+      try {
+        const skill = await repo.reconstructSkill(customSkill);
+        if (!registry.lookup(skill.name)) {
+          registry.register(skill);
+          loadedCount++;
+        } else {
+          console.log(`   Custom skill "${skill.name}" already registered, skipping`);
+        }
+      } catch (error) {
+        console.warn(`   Failed to load custom skill ${customSkill.name}:`, error);
+      }
+    }
+    if (loadedCount > 0) {
+      console.log(`   Custom skills loaded from database: ${loadedCount}`);
+      void syncSkillsToResources(registry);
+    }
+  } catch (error) {
+    console.warn("   Failed to load custom skills from database:", error);
+  }
+
+  // 从数据库恢复已审批的组合 Skill（阻塞：确保 server 启动前完成恢复）
+  try {
+    const approvals = await evolutionController.getApprovedApprovals();
+    let restoredCount = 0;
+    for (const approval of approvals) {
+      try {
+        if (registry.lookup(approval.name)) {
+          console.log(`   Approved skill "${approval.name}" already registered, skipping`);
+          continue;
+        }
+        const skill = await createSkillFromApproval(approval, engine);
+        registry.register(skill);
+        restoredCount++;
+      } catch (error) {
+        console.warn(`   Failed to restore approved skill ${approval.name}:`, error);
         }
       }
-      if (loadedCount > 0) {
-        console.log(`   Custom skills loaded from database: ${loadedCount}`);
+      if (restoredCount > 0) {
+        console.log(`   Approved skills restored from database: ${restoredCount}`);
         void syncSkillsToResources(registry);
       }
     } catch (error) {
-      console.warn("   Failed to load custom skills from database:", error);
+      console.warn("   Failed to restore approved skills from database:", error);
     }
-  })();
 
   // 从持久化配置恢复 Provider
   if (configManager.isLLMConfigured()) {
@@ -334,6 +360,34 @@ export async function bootstrap(): Promise<BootstrapResult> {
       console.log(`   Vision config restored: ${vc.model} (for doc OCR)`);
     }
   }
+
+  // 启动时恢复未完成的向量化任务（内存队列在重启后会丢失任务）
+  void (async () => {
+    try {
+      if (!isMySQL()) return;
+      const adapter = getMySQLAdapter();
+      // 查询所有存在 vector IS NULL 的 chunks 的文档
+      const rows = await adapter.query<{ doc_id: string; owner_id: string; name: string; count: number }>(
+        `SELECT c.doc_id, d.owner_id, d.name, COUNT(*) as count
+         FROM kb_chunks c
+         JOIN kb_documents d ON c.doc_id = d.doc_id
+         WHERE c.vector IS NULL
+         GROUP BY c.doc_id, d.owner_id, d.name`
+      );
+      if (rows.length > 0) {
+        console.log(`   [Bootstrap] 发现 ${rows.length} 个文档有未向量化的 chunks，自动恢复向量化队列`);
+        for (const row of rows) {
+          const kb = getKnowledgeBase(row.owner_id);
+          ingestQueue.enqueue(
+            async () => { await kb.vectorizeDoc(row.doc_id); },
+            { id: `vectorize_${row.doc_id}_recovery`, docId: row.doc_id, userId: row.owner_id, name: row.name || row.doc_id }
+          );
+        }
+      }
+    } catch (error) {
+      console.warn("   [Bootstrap] 恢复向量化任务失败:", error);
+    }
+  })();
 
   void syncSkillsToResources(registry);
 

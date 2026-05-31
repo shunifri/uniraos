@@ -1,9 +1,9 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Request, Response, NextFunction } from "express";
 import express from "express";
 import multer from "multer";
 import { fileTypeFromFile } from "file-type";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync, unlinkSync } from "fs";
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
@@ -613,14 +613,24 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       if (isAllowedFile(file.originalname)) cb(null, true);
       else cb(new Error(`文件类型不允许: ${file.originalname}`));
     },
+    // 告诉 busboy 用 UTF-8 解析 filename，避免中文文件名乱码
+    defParamCharset: "utf8" as any,
   });
 
-  router.post("/upload", requireAuth, requirePermission("files.write"), upload.array("files"), async (req: Request, res: Response) => {
-    const uploadedFiles = req.files as Express.Multer.File[] | undefined;
+  // 兼容 "file"（单文件）和 "files"（多文件）两种字段名
+  const uploadFields = upload.fields([
+    { name: "file", maxCount: 10 },
+    { name: "files", maxCount: 10 },
+  ]);
+
+  router.post("/upload", requireAuth, requirePermission("files.write"), uploadFields, async (req: Request, res: Response) => {
+    const filesMap = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const uploadedFiles = filesMap?.file || filesMap?.files;
     if (!uploadedFiles || uploadedFiles.length === 0) {
       res.status(400).json({ success: false, error: "未发现文件" });
       return;
     }
+    console.log("[Upload] originalnames:", uploadedFiles.map((f) => f.originalname));
 
     try {
       const mode = (req.query.mode as string) || "auto";
@@ -629,12 +639,23 @@ export function createFileRoutes(deps: RouteDependencies): Router {
 
       for (const file of uploadedFiles) {
         // P1 安全修复：实际文件头 MIME 校验
+        // 纯文本文件（.txt/.md/.csv 等）没有 magic bytes，fileTypeFromFile 返回 undefined，此时回退到扩展名校验
         const ft = await fileTypeFromFile(file.path);
-        if (!ft || !isAllowedFile(`.${ft.ext}`)) {
+        if (ft && !isAllowedFile(`.${ft.ext}`)) {
+          // file-type 检测到了类型，但不在白名单中 → 明确拒绝
           unlinkSync(file.path);
           res.status(415).json({
             success: false,
-            error: `文件 "${file.originalname}" 实际类型不允许（检测为 ${ft?.mime ?? 'unknown'}）`,
+            error: `文件 "${file.originalname}" 实际类型不允许（检测为 ${ft.mime}）`,
+          });
+          return;
+        }
+        if (!ft && !isAllowedFile(file.originalname)) {
+          // file-type 未检测到类型，且扩展名也不在白名单中 → 拒绝
+          unlinkSync(file.path);
+          res.status(415).json({
+            success: false,
+            error: `文件 "${file.originalname}" 类型无法识别且扩展名不在允许列表中`,
           });
           return;
         }
@@ -678,9 +699,10 @@ export function createFileRoutes(deps: RouteDependencies): Router {
           try { unlinkSync(f.path); } catch { /* ignore */ }
         }
       }
+      console.error("[file-routes] upload error:", err);
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: "Internal server error",
       });
     }
   });
@@ -692,7 +714,21 @@ export function createFileRoutes(deps: RouteDependencies): Router {
        res.status(400).json({ success: false, error: "path required" });
        return;
      }
-     const status = fileParseCache.get(path);
+     // 路径遍历防护
+     const absPath = join(WS_BASE, path);
+     if (!absPath.startsWith(WS_BASE)) {
+       res.status(403).json({ success: false, error: "access denied" });
+       return;
+     }
+     let status = fileParseCache.get(path);
+     if (!status) {
+       // 缓存未命中：如果文件存在，自动启动异步解析（后端重启后缓存丢失的补救）
+       if (existsSync(absPath)) {
+         console.log(`[parse-status] cache miss for ${path}, auto-starting async parse`);
+         asyncParseFile(absPath, path, getVisionConfig);
+         status = fileParseCache.get(path);
+       }
+     }
      if (!status) {
        res.json({ success: true, status: "unknown" });
      } else {
@@ -708,6 +744,12 @@ export function createFileRoutes(deps: RouteDependencies): Router {
      const page = req.query.page as string;
      if (!path) {
        res.status(400).json({ success: false, error: "path required" });
+       return;
+     }
+     // 路径遍历防护：确保解析路径在 workspace 内
+     const absPath = join(WS_BASE, path);
+     if (!absPath.startsWith(WS_BASE)) {
+       res.status(403).json({ success: false, error: "access denied" });
        return;
      }
 
@@ -740,9 +782,10 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       const result = await requestContext.run(ctx, () => engine.execute("file_upload_list", {}));
       res.json(result);
     } catch (err) {
+      console.error("[file-routes] upload error:", err);
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: "Internal server error",
       });
     }
   });
@@ -880,7 +923,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       });
       res.json({ success: true, files: result });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -980,7 +1024,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
 
       res.json({ success: true, files, total: files.length });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1053,8 +1098,9 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       return result;
     }
 
-    // 构建常规文件树
-    const tree = buildTree(WS_BASE, "");
+    // 构建常规文件树（限制到当前用户目录）
+    const userBase = join(WS_BASE, "uploads", req.user!.id);
+    const tree = buildTree(userBase, "");
 
     // 添加"共享文件"虚拟文件夹
     try {
@@ -1198,8 +1244,9 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: "path required" });
       return;
     }
-    const absPath = join(WS_BASE, dirPath);
-    if (!absPath.startsWith(WS_BASE)) {
+    const userBase = join(WS_BASE, "uploads", req.user!.id);
+    const absPath = join(userBase, dirPath);
+    if (!absPath.startsWith(userBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
     }
@@ -1207,7 +1254,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       mkdirSync(absPath, { recursive: true });
       res.json({ success: true });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1218,9 +1266,10 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: "from and to required" });
       return;
     }
-    const absFrom = join(WS_BASE, from);
-    const absTo = join(WS_BASE, to);
-    if (!absFrom.startsWith(WS_BASE) || !absTo.startsWith(WS_BASE)) {
+    const userBase = join(WS_BASE, "uploads", req.user!.id);
+    const absFrom = join(userBase, from);
+    const absTo = join(userBase, to);
+    if (!absFrom.startsWith(userBase) || !absTo.startsWith(userBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
     }
@@ -1229,7 +1278,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       renameSync(absFrom, absTo);
       res.json({ success: true });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1240,8 +1290,9 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: "path required" });
       return;
     }
-    const absPath = join(WS_BASE, filePath);
-    if (!absPath.startsWith(WS_BASE) || absPath === WS_BASE) {
+    const userBase = join(WS_BASE, "uploads", req.user!.id);
+    const absPath = join(userBase, filePath);
+    if (!absPath.startsWith(userBase) || absPath === userBase) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
     }
@@ -1249,7 +1300,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       rmSync(absPath, { recursive: true, force: true });
       res.json({ success: true });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1276,7 +1328,8 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         return result;
       }
 
-      const allFiles = collectFiles(WS_BASE, "");
+      const userBase = join(WS_BASE, "uploads", req.user!.id);
+      const allFiles = collectFiles(userBase, "");
       if (allFiles.length === 0) {
         res.json({ success: true, message: "没有文件需要整理", moves: [] });
         return;
@@ -1324,7 +1377,8 @@ ${fileList}
       for (const m of moves) {
         const absFrom = join(WS_BASE, m.from);
         const absTo = join(WS_BASE, m.to);
-        if (!absFrom.startsWith(WS_BASE) || !absTo.startsWith(WS_BASE)) {
+        const userBase = join(WS_BASE, "uploads", req.user!.id);
+        if (!absFrom.startsWith(userBase) || !absTo.startsWith(userBase)) {
           executed.push({ ...m, success: false, error: "path security violation" });
           continue;
         }
@@ -1343,13 +1397,14 @@ ${fileList}
 
       res.json({ success: true, message: `已整理 ${executed.filter((e) => e.success).length} 个文件`, moves: executed });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   // ===== Markdown preview & conversion download API =====
 
-  router.get("/file/content", requireAuth, requirePermission("files.read"), (req, res) => {
+  router.get("/file/content", requireAuth, requirePermission("files.read"), async (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath) {
       res.status(400).json({ success: false, error: "path required" });
@@ -1357,9 +1412,31 @@ ${fileList}
     }
     const wsBase = join(process.cwd(), ".raos", "workspace");
     const absPath = join(wsBase, filePath);
-    if (!absPath.startsWith(wsBase)) {
+    const uploadsBase = join(wsBase, "uploads");
+    if (!absPath.startsWith(uploadsBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
+    }
+    // 所有权校验：只能访问自己的文件或被共享的文件
+    const userId = req.user!.id;
+    const userUploadBase = join(uploadsBase, userId);
+    if (!absPath.startsWith(userUploadBase)) {
+      const roles = await getUserRoles(userId);
+      const roleIds = roles.map((r) => r.id);
+      const user = await getUserById(userId);
+      let deptPath = "/";
+      if (user?.departmentId) {
+        const dept = await getDepartmentById(user.departmentId);
+        if (dept) deptPath = dept.path;
+      }
+      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+      const fileName = filePath.split("/").pop() || filePath;
+      const isShared = sharedFileIds.some((id) => filePath === id || fileName === id);
+      if (!isShared) {
+        res.status(403).json({ success: false, error: "无权访问此文件" });
+        return;
+      }
     }
     if (!existsSync(absPath)) {
       res.status(404).json({ success: false, error: "file not found" });
@@ -1383,9 +1460,31 @@ ${fileList}
     }
     const wsBase = join(process.cwd(), ".raos", "workspace");
     const absPath = join(wsBase, filePath);
-    if (!absPath.startsWith(wsBase)) {
+    const uploadsBase = join(wsBase, "uploads");
+    if (!absPath.startsWith(uploadsBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
+    }
+    // 所有权校验：只能访问自己的文件或被共享的文件
+    const userId = req.user!.id;
+    const userUploadBase = join(uploadsBase, userId);
+    if (!absPath.startsWith(userUploadBase)) {
+      const roles = await getUserRoles(userId);
+      const roleIds = roles.map((r) => r.id);
+      const user = await getUserById(userId);
+      let deptPath = "/";
+      if (user?.departmentId) {
+        const dept = await getDepartmentById(user.departmentId);
+        if (dept) deptPath = dept.path;
+      }
+      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+      const fName = filePath.split("/").pop() || filePath;
+      const isShared = sharedFileIds.some((id) => filePath === id || fName === id);
+      if (!isShared) {
+        res.status(403).json({ success: false, error: "无权访问此文件" });
+        return;
+      }
     }
     if (!existsSync(absPath)) {
       res.status(404).json({ success: false, error: "file not found" });
@@ -1415,7 +1514,8 @@ ${fileList}
       }
     } catch (e: unknown) {
       console.error("Convert error:", e);
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1517,7 +1617,8 @@ ${fileList}
       });
     } catch (e: unknown) {
       console.error("PPTX style learn error:", e);
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -1547,24 +1648,68 @@ ${fileList}
 
       res.json({ success: true, deleted: themeId });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   // ===== File download API =====
 
   // Single file download
-  router.get("/download", requireAuth, requirePermission("files.read"), (req, res) => {
+  router.get("/download", requireAuth, requirePermission("files.read"), async (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath) {
       res.status(400).json({ success: false, error: "path required" });
       return;
     }
-    const absPath = join(process.cwd(), ".raos", "workspace", filePath);
-    if (!absPath.startsWith(join(process.cwd(), ".raos", "workspace"))) {
+    const wsBase = join(process.cwd(), ".raos", "workspace");
+    const absPath = join(wsBase, filePath);
+    // 安全检查：确保解析后的路径仍在 workspace 内（防止路径遍历）
+    const resolvedPath = resolve(absPath);
+    const resolvedWsBase = resolve(wsBase);
+    if (!resolvedPath.startsWith(resolvedWsBase)) {
       res.status(403).json({ success: false, error: "access denied" });
       return;
     }
+
+    // 判断文件类型：uploads 目录需要共享权限检查，其他 workspace 路径（如用户目录）允许当前用户访问
+    const uploadsBase = join(wsBase, "uploads");
+    const userId = req.user!.id;
+    const userDirBase = join(wsBase, userId);
+
+    // 如果是 uploads 目录下的文件，检查权限
+    if (resolvedPath.startsWith(resolve(uploadsBase))) {
+      const userUploadBase = join(uploadsBase, userId);
+      if (!resolvedPath.startsWith(resolve(userUploadBase))) {
+        const roles = await getUserRoles(userId);
+        const roleIds = roles.map((r) => r.id);
+        const user = await getUserById(userId);
+        let deptPath = "/";
+        if (user?.departmentId) {
+          const dept = await getDepartmentById(user.departmentId);
+          if (dept) deptPath = dept.path;
+        }
+        const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+        const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
+        const fileName = filePath.split("/").pop() || filePath;
+        const isShared = sharedFileIds.some((id) => filePath === id || fileName === id);
+        if (!isShared) {
+          res.status(403).json({ success: false, error: "无权访问此文件" });
+          return;
+        }
+      }
+    }
+    // 如果是用户自己的工作空间目录，允许访问
+    else if (!resolvedPath.startsWith(resolve(userDirBase))) {
+      // 其他 workspace 路径（非 uploads、非用户目录），检查是否为共享文件或管理员
+      const roles = await getUserRoles(userId);
+      const isAdmin = roles.some((r) => r.name === "admin");
+      if (!isAdmin) {
+        res.status(403).json({ success: false, error: "无权访问此文件" });
+        return;
+      }
+    }
+
     if (!existsSync(absPath)) {
       res.status(404).json({ success: false, error: "file not found" });
       return;
@@ -1583,15 +1728,26 @@ ${fileList}
       res.status(400).json({ success: false, error: "files array required" });
       return;
     }
+    // 限制批量下载文件数量，防止 I/O 压力
+    if (files.length > 50) {
+      res.status(400).json({ success: false, error: "最多同时打包 50 个文件" });
+      return;
+    }
 
     try {
       const JSZip = (await import("jszip")).default;
       const zip = new JSZip();
       const wsBase = join(process.cwd(), ".raos", "workspace");
+      const uploadsBase = join(wsBase, "uploads");
+      const userId = req.user!.id;
+      const userUploadBase = join(uploadsBase, userId);
 
       for (const f of files) {
         const absPath = join(wsBase, f);
-        if (!absPath.startsWith(wsBase) || !existsSync(absPath)) continue;
+        // 只允许打包 uploads 目录下的文件
+        if (!absPath.startsWith(uploadsBase) || !existsSync(absPath)) continue;
+        // 所有权校验：只能打包自己的文件
+        if (!absPath.startsWith(userUploadBase)) continue;
         const fileName = f.split("/").pop() || f;
         zip.file(fileName, readFileSync(absPath));
       }
@@ -1601,7 +1757,8 @@ ${fileList}
       res.setHeader("Content-Disposition", `attachment; filename="files_${Date.now()}.zip"`);
       res.send(buf);
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: e instanceof Error ? e.message : String(e) });
+      console.error("[file-routes] unexpected error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 

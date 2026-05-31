@@ -124,6 +124,12 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
 
   async createInstance(inst: Omit<WorkflowInstance, "id" | "startedAt">): Promise<WorkflowInstance> {
     const now = Date.now();
+    let variablesSerialized: string;
+    try {
+      variablesSerialized = JSON.stringify(inst.variables);
+    } catch {
+      variablesSerialized = JSON.stringify({ _error: "Variables not JSON serializable" });
+    }
     const stmt = this.db.prepare(`
       INSERT INTO workflow_instances (definition_id, definition_version, business_key, starter, status, current_node_id, variables, started_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -131,7 +137,7 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
     const result = stmt.run(
       inst.definitionId, inst.definitionVersion, inst.businessKey ?? null,
       inst.starter ?? null, inst.status, inst.currentNodeId ?? null,
-      JSON.stringify(inst.variables), now,
+      variablesSerialized, now,
     );
     return { ...inst, id: Number(result.lastInsertRowid), startedAt: now };
   }
@@ -141,16 +147,22 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
     return row ? this.mapInstance(row) : undefined;
   }
 
-  async updateInstance(id: number, updates: Partial<WorkflowInstance>): Promise<void> {
+  async updateInstance(id: number, updates: Partial<WorkflowInstance>, expectedStatus?: string): Promise<number> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (updates.status !== undefined) { sets.push("status = ?"); vals.push(updates.status); }
     if (updates.currentNodeId !== undefined) { sets.push("current_node_id = ?"); vals.push(updates.currentNodeId); }
     if (updates.variables !== undefined) { sets.push("variables = ?"); vals.push(JSON.stringify(updates.variables)); }
     if (updates.completedAt !== undefined) { sets.push("completed_at = ?"); vals.push(updates.completedAt); }
-    if (sets.length === 0) return;
+    if (sets.length === 0) return 0;
     vals.push(id);
-    this.db.prepare(`UPDATE workflow_instances SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+    let sql = `UPDATE workflow_instances SET ${sets.join(", ")} WHERE id = ?`;
+    if (expectedStatus) {
+      sql += " AND status = ?";
+      vals.push(expectedStatus);
+    }
+    const result = this.db.prepare(sql).run(...vals);
+    return result.changes;
   }
 
   async listInstances(params: ApprovalQueryParams = {}): Promise<{ items: WorkflowInstance[]; total: number }> {
@@ -160,6 +172,10 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
     if (params.workflowKey) {
       conditions.push("definition_id = (SELECT id FROM workflow_definitions WHERE key = ? ORDER BY version DESC LIMIT 1)");
       vals.push(params.workflowKey);
+    }
+    if (params.definitionId) {
+      conditions.push("definition_id = ?");
+      vals.push(params.definitionId);
     }
     if (params.status) {
       const statuses = Array.isArray(params.status) ? params.status : [params.status];
@@ -237,7 +253,7 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
     return row ? this.mapTask(row) : undefined;
   }
 
-  async updateTask(id: number, updates: Partial<WorkflowTask>): Promise<void> {
+  async updateTask(id: number, updates: Partial<WorkflowTask>, expectedStatus?: string | string[]): Promise<number> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (updates.status !== undefined) { sets.push("status = ?"); vals.push(updates.status); }
@@ -248,9 +264,16 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
     if (updates.claimedAt !== undefined) { sets.push("claimed_at = ?"); vals.push(updates.claimedAt); }
     if (updates.completedAt !== undefined) { sets.push("completed_at = ?"); vals.push(updates.completedAt); }
     if (updates.signGroup !== undefined) { sets.push("sign_group = ?"); vals.push(updates.signGroup); }
-    if (sets.length === 0) return;
+    if (sets.length === 0) return 0;
     vals.push(id);
-    this.db.prepare(`UPDATE workflow_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+    let sql = `UPDATE workflow_tasks SET ${sets.join(", ")} WHERE id = ?`;
+    if (expectedStatus) {
+      const statuses = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+      sql += ` AND status IN (${statuses.map(() => "?").join(",")})`;
+      vals.push(...statuses);
+    }
+    const result = this.db.prepare(sql).run(...vals);
+    return result.changes;
   }
 
   async listTasks(params: TaskQueryParams = {}): Promise<{ items: WorkflowTask[]; total: number }> {
@@ -320,12 +343,19 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
   // --- Workflow Variables ---
 
   async setVariable(instanceId: number, name: string, value: unknown, type?: string): Promise<void> {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      // 不可序列化的值（如循环引用、函数）转为安全表示
+      serialized = JSON.stringify({ _error: "Value is not JSON serializable", _type: typeof value });
+    }
     const stmt = this.db.prepare(`
       INSERT INTO workflow_variables (instance_id, name, value, type)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(instance_id, name) DO UPDATE SET value = excluded.value, type = excluded.type
     `);
-    stmt.run(instanceId, name, JSON.stringify(value), type ?? "json");
+    stmt.run(instanceId, name, serialized, type ?? "json");
   }
 
   async getVariable(instanceId: number, name: string): Promise<unknown> {
@@ -412,7 +442,8 @@ export class SQLiteWorkflowRepository implements IWorkflowRepository {
       name: row.name,
       type: row.type as Connection["type"],
       config,
-      credentials: row.credentials ?? undefined,
+      // 安全：默认不返回 credentials，防止意外泄露
+      // credentials: row.credentials ?? undefined,
       isActive: row.is_active === 1,
       createdBy: row.created_by ?? undefined,
       createdAt: row.created_at,
@@ -508,9 +539,15 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
 
   async createInstance(inst: Omit<WorkflowInstance, "id" | "startedAt">): Promise<WorkflowInstance> {
     const now = Date.now();
+    let variablesSerialized: string;
+    try {
+      variablesSerialized = JSON.stringify(inst.variables);
+    } catch {
+      variablesSerialized = JSON.stringify({ _error: "Variables not JSON serializable" });
+    }
     const result = await this.adapter.execute(
       `INSERT INTO workflow_instances (definition_id, definition_version, business_key, starter, status, current_node_id, variables, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [inst.definitionId, inst.definitionVersion, inst.businessKey ?? null, inst.starter ?? null, inst.status, inst.currentNodeId ?? null, JSON.stringify(inst.variables), now]
+      [inst.definitionId, inst.definitionVersion, inst.businessKey ?? null, inst.starter ?? null, inst.status, inst.currentNodeId ?? null, variablesSerialized, now]
     );
     return { ...inst, id: Number(result.insertId), startedAt: now };
   }
@@ -520,16 +557,22 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
     return rows[0] ? this.mapInstance(rows[0]) : undefined;
   }
 
-  async updateInstance(id: number, updates: Partial<WorkflowInstance>): Promise<void> {
+  async updateInstance(id: number, updates: Partial<WorkflowInstance>, expectedStatus?: string): Promise<number> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (updates.status !== undefined) { sets.push("status = ?"); vals.push(updates.status); }
     if (updates.currentNodeId !== undefined) { sets.push("current_node_id = ?"); vals.push(updates.currentNodeId); }
     if (updates.variables !== undefined) { sets.push("variables = ?"); vals.push(JSON.stringify(updates.variables)); }
     if (updates.completedAt !== undefined) { sets.push("completed_at = ?"); vals.push(updates.completedAt); }
-    if (sets.length === 0) return;
+    if (sets.length === 0) return 0;
     vals.push(id);
-    await this.adapter.execute(`UPDATE workflow_instances SET ${sets.join(", ")} WHERE id = ?`, vals);
+    let sql = `UPDATE workflow_instances SET ${sets.join(", ")} WHERE id = ?`;
+    if (expectedStatus) {
+      sql += " AND status = ?";
+      vals.push(expectedStatus);
+    }
+    const result = await this.adapter.execute(sql, vals);
+    return (result as any)?.affectedRows ?? 0;
   }
 
   async listInstances(params: ApprovalQueryParams = {}): Promise<{ items: WorkflowInstance[]; total: number }> {
@@ -539,6 +582,10 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
     if (params.workflowKey) {
       conditions.push("definition_id = (SELECT id FROM workflow_definitions WHERE `key` = ? ORDER BY version DESC LIMIT 1)");
       vals.push(params.workflowKey);
+    }
+    if (params.definitionId) {
+      conditions.push("definition_id = ?");
+      vals.push(params.definitionId);
     }
     if (params.status) {
       const statuses = Array.isArray(params.status) ? params.status : [params.status];
@@ -612,7 +659,7 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
     return rows[0] ? this.mapTask(rows[0]) : undefined;
   }
 
-  async updateTask(id: number, updates: Partial<WorkflowTask>): Promise<void> {
+  async updateTask(id: number, updates: Partial<WorkflowTask>, expectedStatus?: string | string[]): Promise<number> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (updates.status !== undefined) { sets.push("status = ?"); vals.push(updates.status); }
@@ -623,9 +670,16 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
     if (updates.claimedAt !== undefined) { sets.push("claimed_at = ?"); vals.push(updates.claimedAt); }
     if (updates.completedAt !== undefined) { sets.push("completed_at = ?"); vals.push(updates.completedAt); }
     if (updates.signGroup !== undefined) { sets.push("sign_group = ?"); vals.push(updates.signGroup); }
-    if (sets.length === 0) return;
+    if (sets.length === 0) return 0;
     vals.push(id);
-    await this.adapter.execute(`UPDATE workflow_tasks SET ${sets.join(", ")} WHERE id = ?`, vals);
+    let sql = `UPDATE workflow_tasks SET ${sets.join(", ")} WHERE id = ?`;
+    if (expectedStatus) {
+      const statuses = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+      sql += ` AND status IN (${statuses.map(() => "?").join(",")})`;
+      vals.push(...statuses);
+    }
+    const result = await this.adapter.execute(sql, vals);
+    return result.affectedRows ?? 0;
   }
 
   async listTasks(params: TaskQueryParams = {}): Promise<{ items: WorkflowTask[]; total: number }> {
@@ -696,9 +750,15 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
   // --- Workflow Variables ---
 
   async setVariable(instanceId: number, name: string, value: unknown, type?: string): Promise<void> {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      serialized = JSON.stringify({ _error: "Value is not JSON serializable", _type: typeof value });
+    }
     await this.adapter.execute(
       `INSERT INTO workflow_variables (instance_id, name, value, type) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), type = VALUES(type)`,
-      [instanceId, name, JSON.stringify(value), type ?? "json"]
+      [instanceId, name, serialized, type ?? "json"]
     );
   }
 
@@ -792,7 +852,8 @@ class MySQLWorkflowRepository implements IWorkflowRepository {
       name: row.name,
       type: row.type as Connection["type"],
       config: JSON.parse(row.config),
-      credentials: row.credentials ?? undefined,
+      // 安全：默认不返回 credentials，防止意外泄露
+      // credentials: row.credentials ?? undefined,
       isActive: row.is_active === 1,
       createdBy: row.created_by ?? undefined,
       createdAt: row.created_at,

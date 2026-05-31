@@ -38,6 +38,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): { valid: boolean; erro
     errors.push("Workflow must have at least one end_event");
   }
 
+  const validNodeTypes = new Set(["start_event", "end_event", "user_task", "service_task", "exclusive_gateway", "parallel_gateway"]);
   for (const node of nodes) {
     if (!node.id || node.id.trim().length === 0) {
       errors.push("Node has empty id");
@@ -47,6 +48,23 @@ export function validateWorkflowSpec(spec: WorkflowSpec): { valid: boolean; erro
       errors.push(`Duplicate node id: ${node.id}`);
     }
     nodeIds.add(node.id);
+    if (!validNodeTypes.has(node.type)) {
+      errors.push(`Node ${node.id} has invalid type: ${node.type}`);
+    }
+  }
+
+  // Validate start_event has next
+  for (const node of nodes) {
+    if (node.type === "start_event") {
+      if (!node.next) {
+        errors.push(`Start event ${node.id} must have a next node`);
+      } else if (!nodeIds.has(node.next)) {
+        errors.push(`Start event ${node.id} references unknown next node: ${node.next}`);
+      }
+    }
+    if (node.type === "end_event" && node.next) {
+      errors.push(`End event ${node.id} should not have a next node`);
+    }
   }
 
   // Validate next references
@@ -70,12 +88,19 @@ export function validateWorkflowSpec(spec: WorkflowSpec): { valid: boolean; erro
     }
     if (node.type === "parallel_gateway") {
       const pg = node as Extract<WorkflowNode, { type: "parallel_gateway" }>;
-      if (pg.mode === "split" && pg.branches) {
-        for (const branchId of pg.branches) {
-          if (!nodeIds.has(branchId)) {
-            errors.push(`Parallel gateway ${node.id} references unknown branch: ${branchId}`);
+      if (pg.mode === "split") {
+        if (!pg.branches || pg.branches.length === 0) {
+          errors.push(`Parallel gateway ${node.id} in split mode must have at least one branch`);
+        } else {
+          for (const branchId of pg.branches) {
+            if (!nodeIds.has(branchId)) {
+              errors.push(`Parallel gateway ${node.id} references unknown branch: ${branchId}`);
+            }
           }
         }
+      }
+      if (pg.mode === "join" && !node.next) {
+        errors.push(`Parallel gateway ${node.id} in join mode must have a next node`);
       }
     }
   }
@@ -192,6 +217,14 @@ router.put("/workflow/definitions/:key", requireAuth, requireAdmin, async (req, 
       if (!validation.valid) {
         return res.status(400).json({ success: false, error: "Validation failed", details: validation.errors });
       }
+      // 如果修改了流程结构，检查是否有运行中的实例，防止实例执行到不一致的定义
+      const { items: runningInstances } = await repo.listInstances({ definitionId: existing.id, status: "running" });
+      if (runningInstances.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: `无法更新流程结构：该流程定义有 ${runningInstances.length} 个运行中的实例。请先取消或完成这些实例，或使用新的版本`,
+        });
+      }
     }
 
     const updates: Partial<typeof existing> = {};
@@ -209,13 +242,21 @@ router.put("/workflow/definitions/:key", requireAuth, requireAdmin, async (req, 
 });
 
 /** DELETE /workflow/definitions/:key */
-router.delete("/workflow/definitions/:key", requireAuth, requireAdmin, async (req, res) => {
+router.delete("/workflow/definitions/:key", requireAuth, async (req, res) => {
   try {
     const key = Array.isArray(req.params.key) ? req.params.key[0] : req.params.key;
     const repo = getWorkflowRepository();
     const existing = await repo.getDefinitionByKey(key);
     if (!existing) {
       return res.status(404).json({ success: false, error: "Not found" });
+    }
+    // 检查是否有运行中的实例，防止删除后导致实例僵死
+    const { items: runningInstances } = await repo.listInstances({ definitionId: existing.id, status: "running" });
+    if (runningInstances.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `无法删除：该流程定义有 ${runningInstances.length} 个运行中的实例，请先取消或完成这些实例`,
+      });
     }
     await repo.deleteDefinition(existing.id);
     res.json({ success: true });

@@ -223,11 +223,10 @@ export class ReactAgent implements Agent {
             const confirmData = result.data as any;
             // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
             yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
-            // 等待用户确认（通过 confirmQueue）
+            // 等待用户确认（通过 confirmQueue），不设超时，用户想填多久都行
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
-              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+              confirmQueue.set(confirmData.confirmId, { resolve, reject });
             }).catch((err: unknown) => ({ cancelled: true, message: (err as Error).message }));
             // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
             const userResult = { success: true, data: { userResponse } };
@@ -275,9 +274,9 @@ export class ReactAgent implements Agent {
             // 直接发送 user_confirm 事件，确保前端能正确显示 ConfirmCard
             yield { event: "user_confirm", agentRole: this.profile.role, data: confirmData };
             const { confirmQueue } = await import("../skills/user-confirm-skill.js");
+            // 等待用户确认，不设超时
             const userResponse = await new Promise<unknown>((resolve, reject) => {
-              const timer = setTimeout(() => { confirmQueue.delete(confirmData.confirmId); reject(new Error("用户确认超时")); }, 600000);
-              confirmQueue.set(confirmData.confirmId, { resolve, reject, timeout: timer });
+              confirmQueue.set(confirmData.confirmId, { resolve, reject });
             }).catch((err: unknown) => ({ cancelled: true, message: (err as Error).message }));
             // 发送包含用户响应的 tool_result 事件，确保后端持久化用户提交的表单数据
             const userResult = { success: true, data: { userResponse } };
@@ -336,6 +335,9 @@ export class ReactAgent implements Agent {
     if (Object.keys(otherContext).length > 0) {
       systemPrompt += `\n\n## 上下文信息\n${JSON.stringify(otherContext, null, 2)}`;
     }
+
+    // user_confirm 使用规则：当需要人机交互确认时，必须调用 user_confirm 工具
+    systemPrompt += `\n\n## 人机交互规则（必须严格遵守）\n1. 当任务需要用户做出选择、填写信息或确认操作时，不要直接在回答文本中列出问题或选项。必须调用 user_confirm 工具，在前端生成交互卡片（选项卡/表单/确认框），暂停对话等待用户操作。\n2. 严禁在回答末尾用"是否需要..."、"请问..."、"请告诉我..."、"您是否需要..."等方式追问用户。如果需要用户确认，必须在回答开头或中间就调用 user_confirm 工具。\n3. 回答完毕后直接结束，不要追加任何追问或推荐问题。\n适用场景：让用户选择方案/专业/时间、收集用户信息、确认删除/提交/继续、审批决策等。`;
 
     const messages: Message[] = [{ role: "system", content: systemPrompt }];
 

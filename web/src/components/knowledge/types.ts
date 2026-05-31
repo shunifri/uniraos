@@ -13,6 +13,8 @@ export interface KBDocument {
   parsingProgress?: number;
   mediaType?: 'document' | 'video' | 'audio' | 'text';
   durationMs?: number;
+  collectionId?: string | null;
+  owner?: string;
 }
 
 export interface SearchResult {

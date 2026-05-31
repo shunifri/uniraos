@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Card,
   Flex,
@@ -12,6 +12,7 @@ import {
   Empty,
   Space,
   Input,
+  Tabs,
 } from "antd";
 import {
   ReloadOutlined,
@@ -19,58 +20,104 @@ import {
   CloseOutlined,
   CodeOutlined,
   SearchOutlined,
+  ClockCircleOutlined,
+  CheckCircleOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
 import { useI18nStore } from "@/i18n";
 
 const { Text, Title } = Typography;
 
-interface PendingSkill {
+type ApprovalStatus = "pending" | "approved" | "rejected";
+
+interface ApprovalSkill {
   id: string;
   name: string;
   description: string;
   generatedBy: string;
   createdAt: number;
+  statusUpdatedAt?: number;
   code?: string;
+  status?: string;
 }
+
+const statusLabels: Record<ApprovalStatus, string> = {
+  pending: "待审核",
+  approved: "已审核",
+  rejected: "已驳回",
+};
+
+const statusIcons: Record<ApprovalStatus, React.ReactNode> = {
+  pending: <ClockCircleOutlined />,
+  approved: <CheckCircleOutlined />,
+  rejected: <StopOutlined />,
+};
+
+const statusColors: Record<ApprovalStatus, string> = {
+  pending: "orange",
+  approved: "green",
+  rejected: "red",
+};
 
 export default function PendingActions() {
   const { message, modal } = App.useApp();
   const t = useI18nStore((s) => s.t);
-  const [skills, setSkills] = useState<PendingSkill[]>([]);
+  const [activeTab, setActiveTab] = useState<ApprovalStatus>("pending");
+  const [skills, setSkills] = useState<ApprovalSkill[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [counts, setCounts] = useState<Record<ApprovalStatus, number>>({
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+  });
 
-  const loadPendingSkills = async () => {
-    try {
-      setLoading(true);
-      const data = await api.get<any>("/api/evolution/pending");
-      setSkills(data.pending || data.skills || []);
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const loadApprovals = useCallback(
+    async (status: ApprovalStatus) => {
+      try {
+        setLoading(true);
+        const data = await api.get<any>(`/api/evolution/approvals?status=${status}`);
+        setSkills(data.approvals || []);
+        // 同时更新所有状态的计数（首次加载时）
+        if (counts.pending === 0 && counts.approved === 0 && counts.rejected === 0) {
+          const statuses: ApprovalStatus[] = ["pending", "approved", "rejected"];
+          const newCounts = { ...counts };
+          for (const s of statuses) {
+            const d = await api.get<any>(`/api/evolution/approvals?status=${s}`);
+            newCounts[s] = (d.approvals || []).length;
+          }
+          setCounts(newCounts);
+        } else {
+          setCounts((prev) => ({ ...prev, [status]: (data.approvals || []).length }));
+        }
+      } catch (e: any) {
+        message.error(e.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [counts, message]
+  );
 
   useEffect(() => {
-    loadPendingSkills();
-  }, []);
+    loadApprovals(activeTab);
+  }, [activeTab, loadApprovals]);
 
-  const handleApprove = (skill: PendingSkill) => {
+  const handleApprove = (skill: ApprovalSkill) => {
     modal.confirm({
-      title: "Approve Skill",
-      content: `Are you sure you want to approve "${skill.name}"?`,
-      okText: "Approve",
+      title: "通过审批",
+      content: `确认通过技能 "${skill.name}" 的审批？`,
+      okText: "通过",
       okType: "primary",
-      cancelText: "Cancel",
+      cancelText: "取消",
       onOk: async () => {
         try {
           setActionLoading(true);
           await api.post(`/api/evolution/approvals/${skill.id}/approve`);
-          message.success(`Skill "${skill.name}" approved`);
-          loadPendingSkills();
+          message.success(`技能 "${skill.name}" 已通过审批`);
+          loadApprovals(activeTab);
         } catch (e: any) {
           message.error(e.message);
         } finally {
@@ -80,19 +127,19 @@ export default function PendingActions() {
     });
   };
 
-  const handleReject = (skill: PendingSkill) => {
+  const handleReject = (skill: ApprovalSkill) => {
     modal.confirm({
-      title: "Reject Skill",
-      content: `Are you sure you want to reject "${skill.name}"?`,
-      okText: "Reject",
+      title: "驳回审批",
+      content: `确认驳回技能 "${skill.name}" 的审批？`,
+      okText: "驳回",
       okType: "danger",
-      cancelText: "Cancel",
+      cancelText: "取消",
       onOk: async () => {
         try {
           setActionLoading(true);
           await api.post(`/api/evolution/approvals/${skill.id}/reject`);
-          message.success(`Skill "${skill.name}" rejected`);
-          loadPendingSkills();
+          message.success(`技能 "${skill.name}" 已驳回`);
+          loadApprovals(activeTab);
         } catch (e: any) {
           message.error(e.message);
         } finally {
@@ -102,9 +149,9 @@ export default function PendingActions() {
     });
   };
 
-  const handleViewCode = (skill: PendingSkill) => {
+  const handleViewCode = (skill: ApprovalSkill) => {
     modal.info({
-      title: `Code: ${skill.name}`,
+      title: `代码: ${skill.name}`,
       width: 800,
       content: (
         <pre
@@ -118,24 +165,102 @@ export default function PendingActions() {
             whiteSpace: "pre-wrap",
           }}
         >
-          {skill.code || "No code available"}
+          {skill.code || "无代码可用"}
         </pre>
       ),
     });
   };
 
-  const filtered = skills.filter((s) =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.description?.toLowerCase().includes(search.toLowerCase())
+  const filtered = skills.filter(
+    (s) =>
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      s.description?.toLowerCase().includes(search.toLowerCase())
   );
+
+  const renderActions = (skill: ApprovalSkill) => {
+    if (activeTab === "pending") {
+      return (
+        <Space size="small">
+          <Button size="small" icon={<CodeOutlined />} onClick={() => handleViewCode(skill)}>
+            {t("view_code")}
+          </Button>
+          <Button
+            size="small"
+            type="primary"
+            icon={<CheckOutlined />}
+            onClick={() => handleApprove(skill)}
+            loading={actionLoading}
+          >
+            {t("approve")}
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<CloseOutlined />}
+            onClick={() => handleReject(skill)}
+            loading={actionLoading}
+          >
+            {t("reject")}
+          </Button>
+        </Space>
+      );
+    }
+    return (
+      <Space size="small">
+        <Button size="small" icon={<CodeOutlined />} onClick={() => handleViewCode(skill)}>
+          {t("view_code")}
+        </Button>
+        <Tag color={statusColors[activeTab]}>
+          {activeTab === "approved" ? "已通过" : "已驳回"}
+        </Tag>
+      </Space>
+    );
+  };
+
+  const tabItems = [
+    {
+      key: "pending" as ApprovalStatus,
+      label: (
+        <span>
+          <ClockCircleOutlined /> 待审核
+          <Badge count={counts.pending} style={{ marginLeft: 8 }} showZero={false} />
+        </span>
+      ),
+    },
+    {
+      key: "approved" as ApprovalStatus,
+      label: (
+        <span>
+          <CheckCircleOutlined /> 已审核
+          <Badge count={counts.approved} style={{ marginLeft: 8 }} showZero={false} />
+        </span>
+      ),
+    },
+    {
+      key: "rejected" as ApprovalStatus,
+      label: (
+        <span>
+          <StopOutlined /> 已驳回
+          <Badge count={counts.rejected} style={{ marginLeft: 8 }} showZero={false} />
+        </span>
+      ),
+    },
+  ];
 
   return (
     <Flex vertical gap={16} style={{ height: "100%" }}>
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as ApprovalStatus)}
+        items={tabItems}
+        size="small"
+      />
+
       {/* Search Bar */}
       <Flex gap={8}>
         <Input
           prefix={<SearchOutlined />}
-          placeholder="Search pending skills..."
+          placeholder={`搜索${statusLabels[activeTab]}技能...`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           allowClear
@@ -145,7 +270,7 @@ export default function PendingActions() {
         <Button
           size="small"
           icon={<ReloadOutlined />}
-          onClick={loadPendingSkills}
+          onClick={() => loadApprovals(activeTab)}
           loading={loading}
         >
           {t("refresh")}
@@ -157,14 +282,20 @@ export default function PendingActions() {
         size="small"
         title={
           <Flex align="center" gap={8}>
-            <span>{t("pending_skills_title")} ({filtered.length})</span>
+            <span>
+              {statusLabels[activeTab]} ({filtered.length})
+            </span>
           </Flex>
         }
         style={{ flex: 1, display: "flex", flexDirection: "column" }}
         styles={{ body: { flex: 1, overflow: "auto" } }}
       >
         {filtered.length === 0 ? (
-          <Empty description={search ? t("no_results_found") : t("no_pending_skills")} />
+          <Empty
+            description={
+              search ? t("no_results_found") : `暂无${statusLabels[activeTab]}的技能`
+            }
+          />
         ) : (
           <List
             dataSource={filtered}
@@ -177,12 +308,24 @@ export default function PendingActions() {
                       <Text strong>{skill.name}</Text>
                       <br />
                       <Text type="secondary" style={{ fontSize: 11 }}>
-                        Creator: {skill.generatedBy}
+                        创建人: {skill.generatedBy}
                       </Text>
                       <br />
                       <Text type="secondary" style={{ fontSize: 11 }}>
-                        Created: {skill.createdAt ? new Date(skill.createdAt).toLocaleString() : "N/A"}
+                        创建时间:{" "}
+                        {skill.createdAt
+                          ? new Date(skill.createdAt).toLocaleString()
+                          : "N/A"}
                       </Text>
+                      {skill.statusUpdatedAt && skill.status !== "pending" && (
+                        <>
+                          <br />
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            {skill.status === "approved" ? "通过" : "驳回"}时间:{" "}
+                            {new Date(skill.statusUpdatedAt).toLocaleString()}
+                          </Text>
+                        </>
+                      )}
                     </div>
                   </Flex>
 
@@ -192,33 +335,7 @@ export default function PendingActions() {
                     </Text>
                   )}
 
-                  <Space size="small">
-                    <Button
-                      size="small"
-                      icon={<CodeOutlined />}
-                      onClick={() => handleViewCode(skill)}
-                    >
-                      {t("view_code")}
-                    </Button>
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<CheckOutlined />}
-                      onClick={() => handleApprove(skill)}
-                      loading={actionLoading}
-                    >
-                      {t("approve")}
-                    </Button>
-                    <Button
-                      size="small"
-                      danger
-                      icon={<CloseOutlined />}
-                      onClick={() => handleReject(skill)}
-                      loading={actionLoading}
-                    >
-                      {t("reject")}
-                    </Button>
-                  </Space>
+                  {renderActions(skill)}
                 </Flex>
               </List.Item>
             )}

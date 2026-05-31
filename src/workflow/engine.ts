@@ -33,6 +33,7 @@ import { getUserById, getUsersByRole, getUsersByDepartment, getUserRoles, getUse
 import { getInboxService } from "../inbox/index.js";
 import { createWorkflowAdapter } from "../inbox/adapters/workflow-adapter.js";
 import { getFormDefinition } from "../services/form-service.js";
+import { defaultRegistry } from "./service-registry.js";
 
 /** 守卫表达式引擎（简化版 SpEL） */
 export class SimpleGuardEngine {
@@ -82,6 +83,28 @@ export class SimpleGuardEngine {
 export class WorkflowEngine {
   private guardEngine = new SimpleGuardEngine();
   private repo = getWorkflowRepository();
+
+  // 会签组锁：确保同一实例的同一会签组处理串行化，防止 signState 竞态
+  private signGroupLocks = new Map<string, Promise<unknown>>();
+
+  private async withSignGroupLock<T>(instanceId: number, signGroup: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${instanceId}_${signGroup}`;
+    const prev = this.signGroupLocks.get(key);
+    const next = (async () => {
+      if (prev) {
+        try { await prev; } catch { /* 忽略前一个调用的错误，继续执行当前调用 */ }
+      }
+      return fn();
+    })();
+    this.signGroupLocks.set(key, next);
+    try {
+      return await next;
+    } finally {
+      if (this.signGroupLocks.get(key) === next) {
+        this.signGroupLocks.delete(key);
+      }
+    }
+  }
 
   // ===== 流程实例生命周期 =====
 
@@ -144,7 +167,13 @@ export class WorkflowEngine {
       instance.currentNodeId = startNode.id;
 
       // 自动推进到第一个任务
-      return await this.advance(instance, { variables });
+      const advanceResult = await this.advance(instance, { variables });
+      if (!advanceResult.success) {
+        // 推进失败，将实例标记为 error 状态，避免实例卡在不可恢复的中间状态
+        await this.repo.updateInstance(instance.id, { status: "error", completedAt: Date.now() });
+        return { ...advanceResult, error: new Error(`启动流程失败: ${advanceResult.error?.message}`) };
+      }
+      return advanceResult;
     } catch (err) {
       const msg = err instanceof Error ? (err as Error).message : String(err);
       console.error(`[WorkflowEngine] startInstance failed for ${definitionKey}:`, msg);
@@ -157,22 +186,33 @@ export class WorkflowEngine {
    * @param instanceIdOrInstance 实例 ID 或实例对象
    * @param options 推进选项（用户操作、表单数据等）
    */
+  private advanceDepthMap = new Map<number, number>();
+
   async advance(
     instanceIdOrInstance: number | WorkflowInstance,
     options: AdvanceOptions = {},
   ): Promise<ExecutionResult> {
+    const instance = typeof instanceIdOrInstance === "number"
+      ? await this.repo.getInstanceById(instanceIdOrInstance)
+      : instanceIdOrInstance;
+
+    if (!instance) {
+      return { success: false, error: new Error("Instance not found") };
+    }
+    if (instance.status !== "running") {
+      return { success: false, error: new Error(`Instance is ${instance.status}`) };
+    }
+
+    // 递归深度保护：防止循环工作流导致栈溢出
+    const currentDepth = this.advanceDepthMap.get(instance.id) ?? 0;
+    const MAX_DEPTH = 100;
+    if (currentDepth >= MAX_DEPTH) {
+      console.error(`[WorkflowEngine] Advance depth limit (${MAX_DEPTH}) reached for instance ${instance.id}. Possible cycle in workflow.`);
+      return { success: false, error: new Error(`流程推进深度超过限制，可能存在循环`) };
+    }
+    this.advanceDepthMap.set(instance.id, currentDepth + 1);
+
     try {
-      const instance = typeof instanceIdOrInstance === "number"
-        ? await this.repo.getInstanceById(instanceIdOrInstance)
-        : instanceIdOrInstance;
-
-      if (!instance) {
-        return { success: false, error: new Error("Instance not found") };
-      }
-      if (instance.status !== "running") {
-        return { success: false, error: new Error(`Instance is ${instance.status}`) };
-      }
-
       const def = await this.repo.getDefinitionById(instance.definitionId);
       if (!def) {
         return { success: false, error: new Error("Definition not found") };
@@ -205,6 +245,14 @@ export class WorkflowEngine {
       const msg = err instanceof Error ? (err as Error).message : String(err);
       console.error(`[WorkflowEngine] advance failed:`, msg);
       return { success: false, error: new Error(`流程推进失败: ${msg}`) };
+    } finally {
+      // 退出当前递归层时递减深度
+      const depth = this.advanceDepthMap.get(instance.id) ?? 1;
+      if (depth <= 1) {
+        this.advanceDepthMap.delete(instance.id);
+      } else {
+        this.advanceDepthMap.set(instance.id, depth - 1);
+      }
     }
   }
 
@@ -242,16 +290,37 @@ export class WorkflowEngine {
       }
     }
 
+    // 会签任务使用组锁串行化，防止 signState 竞态
+    if (task.signGroup) {
+      return this.withSignGroupLock(instance.id, task.signGroup, () => this.doCompleteTask(taskId, options, userId, task, instance));
+    }
+
+    return this.doCompleteTask(taskId, options, userId, task, instance);
+  }
+
+  private async doCompleteTask(
+    taskId: number,
+    options: AdvanceOptions,
+    userId: string | undefined,
+    task: WorkflowTask,
+    instance: WorkflowInstance,
+  ): Promise<ExecutionResult> {
     const now = Date.now();
 
-    // 更新任务
-    await this.repo.updateTask(taskId, {
+    // CAS 更新任务状态：确保任务仍是 pending/claimed 时才完成
+    const updatedRows = await this.repo.updateTask(taskId, {
       status: "completed",
       action: options.action,
       formData: options.formData,
       comment: options.comment,
       completedAt: now,
-    });
+    }, ["pending", "claimed"]);
+
+    if (updatedRows === 0) {
+      // 任务已被其他请求处理（并发完成）
+      const freshTask = await this.repo.getTaskById(taskId);
+      return { success: false, error: new Error(`任务已被处理（当前状态: ${freshTask?.status ?? "unknown"}）`) };
+    }
 
     // 完成对应的 InboxItem（异步，不阻塞流程推进）
     getInboxService().completeBySource("workflow", String(taskId), {
@@ -262,7 +331,7 @@ export class WorkflowEngine {
       console.error("[WorkflowEngine] Failed to complete inbox item:", (err as Error).message);
     });
 
-    // 会签处理
+    // 会签处理（在锁内执行，signState 无竞态）
     if (task.signGroup) {
       const signState = await this.repo.getVariable(instance.id, `__sign_${task.signGroup}`) as {
         nodeId: string;
@@ -274,40 +343,43 @@ export class WorkflowEngine {
         rejected: number;
       } | undefined;
 
-      if (signState) {
-        signState.completed += 1;
-        if (options.action === "reject") {
-          signState.rejected += 1;
-        } else {
-          signState.approved += 1;
-        }
-        await this.repo.setVariable(instance.id, `__sign_${task.signGroup}`, signState, "json");
-
-        // reject 在会签中直接结束流程
-        if (options.action === "reject") {
-          await this.cancelSignGroupTasks(instance.id, task.signGroup, taskId);
-          await this.repo.updateInstance(instance.id, { status: "completed", completedAt: now });
-          return {
-            success: true,
-            instance: { ...instance, status: "completed", completedAt: now },
-            task: { ...task, status: "completed", action: "reject", completedAt: now },
-          };
-        }
-
-        // 判断是否满足会签条件
-        const shouldAdvance = this.checkSignCondition(signState, options.action);
-        if (!shouldAdvance) {
-          // 条件不满足，等待其他审批人
-          return {
-            success: true,
-            instance,
-            task: { ...task, status: "completed", action: options.action, completedAt: now },
-          };
-        }
-
-        // 条件满足，取消同组其他未完成任务
-        await this.cancelSignGroupTasks(instance.id, task.signGroup, taskId);
+      if (!signState) {
+        console.error(`[WorkflowEngine] Sign state missing for group ${task.signGroup} in instance ${instance.id}`);
+        return { success: false, error: new Error("会签状态丢失，无法处理此任务") };
       }
+
+      signState.completed += 1;
+      if (options.action === "reject") {
+        signState.rejected += 1;
+      } else {
+        signState.approved += 1;
+      }
+      await this.repo.setVariable(instance.id, `__sign_${task.signGroup}`, signState, "json");
+
+      // reject 在会签中直接结束流程
+      if (options.action === "reject") {
+        await this.cancelSignGroupTasks(instance.id, task.signGroup, taskId);
+        await this.repo.updateInstance(instance.id, { status: "completed", completedAt: now });
+        return {
+          success: true,
+          instance: { ...instance, status: "completed", completedAt: now },
+          task: { ...task, status: "completed", action: "reject", completedAt: now },
+        };
+      }
+
+      // 判断是否满足会签条件
+      const shouldAdvance = this.checkSignCondition(signState, options.action);
+      if (!shouldAdvance) {
+        // 条件不满足，等待其他审批人
+        return {
+          success: true,
+          instance,
+          task: { ...task, status: "completed", action: options.action, completedAt: now },
+        };
+      }
+
+      // 条件满足，取消同组其他未完成任务
+      await this.cancelSignGroupTasks(instance.id, task.signGroup, taskId);
     }
 
     // 如果操作是 reject，结束流程
@@ -328,20 +400,25 @@ export class WorkflowEngine {
 
     // 推进到下一个节点
     const def = await this.repo.getDefinitionById(instance.definitionId);
-    if (def) {
-      const currentNode = def.definition.nodes.find((n) => n.id === task.nodeId);
-      if (currentNode?.next) {
-        await this.repo.updateInstance(instance.id, { currentNodeId: currentNode.next });
-        instance.currentNodeId = currentNode.next;
-      } else {
-        // 没有下一个节点，直接结束
-        await this.repo.updateInstance(instance.id, { status: "completed", completedAt: now });
-        return { success: true, instance: { ...instance, status: "completed", completedAt: now }, task: { ...task, status: "completed" } };
-      }
+    if (!def) {
+      return { success: false, error: new Error("流程定义已不存在，无法推进") };
+    }
+    const currentNode = def.definition.nodes.find((n) => n.id === task.nodeId);
+    if (currentNode?.next) {
+      await this.repo.updateInstance(instance.id, { currentNodeId: currentNode.next });
+      instance.currentNodeId = currentNode.next;
+    } else {
+      // 没有下一个节点，直接结束
+      await this.repo.updateInstance(instance.id, { status: "completed", completedAt: now });
+      return { success: true, instance: { ...instance, status: "completed", completedAt: now }, task: { ...task, status: "completed" } };
     }
 
-    // 推进流程
-    const advanceResult = await this.advance(instance, options);
+    // 推进流程前重新加载实例，防止并发操作（如 cancelInstance）已改变实例状态
+    const freshInstance = await this.repo.getInstanceById(instance.id);
+    if (!freshInstance || freshInstance.status !== "running") {
+      return { success: false, error: new Error(`流程已不在运行状态（当前: ${freshInstance?.status ?? "unknown"}）`) };
+    }
+    const advanceResult = await this.advance(freshInstance, options);
     return {
       ...advanceResult,
       task: {
@@ -373,11 +450,17 @@ export class WorkflowEngine {
       return { success: false, error: new Error("无权认领此任务") };
     }
 
-    await this.repo.updateTask(taskId, {
+    // CAS 更新：确保任务仍是 pending 时才认领
+    const updatedRows = await this.repo.updateTask(taskId, {
       status: "claimed",
       assignee: userId,
       claimedAt: Date.now(),
-    });
+    }, "pending");
+
+    if (updatedRows === 0) {
+      const freshTask = await this.repo.getTaskById(taskId);
+      return { success: false, error: new Error(`任务已被认领（当前状态: ${freshTask?.status ?? "unknown"}）`) };
+    }
 
     return { success: true, task: { ...task, status: "claimed", assignee: userId, claimedAt: Date.now() } };
   }
@@ -402,10 +485,56 @@ export class WorkflowEngine {
       }
     }
 
-    await this.repo.updateTask(taskId, {
+    // CAS 更新：确保任务仍是 pending/claimed 时才转交
+    const updatedRows = await this.repo.updateTask(taskId, {
       assignee: toUserId,
       comment: comment ?? task.comment,
-    });
+    }, ["pending", "claimed"]);
+
+    if (updatedRows === 0) {
+      const freshTask = await this.repo.getTaskById(taskId);
+      return { success: false, error: new Error(`任务状态已变更，无法转交（当前: ${freshTask?.status ?? "unknown"}）`) };
+    }
+
+    return { success: true, task: { ...task, assignee: toUserId } };
+  }
+
+  /**
+   * 委派任务：临时将任务交给他人处理，被委派人可代为完成任务
+   * 与 transfer 的区别：delegate 只是代处理，任务完成后直接推进流程
+   */
+  async delegateTask(taskId: number, toUserId: string, comment?: string, userId?: string): Promise<ExecutionResult> {
+    const task = await this.repo.getTaskById(taskId);
+    if (!task) {
+      return { success: false, error: new Error(`Task not found: ${taskId}`) };
+    }
+    if (task.status !== "pending" && task.status !== "claimed") {
+      return { success: false, error: new Error(`Task is ${task.status}`) };
+    }
+
+    // 权限校验
+    if (userId) {
+      const hasPermission = await this.checkTaskPermission(task, userId);
+      if (!hasPermission) {
+        return { success: false, error: new Error("无权委派此任务") };
+      }
+    }
+
+    // 保存原 assignee 到 form_data，用于审计
+    const formData = task.formData ?? {};
+    const delegatedFormData = { ...formData, __delegatedFrom: task.assignee };
+
+    // CAS 更新：确保任务仍是 pending/claimed 时才委派
+    const updatedRows = await this.repo.updateTask(taskId, {
+      assignee: toUserId,
+      formData: delegatedFormData,
+      comment: comment ?? task.comment,
+    }, ["pending", "claimed"]);
+
+    if (updatedRows === 0) {
+      const freshTask = await this.repo.getTaskById(taskId);
+      return { success: false, error: new Error(`任务状态已变更，无法委派（当前: ${freshTask?.status ?? "unknown"}）`) };
+    }
 
     return { success: true, task: { ...task, assignee: toUserId } };
   }
@@ -428,12 +557,57 @@ export class WorkflowEngine {
     }
 
     const now = Date.now();
-    await this.repo.updateInstance(instanceId, { status: "cancelled", completedAt: now });
+    const updatedRows = await this.repo.updateInstance(instanceId, { status: "cancelled", completedAt: now }, "running");
+    if (updatedRows === 0) {
+      const freshInstance = await this.repo.getInstanceById(instanceId);
+      return { success: false, error: new Error(`流程已${freshInstance?.status === "completed" ? "完成" : "取消"}，无法重复取消`) };
+    }
 
-    // 取消所有未完成的任务
+    // 取消所有未完成的任务，并关闭对应的 InboxItem
     const { items: tasks } = await this.repo.listTasks({ instanceId, status: ["pending", "claimed"] });
     for (const task of tasks) {
       await this.repo.updateTask(task.id, { status: "cancelled", comment: reason });
+      getInboxService().dismissBySource("workflow", String(task.id)).catch((err: unknown) => {
+        console.error("[WorkflowEngine] Failed to dismiss inbox item for cancelled task:", (err as Error).message);
+      });
+    }
+
+    // Saga 补偿：对已完成的 service_task 按逆序执行补偿
+    const def = await this.repo.getDefinitionById(instance.definitionId);
+    if (def) {
+      const { items: completedServiceTasks } = await this.repo.listTasks({
+        instanceId,
+        status: "completed",
+      });
+      // 按完成时间倒序（后执行的先补偿）
+      const sortedTasks = completedServiceTasks
+        .filter((t) => t.taskType === "service_task")
+        .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+
+      for (const task of sortedTasks) {
+        const node = def.definition.nodes.find((n) => n.id === task.nodeId) as ServiceTaskNode | undefined;
+        // 补偿服务名支持节点顶层属性或 config 内（前端设计器保存在 config 中）
+        const compensation = node?.compensation || (node?.config?.compensation as string | undefined);
+        if (compensation && node) {
+          const compensationHandler = defaultRegistry.get(compensation);
+          if (compensationHandler) {
+            try {
+              await compensationHandler({
+                instance,
+                task,
+                config: this.resolveConfigVariables(node.config ?? {}, instance.variables),
+                variables: instance.variables,
+              });
+              console.log(`[WorkflowEngine] Compensation executed for task ${task.id}: ${compensation}`);
+            } catch (err) {
+              console.error(`[WorkflowEngine] Compensation failed for task ${task.id}:`, (err as Error).message);
+              // 补偿失败不影响取消流程，仅记录日志
+            }
+          } else {
+            console.warn(`[WorkflowEngine] Compensation handler not found: ${compensation}`);
+          }
+        }
+      }
     }
 
     return { success: true, instance: { ...instance, status: "cancelled", completedAt: now } };
@@ -570,9 +744,9 @@ export class WorkflowEngine {
       tasks.push(task);
     }
 
-    // 为会签组创建统一的 InboxItem（只创建一次，关联到整个会签组）
-    if (tasks.length > 0) {
-      await this.createInboxItemForTask(tasks[0], node, instance);
+    // 为每个会签任务创建 InboxItem，确保所有审批人都能收到通知
+    for (const task of tasks) {
+      await this.createInboxItemForTask(task, node, instance);
     }
 
     // 返回第一个任务作为代表
@@ -596,6 +770,49 @@ export class WorkflowEngine {
     }
   }
 
+  /**
+   * 对 service_task 的 config 进行变量替换
+   * 支持 ${variable.path} 语法，从流程变量中解析值
+   */
+  private resolveConfigVariables(
+    config: Record<string, unknown>,
+    variables: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const resolved: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(config)) {
+      if (typeof value === "string") {
+        resolved[key] = value.replace(/\$\{([^}]+)\}/g, (_match, path: string) => {
+          const parts = path.split(".");
+          let current: unknown = variables;
+          for (const part of parts) {
+            if (current === null || current === undefined) return "";
+            current = (current as Record<string, unknown>)[part];
+          }
+          return current !== undefined && current !== null ? String(current) : "";
+        });
+      } else if (Array.isArray(value)) {
+        resolved[key] = value.map((item) =>
+          typeof item === "string"
+            ? item.replace(/\$\{([^}]+)\}/g, (_match, path: string) => {
+                const parts = path.split(".");
+                let current: unknown = variables;
+                for (const part of parts) {
+                  if (current === null || current === undefined) return "";
+                  current = (current as Record<string, unknown>)[part];
+                }
+                return current !== undefined && current !== null ? String(current) : "";
+              })
+            : item
+        );
+      } else if (typeof value === "object" && value !== null) {
+        resolved[key] = this.resolveConfigVariables(value as Record<string, unknown>, variables);
+      } else {
+        resolved[key] = value;
+      }
+    }
+    return resolved;
+  }
+
   private async handleServiceTask(
     instance: WorkflowInstance,
     spec: WorkflowSpec,
@@ -610,26 +827,95 @@ export class WorkflowEngine {
       status: "pending",
     });
 
-    // 自动执行服务（简化版，实际应调用 Skill 或外部服务）
-    try {
-      console.log(`[WorkflowEngine] Executing service task: ${node.service}`, node.config);
-      // TODO: 调用具体的服务实现
-      // 例如：email_notification, im_bot_send 等
+    const handler = defaultRegistry.get(node.service);
+    if (!handler) {
+      const errMsg = `未知的服务类型: ${node.service}`;
+      await this.repo.updateTask(task.id, { status: "error", comment: errMsg });
+      return { success: false, instance, task: { ...task, status: "error", comment: errMsg }, error: new Error(errMsg) };
+    }
 
-      await this.repo.updateTask(task.id, { status: "completed", completedAt: Date.now() });
+    // 变量替换
+    const resolvedConfig = this.resolveConfigVariables(node.config ?? {}, instance.variables);
 
-      // 推进到下一个节点
-      if (node.next) {
-        await this.repo.updateInstance(instance.id, { currentNodeId: node.next });
-        instance.currentNodeId = node.next;
-        return await this.advance(instance);
+    // 读取重试和超时配置（防 NaN：变量替换后可能产生非数字字符串）
+    const rawRetries = Number((node.config as any)?.retries ?? 0);
+    const retries = Number.isNaN(rawRetries) ? 0 : Math.max(0, Math.min(5, rawRetries));
+    const rawRetryDelay = Number((node.config as any)?.retryDelay ?? 1000);
+    const retryDelay = Number.isNaN(rawRetryDelay) ? 1000 : Math.max(0, rawRetryDelay);
+    const rawTimeout = Number((node.config as any)?.timeout ?? 30000);
+    const timeout = Number.isNaN(rawTimeout) ? 30000 : Math.max(1, Math.min(60000, rawTimeout));
+
+    let lastError: Error | undefined;
+    const startTime = Date.now();
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, retryDelay));
       }
 
-      return { success: true, instance, task: { ...task, status: "completed" } };
-    } catch (error) {
-      await this.repo.updateTask(task.id, { status: "cancelled", comment: String(error) });
-      return { success: false, instance, task, error: error instanceof Error ? error : new Error(String(error)) };
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
+
+        const result = await Promise.race([
+          handler({
+            instance,
+            task,
+            config: resolvedConfig,
+            variables: instance.variables,
+          }),
+          new Promise<never>((_, reject) => {
+            controller.signal.addEventListener("abort", () => {
+              reject(new Error(`服务执行超时 (${timeout}ms)`));
+            });
+          }),
+        ]);
+
+        clearTimeout(timer);
+
+        // 执行成功：回写结果到流程变量
+        const resultVarName = `__result_${node.id}`;
+        await this.repo.setVariable(instance.id, resultVarName, result, "json");
+
+        // 更新 instance 内存变量（供后续节点使用）
+        instance.variables = { ...instance.variables, [resultVarName]: result };
+
+        // 更新任务状态
+        await this.repo.updateTask(task.id, {
+          status: "completed",
+          completedAt: Date.now(),
+          comment: `执行成功 (耗时 ${Date.now() - startTime}ms, 重试 ${attempt} 次)`,
+        });
+
+        // 推进到下一个节点
+        if (node.next) {
+          await this.repo.updateInstance(instance.id, { currentNodeId: node.next });
+          instance.currentNodeId = node.next;
+          return await this.advance(instance);
+        }
+
+        return { success: true, instance, task: { ...task, status: "completed", completedAt: Date.now() } };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.warn(`[WorkflowEngine] Service task ${node.service} attempt ${attempt + 1}/${retries + 1} failed:`, lastError.message);
+      }
     }
+
+    // 所有重试耗尽，标记为 error
+    const finalErrorMsg = lastError ? lastError.message : "服务执行失败";
+    await this.repo.updateTask(task.id, {
+      status: "error",
+      comment: finalErrorMsg,
+      completedAt: Date.now(),
+    });
+
+    // 流程暂停：不推进，等待人工介入
+    return {
+      success: false,
+      instance,
+      task: { ...task, status: "error", comment: finalErrorMsg, completedAt: Date.now() },
+      error: lastError ?? new Error(finalErrorMsg),
+    };
   }
 
   private async handleExclusiveGateway(
@@ -660,9 +946,12 @@ export class WorkflowEngine {
     node: ParallelGatewayNode,
   ): Promise<ExecutionResult> {
     if (node.mode === "split") {
-      // 并行分裂：为每个分支创建子流程（简化版：串行执行）
-      // TODO: 真正的并行需要更复杂的实现
+      // 并行分裂：为每个分支创建子流程（简化版：串行执行第一个分支）
+      // TODO: 真正的并行需要更复杂的子流程跟踪实现
       if (node.branches && node.branches.length > 0) {
+        if (node.branches.length > 1) {
+          console.warn(`[WorkflowEngine] ParallelGateway split mode only executes the first branch. ${node.branches.length - 1} branches ignored: ${node.branches.slice(1).join(", ")}`);
+        }
         const firstBranch = node.branches[0];
         await this.repo.updateInstance(instance.id, { currentNodeId: firstBranch });
         instance.currentNodeId = firstBranch;
@@ -702,10 +991,14 @@ export class WorkflowEngine {
   }
 
   private async cancelSignGroupTasks(instanceId: number, signGroup: string, excludeTaskId: number): Promise<void> {
-    const tasks = await this.repo.listTasks({ instanceId, status: "pending" });
+    const tasks = await this.repo.listTasks({ instanceId, status: ["pending", "claimed"] });
     for (const t of tasks.items) {
-      if (t.signGroup === signGroup && t.id !== excludeTaskId && t.status === "pending") {
+      if (t.signGroup === signGroup && t.id !== excludeTaskId && (t.status === "pending" || t.status === "claimed")) {
         await this.repo.updateTask(t.id, { status: "cancelled", comment: "会签已通过，自动取消" });
+        // 关闭对应的 InboxItem，避免用户 inbox 中残留已取消任务
+        getInboxService().dismissBySource("workflow", String(t.id)).catch((err: unknown) => {
+          console.error("[WorkflowEngine] Failed to dismiss inbox item for cancelled sign task:", (err as Error).message);
+        });
       }
     }
   }
@@ -713,9 +1006,11 @@ export class WorkflowEngine {
   /**
    * 检查用户是否有权限操作任务
    */
-  private async checkTaskPermission(task: WorkflowTask, userId: string): Promise<boolean> {
+  public async checkTaskPermission(task: WorkflowTask, userId: string): Promise<boolean> {
     // 如果是 assignee，直接有权限
     if (task.assignee === userId) return true;
+    // 如果任务已明确分配给他人，非 assignee 无权操作（防止转交后原 candidate 仍能操作）
+    if (task.assignee) return false;
     // 如果没有设置任何 candidate 限制且未分配，允许任何人操作
     const hasCandidates = (task.candidateUsers && task.candidateUsers.length > 0) ||
                           (task.candidateGroups && task.candidateGroups.length > 0);
@@ -920,9 +1215,14 @@ export async function getTaskFormSchema(task: WorkflowTask, workflowSpec: Workfl
 
   const userTaskNode = node as UserTaskNode;
 
-  // 优先使用 formDefinitionId 引用
+  // 优先使用 formDefinitionId 引用（支持 UUID 和 formKey 两种形式）
   if (userTaskNode.formDefinitionId) {
-    const formDef = await getFormDefinition(userTaskNode.formDefinitionId);
+    let formDef = await getFormDefinition(userTaskNode.formDefinitionId);
+    // 如果按 ID 找不到，尝试按 key 查找（应用部署时 formDefinitionId 可能被设为 formKey）
+    if (!formDef) {
+      const { getFormDefinitionByKey } = await import("../services/form-service.js");
+      formDef = await getFormDefinitionByKey(userTaskNode.formDefinitionId);
+    }
     if (formDef) {
       return {
         schema: formDef.schema_json,

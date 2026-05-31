@@ -34,7 +34,8 @@ router.post("/schedule", requireAuth, async (req, res) => {
 
     res.json({ success: true, data: event });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -57,7 +58,8 @@ router.get("/schedule", requireAuth, async (req, res) => {
     const result = await getSchedulerService().listEvents(query);
     res.json({ success: true, ...result });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -72,9 +74,15 @@ router.get("/schedule/:id", requireAuth, async (req, res) => {
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
+    // 所有权校验：只能查看自己的定时任务
+    if (event.userId !== req.user!.id) {
+      res.status(403).json({ success: false, error: "无权访问此定时任务" });
+      return;
+    }
     res.json({ success: true, data: event });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -84,10 +92,20 @@ router.get("/schedule/:id", requireAuth, async (req, res) => {
  */
 router.delete("/schedule/:id", requireAuth, async (req, res) => {
   try {
+    const event = await getSchedulerService().getEvent(req.params.id as string);
+    if (!event) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (event.userId !== req.user!.id) {
+      res.status(403).json({ success: false, error: "无权取消此定时任务" });
+      return;
+    }
     const success = await getSchedulerService().cancelEvent(req.params.id as string);
     res.json({ success });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -97,10 +115,20 @@ router.delete("/schedule/:id", requireAuth, async (req, res) => {
  */
 router.post("/schedule/:id/cancel", requireAuth, async (req, res) => {
   try {
+    const event = await getSchedulerService().getEvent(req.params.id as string);
+    if (!event) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (event.userId !== req.user!.id) {
+      res.status(403).json({ success: false, error: "无权取消此定时任务" });
+      return;
+    }
     const success = await getSchedulerService().cancelEvent(req.params.id as string);
     res.json({ success });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -110,10 +138,20 @@ router.post("/schedule/:id/cancel", requireAuth, async (req, res) => {
  */
 router.post("/schedule/:id/trigger", requireAuth, async (req, res) => {
   try {
+    const event = await getSchedulerService().getEvent(req.params.id as string);
+    if (!event) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (event.userId !== req.user!.id) {
+      res.status(403).json({ success: false, error: "无权触发此定时任务" });
+      return;
+    }
     await getSchedulerService().triggerNow(req.params.id as string);
     res.json({ success: true });
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[scheduler-routes] error:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 

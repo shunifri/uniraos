@@ -361,5 +361,41 @@ describe("ShareService", () => {
       const canAccess = await service.canAccessResource("user-3", "skill", "skill-1", "user-2");
       expect(canAccess).toBe(false);
     });
+
+    it("should reject department scope with LIKE wildcards in targetId", async () => {
+      await expect(
+        service.createShareRule({
+          resourceType: "skill",
+          resourceId: "skill-1",
+          ownerId: "user-1",
+          scope: "department",
+          targetId: "%",
+          permission: "read",
+        })
+      ).rejects.toThrow("targetId for department scope cannot contain LIKE wildcards");
+
+      await expect(
+        service.createShareRule({
+          resourceType: "skill",
+          resourceId: "skill-1",
+          ownerId: "user-1",
+          scope: "department",
+          targetId: "Eng_ineering",
+          permission: "read",
+        })
+      ).rejects.toThrow("targetId for department scope cannot contain LIKE wildcards");
+    });
+
+    it("should allow valid department scope targetId", async () => {
+      const rule = await service.createShareRule({
+        resourceType: "skill",
+        resourceId: "skill-1",
+        ownerId: "user-1",
+        scope: "department",
+        targetId: "Engineering",
+        permission: "read",
+      });
+      expect(rule.targetId).toBe("Engineering");
+    });
   });
 });

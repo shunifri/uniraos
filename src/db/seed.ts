@@ -101,7 +101,8 @@ async function seedMySQL(): Promise<void> {
   );
 
   const viewerPerms = [
-    'perm_skills_read', 'perm_memory_read', 'perm_config_read', 'perm_tasks'
+    'perm_skills_read', 'perm_memory_read', 'perm_config_read', 'perm_tasks',
+    'perm_chat', 'perm_chat_stream'
   ];
   for (const permId of viewerPerms) {
     await adapter.execute(
@@ -187,7 +188,8 @@ async function seedSQLite(): Promise<void> {
   ).run();
 
   const viewerPerms = [
-    'perm_skills_read', 'perm_memory_read', 'perm_config_read', 'perm_tasks'
+    'perm_skills_read', 'perm_memory_read', 'perm_config_read', 'perm_tasks',
+    'perm_chat', 'perm_chat_stream'
   ];
   const insertRolePerm = db.prepare(
     `INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`

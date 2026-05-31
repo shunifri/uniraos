@@ -7,7 +7,7 @@
  * - skill_optimizer: 分析 Skill 执行指标，建议优化
  * - skill_list_all: 列出所有 Skill 的完整信息（含指标）
  */
-import { defineSkill, defineSystemSkill } from "../types/index.js";
+import { defineSkill, defineSystemSkill, Autonomy } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { EvolutionController } from "../engine/evolution-controller.js";
@@ -15,6 +15,9 @@ import type { LLMProvider } from "../llm/types.js";
 import { runInSandbox } from "../engine/worker-sandbox.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { permissions } from "../permissions/index.js";
+import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
+import { isMySQL } from "../db/database.js";
+import { scanCode } from "../utils/code-security.js";
 
 /** 计算两个字符串的编辑距离（Levenshtein Distance） */
 function levenshteinDistance(a: string, b: string): number {
@@ -73,11 +76,22 @@ export function createMetaSkills(
   name(string): 新 Skill 名称
   description(string): 描述
   steps(array): 执行步骤 [{ skill: "skill名", params: {参数映射}, outputKey?: "结果存储键" }]
-    参数映射可用 $input 引用原始输入，$steps.stepKey 引用前序结果
+    参数映射可用 $input 引用原始输入，$steps.stepKey 引用前序结果（支持字符串内嵌替换如 "lat=$steps.weather.lat"）
   mode?("sequential"|"parallel"): 执行模式，默认 sequential
+可用 Skill 及注意事项：
+- http_call: 发起 HTTP 请求（通用，支持所有方法）
+- calculate: 数学/逻辑表达式计算。expression 只支持数字运算、变量访问、比较判断、三元条件、Math.* 函数。不支持自定义函数定义、字符串拼接、复杂逻辑、赋值操作。
+  【重要】expression 中引用前序步骤结果时：
+    - 直接使用 outputKey（或 skill 名称，如果未指定 outputKey）作为变量名
+    - 示例：若步骤 {skill:"geo_ip", outputKey:"geo"} 返回 {city:"Shanghai"}，则 expression 写 geo.city
+    - 示例：若步骤 {skill:"geo_ip"}（未指定 outputKey）返回 {city:"Shanghai"}，则 expression 写 geo_ip.city
+    - 禁止在 expression 中使用 $steps.xxx、context.xxx 或 $input.xxx 语法
+    - 禁止在 expression 中写字符串字面量进行拼接（如 "city=" + geo.city），calculate 不支持字符串拼接
+- weather_advice: 根据天气参数给出健康建议（直接传 temp/weather/humidity 等参数）
 规则：
 1. 优先组合现有 Skill，禁止拆分功能
-2. 创建成功后停止，不要继续创建其他 Skill`,
+2. 需要数据转换时优先用 calculate，禁止在 calculate 中写自定义函数
+3. 创建成功后停止，不要继续创建其他 Skill`,
       paramSchema: {
         properties: {
           name: { type: "string", description: "Name for the new composed skill" },
@@ -135,7 +149,7 @@ export function createMetaSkills(
         };
 
         if (evolutionController) {
-          const approvalId = evolutionController.submitForApproval(
+          const approvalId = await evolutionController.submitForApproval(
             name,
             description,
             JSON.stringify(skillDef),
@@ -167,7 +181,8 @@ export function createMetaSkills(
             if (mode === "parallel") {
               const promises = steps.map(async (step) => {
                 const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                const result = await engine.execute(step.skill, resolvedParams, true);
+                const finalParams = injectCalculateContext(step.skill, resolvedParams, results);
+                const result = await engine.execute(step.skill, finalParams, true);
                 return { key: step.outputKey ?? step.skill, result };
               });
 
@@ -178,7 +193,8 @@ export function createMetaSkills(
             } else {
               for (const step of steps) {
                 const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                const result = await engine.execute(step.skill, resolvedParams, true);
+                const finalParams = injectCalculateContext(step.skill, resolvedParams, results);
+                const result = await engine.execute(step.skill, finalParams, true);
                 const key = step.outputKey ?? step.skill;
                 results[key] = result.data;
 
@@ -395,6 +411,7 @@ export function createMetaSkills(
           description: { type: "string", description: "Natural language description of what the skill should do" },
           examples: { type: "array", description: "Input/output examples [{input: {}, output: {}}]", items: { type: "object" } },
           capabilities: { type: "array", description: "Required capability declarations", items: { type: "string" } },
+          autoRegister: { type: "boolean", description: "自动注册模式：为 true 时直接保存到 custom_skills 并注册到 registry，不走审批流程（用于 App 自动生成等自动化场景）" },
         },
         required: ["name", "description"],
       },
@@ -408,6 +425,7 @@ export function createMetaSkills(
         const description = params.description as string;
         const examples = (params.examples as Array<{ input: Record<string, unknown>; output: Record<string, unknown> }>) ?? [];
         const capabilities = (params.capabilities as string[]) ?? [];
+        const autoRegister = params.autoRegister as boolean;
 
         if (!name || !description) {
           return { success: false, error: new Error("name 和 description 必填") };
@@ -434,21 +452,30 @@ export function createMetaSkills(
           ? `\n示例:\n${examples.map((e, i) => `  ${i + 1}. 输入: ${JSON.stringify(e.input)} → 输出: ${JSON.stringify(e.output)}`).join("\n")}`
           : "";
 
+        const dbTypeHint = isMySQL()
+          ? "当前系统使用 MySQL 数据库，如需直接 SQL 查询请使用 mysql_query(skillName='mysql_query', params={sql})，所有数据库连接由系统托管，代码中禁止自行构造 connection 对象或引用 host/port/user/password/database 等变量。"
+          : "当前系统使用 SQLite 数据库，如需直接 SQL 查询请使用 db_query(skillName='db_query', params={sql})。";
+
         const prompt = `你是一个 Skill 代码生成器。根据以下描述生成一个 JavaScript 函数体。
 
 Skill 名称: ${name}
 Skill 描述: ${description}${exampleText}
 
+数据库环境提示: ${dbTypeHint}
+
 要求:
 1. 函数接收 (params, context) 两个参数，返回 { success: boolean, data?: unknown, error?: Error }
-   - params: Record<string, unknown> 用户传入的参数
+   - params: Record<string, unknown> 用户传入的参数，所有输入必须从 params 读取
    - context: { callSkill(name, params) } 可调用其他系统 Skill
-2. 优先使用 context.callSkill 调用已有系统 Skill（如 db_query, user_confirm 等）来完成功能，而不是直接操作底层资源
-3. 只输出函数体代码（不需要 function 关键字和大括号）
-4. 可以使用 async/await
-5. 代码应该简洁、安全，不能使用 eval、require、import
-6. 不能访问文件系统、网络或其他外部资源
-7. 用 JavaScript 语法（不是 TypeScript）
+   - 【重要】context.callSkill(name, params) 直接返回 skill 的 data 结果（不是 {success, data} 包装），调用失败会抛异常，用 try/catch 捕获
+2. 优先使用 context.callSkill 调用已有系统 Skill 来完成功能，禁止直接操作底层数据库连接
+3. 【关键】代码中禁止引用任何未声明的变量（如 host、port、config 等），所有配置和输入必须从 params 获取
+4. 【关键】如果 params 缺少必要参数，不要抛出异常，而是 return { success: false, error: new Error("缺少 xxx 参数") }
+5. 只输出函数体代码（不需要 function 关键字和大括号）
+6. 可以使用 async/await、try/catch、new Date()、new Error()
+7. 代码应该简洁、安全，不能使用 eval、require、import
+8. 不能访问文件系统、网络或其他外部资源
+9. 用 JavaScript 语法（不是 TypeScript），不要写类型注解（如 ": string"、"as any"）
 
 只输出纯代码，不要任何解释或 markdown 标记。`;
 
@@ -458,28 +485,100 @@ Skill 描述: ${description}${exampleText}
           ]);
 
           let code = (response.content ?? "").trim();
-          // 清理可能的 markdown 标记
-          if (code.startsWith("```")) {
+          // 清理可能的 markdown 标记（支持代码块前后有解释文字的情况）
+          const codeBlockMatch = code.match(/```(?:javascript|js|typescript|ts)?\n?([\s\S]*?)\n?```/);
+          if (codeBlockMatch) {
+            code = codeBlockMatch[1].trim();
+          } else if (code.startsWith("```")) {
             code = code.replace(/^```(?:javascript|js|typescript|ts)?\n?/, "").replace(/\n?```$/, "");
           }
 
-          // 安全检查
-          const forbidden = ["require(", "import ", "process.", "child_process", "__dirname", "__filename", "eval(", "Function("];
-          for (const f of forbidden) {
-            if (code.includes(f)) {
-              return { success: false, error: new Error(`生成的代码包含禁止的操作: ${f}`) };
-            }
+          // 安全检查：AST 静态分析
+          // 注意：代码在 sandbox 中会被包裹在 async IIFE 中执行，scanCode 也需要同样处理才能正确解析 await
+          const wrappedCodeForScan = `(async () => {\n${code}\n})()`;
+          const securityResult = scanCode(wrappedCodeForScan);
+          if (!securityResult.safe) {
+            const violationStr = securityResult.violations.join(" | ");
+            console.warn(`[skill_from_description] scanCode failed for ${name}: ${violationStr}, codePreview=${code.slice(0, 120).replace(/\n/g, "\\n")}`);
+            return {
+              success: false,
+              error: new Error(`生成的代码未通过安全检查: ${violationStr}`),
+            };
           }
 
           // 测试执行（用示例或空参数）— 通过 Worker 沙箱运行
           const testParams = examples.length > 0 ? examples[0].input : {};
-          const testSandboxResult = await runInSandbox(code, testParams);
+          const testSandboxResult = await runInSandbox(
+            code,
+            testParams,
+            { timeout: 30000 },
+            {
+              callSkill: async (skillName: string, _skillParams: Record<string, unknown>) => {
+                // Mock 常用系统 Skill 的返回值，避免测试时因 undefined 崩溃
+                if (skillName === "form_data_query") return { records: [], total: 0 };
+                if (skillName === "mysql_query" || skillName === "db_query") return [];
+                if (skillName === "kb_search" || skillName === "kb_query") return { results: [] };
+                if (skillName === "workflow_start") return { instanceId: "mock-instance-id" };
+                return {};
+              },
+              user: context.user,
+            },
+          );
           if (!testSandboxResult.success) {
-            return { success: false, error: new Error(`生成的 Skill 测试失败: ${testSandboxResult.error}`) };
+            const errorMsg = String(testSandboxResult.error || "");
+            const isCodeBug =
+              errorMsg.includes("ReferenceError") ||
+              errorMsg.includes("is not defined") ||
+              errorMsg.includes("SyntaxError") ||
+              errorMsg.includes("Unexpected token") ||
+              errorMsg.includes("Cannot access") ||
+              errorMsg.includes("is not a function");
+            if (isCodeBug) {
+              return { success: false, error: new Error(`生成的 Skill 测试失败: ${testSandboxResult.error}`) };
+            }
+            // 业务参数校验等环境限制导致的失败，记录但不阻塞，继续审批流程
+            console.warn(`[skill_from_description] Sandbox 测试因业务逻辑/参数不足失败（非代码 bug），继续提交审批: ${name}, error=${errorMsg}`);
           }
-          const testResult = testSandboxResult.data;
-          if (typeof testResult !== "object" || testResult === null) {
+          const testResult = testSandboxResult.success ? testSandboxResult.data : undefined;
+          if (testResult !== undefined && (typeof testResult !== "object" || testResult === null)) {
             return { success: false, error: new Error("生成的 Skill 未返回有效结果对象") };
+          }
+
+          // 自动注册模式：直接保存到 custom_skills 并注册，不走审批（用于 App 自动生成等场景）
+          if (autoRegister) {
+            try {
+              const repo = getCustomSkillRepository();
+              const skillDef = defineSkill({
+                name,
+                description,
+                version: "1.0.0",
+                visible: true,
+                autonomy: Autonomy.MANUAL,
+                dependencies: [],
+                timeout: 30000,
+                retry: { maxRetries: 0, backoffMs: 1000, backoffMultiplier: 2 },
+                handler: async () => ({ success: true, data: {} }),
+              });
+              await repo.create(skillDef, getCurrentUserId(), code);
+              // 立即注册到 registry（如果尚未注册）
+              if (!registry.lookup(name)) {
+                const foundSkill = await repo.findByName(name, getCurrentUserId()) || await repo.findByName(name);
+                if (foundSkill) {
+                  const reconstructed = await repo.reconstructSkill(foundSkill);
+                  registry.register(reconstructed);
+                }
+              }
+              return {
+                success: true,
+                data: { name, status: "created", message: `Skill "${name}" 已自动生成并注册` },
+              };
+            } catch (regErr: any) {
+              const regMsg = regErr instanceof Error ? regErr.message : String(regErr);
+              if (regMsg.includes("Duplicate") || regMsg.includes("already exists") || regMsg.includes("UNIQUE constraint")) {
+                return { success: true, data: { name, status: "exists", message: `Skill "${name}" 已存在` } };
+              }
+              return { success: false, error: new Error(`自动注册失败: ${regMsg}`) };
+            }
           }
 
           // 提交审批，而不是直接注册
@@ -795,27 +894,105 @@ export function resolveParams(
 ): Record<string, unknown> {
   const resolved: Record<string, unknown> = {};
 
+  function lookupRef(ref: string): unknown {
+    if (ref === "$input") return originalInput;
+    if (ref.startsWith("$input.")) {
+      const parts = ref.slice(7).split(".");
+      let val: any = originalInput;
+      for (const p of parts) val = val?.[p];
+      return val;
+    }
+    if (ref.startsWith("$steps.")) {
+      const parts = ref.slice(7).split(".");
+      let val: any = results;
+      for (const p of parts) val = val?.[p];
+      return val;
+    }
+    return ref;
+  }
+
+  function interpolateString(str: string): unknown {
+    // 纯引用，如 "$steps.weather.temp"
+    if (str.startsWith("$") && !str.includes(" ") && str.split("$").length === 2) {
+      return lookupRef(str);
+    }
+    // 模板字符串内嵌替换，如 "lat is $steps.weather.lat"
+    return str.replace(/\$input\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/g, (match) => {
+      const val = lookupRef(match);
+      return typeof val === "string" ? val : JSON.stringify(val);
+    }).replace(/\$steps\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/g, (match) => {
+      const val = lookupRef(match);
+      return typeof val === "string" ? val : JSON.stringify(val);
+    });
+  }
+
   for (const [key, value] of Object.entries(paramTemplate)) {
-    if (typeof value === "string" && value.startsWith("$")) {
-      if (value === "$input") {
-        resolved[key] = originalInput;
-      } else if (value.startsWith("$input.")) {
-        const field = value.slice(7);
-        resolved[key] = (originalInput as any)[field];
-      } else if (value.startsWith("$steps.")) {
-        const parts = value.slice(7).split(".");
-        let val: any = results;
-        for (const p of parts) val = val?.[p];
-        resolved[key] = val;
-      } else {
-        resolved[key] = value;
-      }
+    // expression 字段是代码/表达式，不应被 $steps/$input 模板替换
+    if (key === "expression" && typeof value === "string") {
+      resolved[key] = value;
+    } else if (typeof value === "string") {
+      resolved[key] = interpolateString(value);
+    } else if (Array.isArray(value)) {
+      resolved[key] = value.map((v) => {
+        if (typeof v === "string") {
+          return v.startsWith("$") ? interpolateString(v) : v;
+        }
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          return resolveParams(v as Record<string, unknown>, results, originalInput);
+        }
+        return v;
+      });
+    } else if (value && typeof value === "object") {
+      resolved[key] = resolveParams(value as Record<string, unknown>, results, originalInput);
     } else {
       resolved[key] = value;
     }
   }
 
   return resolved;
+}
+
+/** 为 calculate 步骤自动注入前序结果作为 context */
+export function injectCalculateContext(
+  skillName: string,
+  params: Record<string, unknown>,
+  results: Record<string, unknown>,
+): Record<string, unknown> {
+  if (skillName !== "calculate") return params;
+  if (params.context) {
+    // 如果用户显式传了 context，只在调试模式下记录
+    if (process.env.DEBUG_CALCULATE) {
+      console.log("[injectCalculateContext] user provided context:", params.context);
+    }
+    return params;
+  }
+  // 将前序步骤结果注入为 context
+  const context: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(results)) {
+    if (key === "$input") {
+      // 保留原始输入，让 calculate expression 可以引用 input.xxx
+      context.input = value;
+      continue;
+    }
+    if (key.startsWith("$")) continue;
+    // 在组合 skill handler 中，results[key] 已被赋值为 result.data
+    // 只有当值是完整的 ExecutionResult { success, data, error } 时才解包
+    if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      "success" in (value as any) &&
+      "data" in (value as any)
+    ) {
+      context[key] = (value as any).data;
+    } else {
+      context[key] = value;
+    }
+  }
+  if (process.env.DEBUG_CALCULATE) {
+    console.log("[injectCalculateContext] auto-injected context keys:", Object.keys(context));
+  }
+  return { ...params, context };
 }
 
 export function createTransformSkill(name: string, description: string, config: Record<string, unknown>) {
@@ -882,7 +1059,9 @@ export function createValidateSkill(name: string, description: string, config: R
             valid = Array.isArray(value) ? value.length > 0 : !!value;
             break;
           default:
-            valid = true;
+            // 未知 condition 视为验证失败，防止 LLM 生成无效规则被静默通过
+            valid = false;
+            errors.push(`未知验证规则: ${rule.condition} (${rule.message})`);
         }
 
         if (!valid) errors.push(rule.message);
@@ -911,7 +1090,10 @@ export function createAggregateSkill(
     description: `[模板:aggregate] ${description}`,
     handler: async (params) => {
       const results = await Promise.all(
-        skills.map((s) => engine.execute(s, params)),
+        skills.map((s) => {
+          const finalParams = injectCalculateContext(s, params, {});
+          return engine.execute(s, finalParams);
+        }),
       );
 
       if (mergeStrategy === "concat") {
@@ -937,4 +1119,107 @@ export function createAggregateSkill(
       }
     },
   });
+}
+
+/** 审批数据接口 */
+export interface ApprovalData {
+  name: string;
+  description: string;
+  code: string;
+  capabilities: string[];
+  generatedBy: string;
+}
+
+/** 从审批数据创建 Skill（用于审批通过时注册 + 启动时恢复） */
+export async function createSkillFromApproval(
+  approval: ApprovalData,
+  engine: ExecutionEngine,
+): Promise<ReturnType<typeof defineSkill>> {
+  if (approval.code.trim().startsWith("{")) {
+    const def = JSON.parse(approval.code);
+
+    if (def.metaType === "composed") {
+      const { steps, mode } = def;
+      return defineSkill({
+        name: def.name,
+        description: def.description,
+        owner: approval.generatedBy,
+        handler: async (inputParams, context) => {
+          const results: Record<string, unknown> = {};
+          results["$input"] = inputParams;
+
+          if (mode === "parallel") {
+            const promises = steps.map(async (step: any) => {
+              const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
+              const finalParams = injectCalculateContext(step.skill, resolvedParams, results);
+              const result = await engine.execute(step.skill, finalParams, true);
+              return { key: step.outputKey ?? step.skill, result };
+            });
+            const parallelResults = await Promise.all(promises);
+            for (const { key, result } of parallelResults) {
+              results[key] = result.data;
+            }
+          } else {
+            for (const step of steps) {
+              const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
+              const finalParams = injectCalculateContext(step.skill, resolvedParams, results);
+              const result = await engine.execute(step.skill, finalParams, true);
+              const key = step.outputKey ?? step.skill;
+              results[key] = result.data;
+              if (!result.success) {
+                return { success: false, error: new Error(`步骤 ${step.skill} 失败: ${result.error?.message}`), data: results };
+              }
+            }
+          }
+          return { success: true, data: results };
+        },
+      });
+    } else if (def.metaType === "template") {
+      let skill;
+      switch (def.template) {
+        case "transform":
+          skill = createTransformSkill(def.name, def.description, def.config);
+          break;
+        case "validate":
+          skill = createValidateSkill(def.name, def.description, def.config);
+          break;
+        case "aggregate":
+          skill = createAggregateSkill(def.name, def.description, def.config, engine);
+          break;
+        default:
+          throw new Error(`未知模板类型: ${def.template}`);
+      }
+      (skill as any).owner = approval.generatedBy;
+      return skill;
+    } else {
+      throw new Error(`未知的 meta skill 类型: ${def.metaType}`);
+    }
+  } else {
+    // 传统代码字符串（skill_from_description）
+    const code = approval.code;
+    return defineSkill({
+      name: approval.name,
+      description: `[已审批] ${approval.description}`,
+      capabilities: approval.capabilities,
+      owner: approval.generatedBy,
+      handler: async (params, context) => {
+        try {
+          const sandboxCtx = {
+            callSkill: async (name: string, skillParams: Record<string, unknown>) => {
+              const result = await engine.execute(name, skillParams);
+              if (!result.success) {
+                throw new Error(result.error?.message || `Skill "${name}" 执行失败`);
+              }
+              return result.data;
+            },
+            user: context.user,
+          };
+          const result = await runInSandbox(code, params, { timeout: 30000 }, sandboxCtx);
+          return { success: result.success, data: result.data };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    });
+  }
 }

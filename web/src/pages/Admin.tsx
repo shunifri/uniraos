@@ -112,6 +112,10 @@ function UsersPanel() {
   const [users, setUsers] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [resetUser, setResetUser] = useState<User | null>(null);
+  const [showResetPwd, setShowResetPwd] = useState(false);
+  const [resetPwdForm] = Form.useForm();
+  const [resetPwdLoading, setResetPwdLoading] = useState(false);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const [depts, setDepts] = useState<Department[]>([]);
@@ -165,6 +169,26 @@ function UsersPanel() {
       else message.error(data.error);
     } catch (e: unknown) { message.error(e instanceof Error ? e.message : '操作失败'); }
     finally { setLoading(false); }
+  };
+
+  const handleResetPassword = async (values: any) => {
+    if (!resetUser) return;
+    try {
+      setResetPwdLoading(true);
+      const data = await api.post<any>("/api/users/" + resetUser.id + "/password", { password: values.password });
+      if (data.success) {
+        setShowResetPwd(false);
+        resetPwdForm.resetFields();
+        setResetUser(null);
+        message.success(`用户 "${resetUser.username}" 密码已重置`);
+      } else {
+        message.error(data.error);
+      }
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '操作失败');
+    } finally {
+      setResetPwdLoading(false);
+    }
   };
 
   const deleteUser = (id: string, username: string) => {
@@ -230,6 +254,13 @@ function UsersPanel() {
                     onClick={() => openEditUser(r)}
                   >
                     编辑
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<LockOutlined />}
+                    onClick={() => { setResetUser(r); setShowResetPwd(true); resetPwdForm.resetFields(); }}
+                  >
+                    {t('reset_password')}
                   </Button>
                   <Button
                     danger
@@ -338,6 +369,42 @@ function UsersPanel() {
                 { label: "disabled", value: "disabled" },
               ]}
             />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Reset Password Modal */}
+      <Modal
+        title={`${t('reset_password')} - "${resetUser?.username}"`}
+        open={showResetPwd}
+        onCancel={() => { setShowResetPwd(false); resetPwdForm.resetFields(); setResetUser(null); }}
+        onOk={() => resetPwdForm.submit()}
+        confirmLoading={resetPwdLoading}
+      >
+        <Form form={resetPwdForm} layout="vertical" onFinish={handleResetPassword}>
+          <Form.Item
+            name="password"
+            label={t('new_password')}
+            rules={[{ required: true, min: 6, max: 100 }]}
+          >
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="confirmPassword"
+            label={t('confirm_password')}
+            rules={[
+              { required: true },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('password') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error(t('password_mismatch')));
+                },
+              }),
+            ]}
+          >
+            <Input.Password />
           </Form.Item>
         </Form>
       </Modal>

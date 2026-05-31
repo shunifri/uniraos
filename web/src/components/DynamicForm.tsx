@@ -45,12 +45,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
   const actions = schema.actions ?? defaultActions;
 
   const handleActionClick = (action: FormAction) => {
-    if (action.type === "submit") {
-      const form = document.querySelector("form");
-      if (form) {
-        form.requestSubmit();
-      }
-    } else if (action.type === "reset") {
+    // submit 类型按钮已设置 htmlType="submit"，点击会自动提交所在表单
+    // 避免使用 document.querySelector("form")，它在多表单场景会选中错误的表单
+    if (action.type === "reset") {
       onReset?.();
     } else if (action.type === "cancel") {
       onCancel?.();
@@ -78,24 +75,24 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
         readOnly={readOnly}
         onChange={onChange}
         onSubmit={onSubmit}
-      />
-
-      {!readOnly && (
-        <Space style={{ marginTop: 16 }}>
-          {actions.map((action, index) => (
-            <Button
-              key={`${action.type}-${index}`}
-              type={getButtonType(action)}
-              danger={action.danger}
-              htmlType={action.type === "submit" ? "submit" : undefined}
-              loading={action.type === "submit" ? loading : undefined}
-              onClick={() => handleActionClick(action)}
-            >
-              {action.label}
-            </Button>
-          ))}
-        </Space>
-      )}
+      >
+        {!readOnly && (
+          <Space style={{ marginTop: 16 }}>
+            {actions.map((action, index) => (
+              <Button
+                key={`${action.type}-${index}`}
+                type={getButtonType(action)}
+                danger={action.danger}
+                htmlType={action.type === "submit" ? "submit" : undefined}
+                loading={action.type === "submit" ? loading : undefined}
+                onClick={() => handleActionClick(action)}
+              >
+                {action.label}
+              </Button>
+            ))}
+          </Space>
+        )}
+      </FormRenderer>
     </>
   );
 

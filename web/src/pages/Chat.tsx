@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Flex, Typography, Tag, Button, List, Drawer, Badge, Collapse, Spin, message, Segmented } from "antd";
 import { MenuOutlined } from "@ant-design/icons";
 import { Bubble, Sender, Think, CodeHighlighter, Attachments } from "@ant-design/x";
@@ -62,7 +63,6 @@ interface ConversationState {
   pendingKbRefs: KbReference[];
   pendingWebRefs: WebReference[];
   attachments: Attachment[];
-  attachmentsSnap: Attachment[];
   attachmentPaths: Map<string, string>;
   attachmentParseContent: Map<string, string>;
   attachmentParseTags: Map<string, string[]>;
@@ -127,8 +127,15 @@ function extractSuggestedQuestions(content: string): string[] {
       const questions = match[1]
         .split(/\n|\r\n?/)
         .map(line => line.replace(/^[-*•\d.．、\s]+/, '').trim())
-        .filter(q => q.length > 3 && !q.startsWith('```'));
-      if (questions.length >= 2) return questions;
+        .filter(q => {
+          if (q.length < 5 || q.length > 80) return false;
+          if (q.startsWith('```') || q.includes('`')) return false;
+          if (/^https?:\/\//.test(q)) return false;
+          // 必须是真正的问题（以问号结尾）
+          return /[?？]$/.test(q);
+        })
+        .slice(0, 3);
+      if (questions.length >= 1) return questions;
     }
   }
 
@@ -144,7 +151,14 @@ function extractSuggestedQuestions(content: string): string[] {
     }
   }
   if (lastBlock.length >= 2) {
-    return lastBlock.filter(q => q.length > 3);
+    return lastBlock
+      .filter(q => {
+        if (q.length < 5 || q.length > 80) return false;
+        if (q.startsWith('```') || q.includes('`')) return false;
+        if (/^https?:\/\//.test(q)) return false;
+        return /[?？]$/.test(q);
+      })
+      .slice(0, 3);
   }
 
   return [];
@@ -165,12 +179,65 @@ function preprocessVideos(md: string): string {
   return result;
 }
 
+// ---- 解析消息中的 <app-design-card> 标签，将其与 Markdown 文本分离 ----
+interface MixedContentPart {
+  type: "text" | "card";
+  content?: string;
+  props?: Record<string, string>;
+}
+
+function parseMixedContent(content: string): MixedContentPart[] {
+  const parts: MixedContentPart[] = [];
+  const regex = /<app-design-card([^>]*)\/?>(?:<\/app-design-card>)?/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      const text = content.slice(lastIndex, match.index).trimEnd();
+      if (text) parts.push({ type: "text", content: text });
+    }
+
+    const attrStr = match[1];
+    const props: Record<string, string> = {};
+    const attrRegex = /data-([a-zA-Z0-9-]+)=["']([^"']*)["']/g;
+    let attrMatch: RegExpExecArray | null;
+    while ((attrMatch = attrRegex.exec(attrStr)) !== null) {
+      props[`data-${attrMatch[1]}`] = attrMatch[2];
+    }
+
+    parts.push({ type: "card", props });
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < content.length) {
+    const text = content.slice(lastIndex).trimEnd();
+    if (text) parts.push({ type: "text", content: text });
+  }
+
+  if (parts.length === 0 && content) {
+    parts.push({ type: "text", content });
+  }
+
+  return parts;
+}
+
 // ---- API helpers ----
 function parseMsg(m: any): ChatMsg {
+  let content = m.content || "";
+  const attachments = m.extra?.attachments;
+
+  // 如果消息带有附件元数据，从 content 中剥离附件标记，提取纯用户文本
+  if (attachments && attachments.length > 0) {
+    content = content.replace(/--- 文件: .+? \(路径: .+?\) ---[\s\S]*?--- 文件结束 ---\n?\n?/g, "");
+    content = content.replace(/\[附件: .+? \(路径: .+?\)\]\n?\n?/g, "");
+    content = content.trim();
+  }
+
   const parsed: ChatMsg = {
     id: m.id,
     role: m.role,
-    content: m.content,
+    content,
     skillName: m.skill_name || undefined,
     status: m.status || undefined,
     isError: !!m.is_error,
@@ -179,6 +246,7 @@ function parseMsg(m: any): ChatMsg {
     kbReferences: m.extra?.kbReferences || undefined,
     webReferences: m.extra?.webReferences || undefined,
     resultData: m.extra?.resultData ?? undefined,
+    attachments: attachments || undefined,
   };
   // 预解析 user_confirm 数据，避免每次渲染 JSON.parse 产生新对象引用
   if (parsed.role === "user_confirm") {
@@ -192,17 +260,33 @@ function parseMsg(m: any): ChatMsg {
 interface ChatPageProps {
   embedded?: boolean;
   defaultSkill?: string;
+  defaultSkills?: string[];
+  appId?: string;
+  title?: string;
+  icon?: string;
 }
 
-export default function ChatPage({ embedded = false, defaultSkill }: ChatPageProps) {
+export default function ChatPage({ embedded = false, defaultSkill: propDefaultSkill, defaultSkills: propDefaultSkills, appId: propAppId, title = "RAOS 智能助手", icon = "" }: ChatPageProps) {
   const t = useI18nStore((s) => s.t);
+  const [searchParams] = useSearchParams();
+  const urlAppId = searchParams.get("appId") || undefined;
+  const appId = propAppId || urlAppId;
   const embeddedRole = useAuthStore((s) => s.embeddedRole);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const token = useAuthStore((s) => s.token);
+  const isAnonymous = useAuthStore((s) => s.isAnonymous);
+  const isAnonymousUser = !token || isAnonymous;
+  const canReadKb = hasPermission("knowledge.read");
   const panelOpen = useInboxStore((s) => s.panelOpen);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convStates, setConvStates] = useState<Map<string, ConversationState>>(new Map());
   const [activeConvId, _setActiveConvId] = useState<string | null>(null);
   const activeConvIdRef = useRef<string | null>(null);
+  const convStatesRef = useRef(convStates);
+  useEffect(() => {
+    convStatesRef.current = convStates;
+  }, [convStates]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -288,7 +372,6 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
       pendingKbRefs: [],
       pendingWebRefs: [],
       attachments: [],
-      attachmentsSnap: [],
       attachmentPaths: new Map(),
       attachmentParseContent: new Map(),
       attachmentParseTags: new Map(),
@@ -332,6 +415,14 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
           const latest = convs[0];
           setActiveConvId(latest.id);
           loadMessages(latest.id);
+        } else if (embedded && !activeConvIdRef.current) {
+          // 嵌入场景下无历史对话，自动创建一个新对话，否则用户看不到输入框
+          const id = await apiCreateConversation("新对话");
+          if (id) {
+            setActiveConvId(id);
+            updateConvState(id, getOrCreateConvState(id));
+            setConversations([{ id, title: "新对话", created_at: Date.now(), updated_at: Date.now() }]);
+          }
         }
       }
     } catch (err: unknown) {
@@ -516,8 +607,9 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
 
   // Attachment handling
   const startPollParseStatus = (convId: string, uid: string, serverPath: string) => {
-    const state = convStates.get(convId)!;
-    // 更新附件描述为"转换中"
+    // 更新附件描述为"转换中"（始终从最新 state 读取）
+    const getLatestState = () => convStates.get(convId)!;
+    const state = getLatestState();
     const list = state.attachments.map((a) => a.uid === uid ? { ...a, description: "转换中...", status: "uploading" as const } : a);
     updateConvState(convId, {
       attachments: list,
@@ -527,25 +619,26 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
       try {
         const res = await apiFetch(`/api/upload/parse-status?path=${encodeURIComponent(serverPath)}`);
         const data = await res.json();
+        const latestState = getLatestState();
         if (data.status === "done") {
           clearInterval(timer);
-          state.pollTimers.delete(uid);
-          state.attachmentParseContent.set(uid, data.content || "");
+          latestState.pollTimers.delete(uid);
+          latestState.attachmentParseContent.set(uid, data.content || "");
           if (data.tags && Array.isArray(data.tags)) {
-            state.attachmentParseTags.set(uid, data.tags);
+            latestState.attachmentParseTags.set(uid, data.tags);
           }
           if (data.pageCount) {
-            state.attachmentPageCount.set(uid, data.pageCount);
+            latestState.attachmentPageCount.set(uid, data.pageCount);
           }
           const tagsLabel = data.tags?.length ? ` | 标签: ${data.tags.join(", ")}` : "";
-          const updatedList = state.attachments.map((a) => a.uid === uid ? { ...a, description: `已解析 (${data.format || "text"})${tagsLabel}`, status: "done" as const } : a);
+          const updatedList = latestState.attachments.map((a) => a.uid === uid ? { ...a, description: `已解析 (${data.format || "text"})${tagsLabel}`, status: "done" as const } : a);
           updateConvState(convId, {
             attachments: updatedList,
           });
         } else if (data.status === "error") {
           clearInterval(timer);
-          state.pollTimers.delete(uid);
-          const updatedList = state.attachments.map((a) => a.uid === uid ? { ...a, description: `解析失败: ${data.error || "未知错误"}`, status: "error" as const } : a);
+          latestState.pollTimers.delete(uid);
+          const updatedList = latestState.attachments.map((a) => a.uid === uid ? { ...a, description: `解析失败: ${data.error || "未知错误"}`, status: "error" as const } : a);
           updateConvState(convId, {
             attachments: updatedList,
           });
@@ -575,7 +668,6 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
     updateConvState(convId, {
       attachments: list,
     });
-    state.attachmentsSnap = list;
     if (list.length > 0) {
       updateConvState(convId, {
         headerOpen: true,
@@ -622,7 +714,7 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
       setInputValue("");
 
       const state = convStates.get(convId)!;
-      const currentAttachments = state.attachmentsSnap.filter((a) => a.status === "done" || a.status === "error");
+      const currentAttachments = state.attachments.filter((a) => a.status === "done" || a.status === "error");
 
       let fullText = text;
       if (currentAttachments.length > 0) {
@@ -637,7 +729,18 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
         fullText = `${attachmentSections.join("\n\n")}\n\n${text}`;
       }
 
-      const userMsg: ChatMsg = { role: "user", content: text };
+      // 构建附件元数据用于本地消息渲染和持久化
+      const chatAttachments = currentAttachments.length > 0
+        ? currentAttachments.map((a) => ({
+            name: a.name,
+            path: state.attachmentPaths.get(a.uid) || "",
+            size: a.size,
+            type: a.type,
+            status: a.status as "done" | "error" | "uploading",
+          }))
+        : undefined;
+
+      const userMsg: ChatMsg = { role: "user", content: text, attachments: chatAttachments };
       shouldScrollRef.current = true;
       const abortController = new AbortController();
 
@@ -659,7 +762,9 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
           message: fullText,
           conversationId: convId,
           ...(embeddedRole ? { role: embeddedRole } : {}),
-          ...(defaultSkill ? { defaultSkill } : {}),
+          ...(propDefaultSkill ? { defaultSkill: propDefaultSkill } : {}),
+          ...(propDefaultSkills && propDefaultSkills.length > 0 ? { defaultSkills: propDefaultSkills } : {}),
+          ...(appId ? { appId } : {}),
         }),
           signal: abortController.signal,
         });
@@ -1143,9 +1248,15 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
 
           {activeState.messages.length === 0 && !activeState.hasMore && (
             <div className="chat-empty" style={{ textAlign: "center", margin: "auto" }}>
-              <img src="/ai-avatar.png" alt="AI" style={{ width: 72, height: 72, borderRadius: 20, margin: "0 auto 20px", display: "block", boxShadow: "0 8px 32px rgba(139, 92, 246, 0.25)" }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              {icon ? (
+                <img src={icon} alt="" style={{ width: 72, height: 72, borderRadius: 20, margin: "0 auto 20px", display: "block", boxShadow: "0 8px 32px rgba(139, 92, 246, 0.25)", objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              ) : (
+                <div style={{ width: 72, height: 72, borderRadius: 20, margin: "0 auto 20px", background: "linear-gradient(135deg, #667eea, #764ba2)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 28, boxShadow: "0 8px 32px rgba(139, 92, 246, 0.25)" }}>
+                  <MessageOutlined />
+                </div>
+              )}
               <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
-                <span className="text-gradient">RAOS 智能助手</span>
+                <span className="text-gradient">{title}</span>
               </div>
               <div style={{ color: "#94A3B8", fontSize: 14 }}>有什么我可以帮你的？</div>
             </div>
@@ -1156,8 +1267,10 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
             if (msg.role === "user_confirm") {
               const data = msg.parsedData || {};
               const isDisabled = confirmedCards.has(data.confirmId as string);
+              // 使用 confirmId 作为 key，确保多个表单不会互相复用组件实例
+              const ucKey = data.confirmId ? `uc_${data.confirmId}` : (msg.id ?? `m${i}`);
               return (
-                <div key={msg.id ?? `m${i}`} style={{ marginLeft: 46 }}>
+                <div key={ucKey} style={{ marginLeft: 46 }}>
                   <ConfirmCard
                     confirmId={data.confirmId as string}
                     type={data.type as any}
@@ -1173,24 +1286,37 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
                     submittedData={confirmedDataMap[data.confirmId as string]}
                     onConfirm={async (confirmId, response) => {
                       try {
-                        await apiFetch("/api/agent/chat/confirm", {
+                        const res = await apiFetch("/api/agent/chat/confirm", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ confirmId, response }),
                         });
+                        const result = await res.json().catch(() => ({ success: false }));
                         handleConfirmCard(confirmId, true);
+                        const currentConvId = activeConvIdRef.current;
+                        const currentState = currentConvId ? convStatesRef.current.get(currentConvId) : undefined;
+                        // 如果后端 generator 已丢失（重启/刷新），或 SSE 连接已断开，自动触发对话继续
+                        if (result.success && (result.continued === false || !currentState?.loading)) {
+                          sendMessage("继续");
+                        }
                       } catch (err) {
                         console.error("Confirm failed:", err);
                       }
                     }}
                     onCancel={async (confirmId) => {
                       try {
-                        await apiFetch("/api/agent/chat/confirm", {
+                        const res = await apiFetch("/api/agent/chat/confirm", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ confirmId, cancelled: true }),
                         });
+                        const result = await res.json().catch(() => ({ success: false }));
                         handleConfirmCard(confirmId, false);
+                        const currentConvId = activeConvIdRef.current;
+                        const currentState = currentConvId ? convStatesRef.current.get(currentConvId) : undefined;
+                        if (result.success && (result.continued === false || !currentState?.loading)) {
+                          sendMessage("继续");
+                        }
                       } catch (err) {
                         console.error("Cancel failed:", err);
                       }
@@ -1202,12 +1328,44 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
 
             // 渲染用户消息
             if (msg.role === "user") {
+              const hasAttachments = msg.attachments && msg.attachments.length > 0;
               return (
                 <Bubble
                   key={msg.id ?? `m${i}`}
                   placement="end"
                   className="user-bubble"
-                  content={msg.content}
+                  content={
+                    <div>
+                      {hasAttachments && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                          {msg.attachments!.map((att, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "6px 12px",
+                                background: "rgba(255,255,255,0.15)",
+                                borderRadius: 8,
+                                fontSize: 13,
+                                color: "#fff",
+                                maxWidth: 240,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                              title={att.name}
+                            >
+                              <FileTextOutlined />
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{att.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {msg.content}
+                    </div>
+                  }
                   avatar={<div style={{ width: 34, height: 34, borderRadius: 12, background: 'linear-gradient(135deg, #667eea, #764ba2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14, boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)' }}><UserOutlined /></div>}
                 />
               );
@@ -1218,7 +1376,13 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
               if (msg.content === "__typing__") {
                 return (
                   <div key={msg.id ?? `m${i}`} style={{ display: "flex", gap: 12, alignItems: "center", marginLeft: 4, animation: "fade-in-up 0.3s ease-out" }}>
-                    <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                    {icon ? (
+                      <img src={icon} alt="" style={{ width: 32, height: 32, borderRadius: 10, objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                    ) : (
+                      <div style={{ width: 32, height: 32, borderRadius: 10, background: "linear-gradient(135deg, #667eea, #764ba2)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14 }}>
+                        <MessageOutlined />
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 4, padding: "10px 16px", borderRadius: 16, background: "rgba(139, 92, 246, 0.06)" }}>
                       <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#8B5CF6", opacity: 0.6, animation: "pulse-border 1.2s infinite" }} />
                       <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#A78BFA", opacity: 0.6, animation: "pulse-border 1.2s infinite 0.2s" }} />
@@ -1318,6 +1482,33 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
                       ))}
                     </div>
                   )}
+                  {/* File Download in tool message */}
+                  {msg.fileDownload && msg.fileDownload.files.length > 0 && (
+                    <div style={{ padding: "8px 0 0 0" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {msg.fileDownload.files.map((file) => (
+                          <a
+                            key={file.path}
+                            href={file.downloadUrl}
+                            download={file.name}
+                            className="glass-card"
+                            style={{
+                              display: "flex", alignItems: "center", gap: 10,
+                              padding: "10px 14px", borderRadius: 14,
+                              textDecoration: "none",
+                            }}
+                          >
+                            {getFileIcon(`.${file.ext}`, 22)}
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>{file.name}</div>
+                              <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>{formatFileSize(file.size)}</div>
+                            </div>
+                            <DownloadOutlined style={{ color: "#52c41a", fontSize: 16, marginLeft: 4 }} />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -1325,38 +1516,63 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
             // 渲染助手消息
             const isStreaming = activeState.loading && i === activeState.messages.length - 1;
             const bubbleContent = msg.content || (isStreaming ? "..." : "");
-            const refs = msg.kbReferences;
+            // 只保留被 Agent 在回复中实际引用的知识库卡片（通过 [^N] 标记判断）
+            const citedIndices = new Set<number>();
+            if (bubbleContent) {
+              const citeMatches = bubbleContent.matchAll(/\[\^(\d+)\]/g);
+              for (const m of citeMatches) citedIndices.add(parseInt(m[1], 10));
+            }
+            const allRefs = msg.kbReferences;
+            const refs = allRefs && allRefs.length > 0 && citedIndices.size > 0
+              ? allRefs.filter((r) => citedIndices.has(r.index))
+              : undefined;
             return (
               <div key={msg.id ?? `m${i}`}>
                 <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', animation: 'fade-in-up 0.3s ease-out' }}>
-                  <img src="/ai-avatar.png" alt="AI" style={{ width: 32, height: 32, borderRadius: 10, flexShrink: 0 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  {icon ? (
+                    <img src={icon} alt="" style={{ width: 32, height: 32, borderRadius: 10, flexShrink: 0, objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  ) : (
+                    <div style={{ width: 32, height: 32, borderRadius: 10, flexShrink: 0, background: "linear-gradient(135deg, #667eea, #764ba2)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14 }}>
+                      <MessageOutlined />
+                    </div>
+                  )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {isStreaming && !msg.content ? (
                       <Spin size="small" />
                     ) : (
-                      <XMarkdown
-                        content={preprocessVideos(preprocessImages(preprocessFootnotes(bubbleContent)))}
-                        streaming={{ hasNextChunk: isStreaming }}
-                        components={{
-                          ...markdownComponents,
-                          kbref: ({ children, ...props }: any) => {
-                            const idx = parseInt(props["data-index"] || "0", 10);
-                            return (
-                              <sup
-                                style={{ color: "#1677ff", cursor: refs?.length ? "pointer" : "default", fontWeight: 600, fontSize: "0.75em", padding: "0 1px" }}
-                                onClick={refs?.length ? (e: React.MouseEvent) => { e.stopPropagation(); setViewingRefs(refs); setViewingRefIndex(idx - 1); } : undefined}
-                              >
-                                {children}
-                              </sup>
-                            );
-                          },
-                        }}
-                        openLinksInNewTab
-                      />
+                      <div>
+                        {parseMixedContent(preprocessVideos(preprocessImages(isAnonymousUser ? bubbleContent.replace(/\[\^(\d+)\]/g, '') : preprocessFootnotes(bubbleContent)))).map((part, partIdx) =>
+                          part.type === "text" ? (
+                            <XMarkdown
+                              key={partIdx}
+                              content={part.content}
+                              streaming={{ hasNextChunk: isStreaming }}
+                              components={{
+                                ...markdownComponents,
+                                kbref: ({ children, ...props }: any) => {
+                                  if (!canReadKb) return null;
+                                  const refIdx = parseInt(props["data-index"] || "0", 10);
+                                  return (
+                                    <sup
+                                      style={{ color: "#1677ff", cursor: refs?.length ? "pointer" : "default", fontWeight: 600, fontSize: "0.75em", padding: "0 1px" }}
+                                      onClick={refs?.length ? (e: React.MouseEvent) => { e.stopPropagation(); setViewingRefs(refs); setViewingRefIndex(refIdx - 1); } : undefined}
+                                    >
+                                      {children}
+                                    </sup>
+                                  );
+                                },
+                              }}
+                              openLinksInNewTab
+                            />
+                          ) : (
+                            <AppDesignCard key={partIdx} {...part.props} />
+                          )
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
-                {refs && refs.length > 0 && !activeState.loading && (() => {
+                {!isAnonymousUser && canReadKb && refs && refs.length > 0 && !activeState.loading && (() => {
                   // 按文档去重，合并引用编号
                   const docMap = new Map<string, { docName: string; indices: number[]; ref: KbReference }>();
                   for (const ref of refs) {
@@ -1563,53 +1779,57 @@ export default function ChatPage({ embedded = false, defaultSkill }: ChatPagePro
               onSubmit={sendMessage}
               onCancel={() => stopChat(activeConvId)}
               header={
-                <Sender.Header
-                  title={hasParsingAttachments ? `附件 (${activeState.attachments.length}) — 转换中...` : `附件 (${activeState.attachments.length})`}
-                  open={activeState.headerOpen}
-                  onOpenChange={(open) => updateConvState(activeConvId!, { headerOpen: open })}
-                  closable
-                  styles={{ content: { padding: 12 } }}
-                >
-                  <Attachments
-                    ref={attachmentsRef}
-                    accept=".pdf,.xlsx,.xls,.docx,.doc,.pptx,.ppt,.txt,.md,.csv,.tsv,.json,.log,.png,.jpg,.jpeg,.gif,.webp,.bmp"
-                    multiple
-                    customRequest={(opts) => handleAttachmentUpload(activeConvId!, opts)}
-                    items={activeState.attachments}
-                    onChange={(info) => handleAttachmentChange(activeConvId!, info)}
-                    disabled={activeState.loading}
-                    placeholder={{
-                      icon: <LinkOutlined style={{ fontSize: 20 }} />,
-                      title: "拖拽文件到此处或点击上传",
-                      description: "支持 PDF、Word、Excel、PPT、CSV、图片、文本等格式",
-                    }}
-                    getDropContainer={() => senderRef.current?.nativeElement}
-                    onPreview={(file: any) => {
-                      const uid = file.uid;
-                      const state = convStates.get(activeConvId!)!;
-                      if (state.attachmentParseContent.has(uid)) {
-                        setViewingAttachment({
-                          uid,
-                          name: file.name || "未知文件",
-                          content: state.attachmentParseContent.get(uid) || "",
-                          path: state.attachmentPaths.get(uid) || "",
-                          tags: state.attachmentParseTags.get(uid) || [],
-                          pageCount: state.attachmentPageCount.get(uid),
-                        });
-                      }
-                    }}
-                  />
-                </Sender.Header>
+                hasPermission("files.write") ? (
+                  <Sender.Header
+                    title={hasParsingAttachments ? `附件 (${activeState.attachments.length}) — 转换中...` : `附件 (${activeState.attachments.length})`}
+                    open={activeState.headerOpen}
+                    onOpenChange={(open) => updateConvState(activeConvId!, { headerOpen: open })}
+                    closable
+                    styles={{ content: { padding: 12 } }}
+                  >
+                    <Attachments
+                      ref={attachmentsRef}
+                      accept=".pdf,.xlsx,.xls,.docx,.doc,.pptx,.ppt,.txt,.md,.csv,.tsv,.json,.log,.png,.jpg,.jpeg,.gif,.webp,.bmp"
+                      multiple
+                      customRequest={(opts) => handleAttachmentUpload(activeConvId!, opts)}
+                      items={activeState.attachments}
+                      onChange={(info) => handleAttachmentChange(activeConvId!, info)}
+                      disabled={activeState.loading}
+                      placeholder={{
+                        icon: <LinkOutlined style={{ fontSize: 20 }} />,
+                        title: "拖拽文件到此处或点击上传",
+                        description: "支持 PDF、Word、Excel、PPT、CSV、图片、文本等格式",
+                      }}
+                      getDropContainer={() => senderRef.current?.nativeElement}
+                      onPreview={(file: any) => {
+                        const uid = file.uid;
+                        const state = convStates.get(activeConvId!)!;
+                        if (state.attachmentParseContent.has(uid)) {
+                          setViewingAttachment({
+                            uid,
+                            name: file.name || "未知文件",
+                            content: state.attachmentParseContent.get(uid) || "",
+                            path: state.attachmentPaths.get(uid) || "",
+                            tags: state.attachmentParseTags.get(uid) || [],
+                            pageCount: state.attachmentPageCount.get(uid),
+                          });
+                        }
+                      }}
+                    />
+                  </Sender.Header>
+                ) : undefined
               }
               prefix={
-                <Badge count={activeState.attachments.length} size="small">
-                  <Button
-                    type="text"
-                    icon={<LinkOutlined />}
-                    disabled={activeState.loading}
-                    onClick={() => updateConvState(activeConvId!, { headerOpen: !activeState.headerOpen })}
-                  />
-                </Badge>
+                hasPermission("files.write") ? (
+                  <Badge count={activeState.attachments.length} size="small">
+                    <Button
+                      type="text"
+                      icon={<LinkOutlined />}
+                      disabled={activeState.loading}
+                      onClick={() => updateConvState(activeConvId!, { headerOpen: !activeState.headerOpen })}
+                    />
+                  </Badge>
+                ) : undefined
               }
             />
           </div>

@@ -112,8 +112,8 @@ function isReadOnlySQL(sql: string): boolean {
     .trim()
     .toUpperCase();
 
-  // 必须以只读关键字开头
-  const allowedPrefixes = ["SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA"];
+  // 必须以只读关键字开头（PRAGMA 被移除，可泄露数据库结构）
+  const allowedPrefixes = ["SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN"];
   const hasAllowedPrefix = allowedPrefixes.some(p => normalized.startsWith(p));
   if (!hasAllowedPrefix) return false;
 
@@ -135,6 +135,33 @@ function isReadOnlySQL(sql: string): boolean {
   }
 
   return true;
+}
+
+/** 检测 SQL 是否包含危险操作 */
+function isDangerousSQL(sql: string): boolean {
+  const normalized = sql
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/--.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  // 禁止 ATTACH/DETACH DATABASE
+  if (/\bATTACH\b/.test(normalized) || /\bDETACH\b/.test(normalized)) return true;
+
+  // 禁止 PRAGMA（可泄露数据库结构、修改设置）
+  if (/\bPRAGMA\b/.test(normalized)) return true;
+
+  // 禁止 DROP TABLE/INDEX/DATABASE
+  if (/\bDROP\b/.test(normalized)) return true;
+
+  // 禁止 ALTER TABLE
+  if (/\bALTER\b/.test(normalized)) return true;
+
+  // 禁止 DELETE/UPDATE 无 WHERE（可能导致全表删除）
+  if ((/\bDELETE\b/.test(normalized) || /\bUPDATE\b/.test(normalized)) && !/\bWHERE\b/.test(normalized)) return true;
+
+  return false;
 }
 
 /** 敏感字段关键词 */
@@ -245,6 +272,9 @@ function createSQLiteSkills(registry: SkillRegistry): void {
         if (!sql) {
           return { success: false, error: new Error("sql 参数必填") };
         }
+        if (isDangerousSQL(sql)) {
+          return { success: false, error: new Error("SQL 包含危险操作，已被拒绝") };
+        }
 
         const dbPath = (params.db as string) ?? "data.db";
         const bindParams = (params.params as unknown[]) ?? [];
@@ -276,6 +306,11 @@ function createSQLiteSkills(registry: SkillRegistry): void {
         const statements = params.statements as Array<{ sql: string; params?: unknown[] }>;
         if (!statements || !Array.isArray(statements) || statements.length === 0) {
           return { success: false, error: new Error("statements 参数必填且不能为空") };
+        }
+        for (const stmt of statements) {
+          if (isDangerousSQL(stmt.sql)) {
+            return { success: false, error: new Error(`SQL 包含危险操作，已被拒绝: ${stmt.sql.slice(0, 50)}`) };
+          }
         }
 
         const dbPath = (params.db as string) ?? "data.db";
@@ -327,10 +362,18 @@ function createSQLiteSkills(registry: SkillRegistry): void {
         const dbPath = (params.db as string) ?? "data.db";
         const tableName = params.table as string | undefined;
 
+        // 安全：表名只允许字母数字下划线，防止 SQL 注入
+        function isValidTableName(name: string): boolean {
+          return /^[a-zA-Z0-9_]+$/.test(name);
+        }
+
         try {
           const db = getConnection(dbPath);
 
           if (tableName) {
+            if (!isValidTableName(tableName)) {
+              return { success: false, error: new Error("Invalid table name") };
+            }
             // 单表详情
             const columns = db.prepare(`PRAGMA table_info('${tableName.replace(/'/g, "''")}')`).all();
             const indexes = db.prepare(`PRAGMA index_list('${tableName.replace(/'/g, "''")}')`).all();

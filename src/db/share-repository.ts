@@ -54,8 +54,18 @@ export class ShareRepository {
     return new ShareRepository(isMySQL() ? undefined : getDb());
   }
 
+  /** 验证 targetId 不包含 LIKE 通配符，防止部门范围共享被恶意扩大 */
+  private validateTargetId(scope: string, targetId?: string): void {
+    if (scope === "department" && targetId) {
+      if (/[%_]/.test(targetId)) {
+        throw new Error("targetId for department scope cannot contain LIKE wildcards (% or _)");
+      }
+    }
+  }
+
   /** 创建共享规则 */
   async create(rule: Omit<ShareRule, "id" | "createdAt">): Promise<ShareRule> {
+    this.validateTargetId(rule.scope, rule.targetId);
     const id = randomUUID();
     const createdAt = Math.floor(Date.now() / 1000);
     
@@ -94,6 +104,7 @@ export class ShareRepository {
 
   /** 更新共享规则 */
   async update(id: string, updates: Partial<Pick<ShareRule, "scope" | "targetId" | "permission">>): Promise<boolean> {
+    this.validateTargetId(updates.scope ?? "", updates.targetId);
     const sets: string[] = [];
     const values: unknown[] = [];
     if (updates.scope !== undefined) { sets.push("scope = ?"); values.push(updates.scope); }

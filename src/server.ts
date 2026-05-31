@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { initTracing } from "./tracing.js";
 initTracing(); // P1-21 OpenTelemetry 必须在其他模块之前初始化
 import express from "express";
+import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { validateEnvOrExit } from "./server/env-validation.js";
@@ -32,6 +33,17 @@ const app = express();
 
 // 生产安全中间件：Helmet 安全头（必须在最前面）
 app.use(securityHeaders);
+
+// Cookie 解析（必须在 CORS 和 authMiddleware 之前）
+app.use(cookieParser());
+
+// 调试日志：仅在 debug 模式下记录所有进入后端的请求
+if (process.env.LOG_LEVEL === "debug" || process.env.NODE_ENV !== "production") {
+  app.use((req, _res, next) => {
+    console.log(`[REQUEST] ${req.method} ${req.path} - User-Agent: ${req.headers['user-agent']?.slice(0, 50)}`);
+    next();
+  });
+}
 
 // Prometheus metrics 端点（独立路径，避免与 skill-routes 冲突）
 app.get("/metrics", async (_req, res) => {
@@ -130,8 +142,8 @@ app.use("/api/llm", llmRateLimit);
 app.use("/api/chat", llmRateLimit);
 app.use("/api/upload", uploadRateLimit);
 
-// 全局错误处理（必须放在所有路由之后）
-app.use(globalErrorHandler);
-
 // 启动服务器生命周期（挂载路由、WAL 恢复、Inbox/Scheduler、监听端口）
 startServer(app, deps);
+
+// 全局错误处理（必须放在所有路由之后）
+app.use(globalErrorHandler);

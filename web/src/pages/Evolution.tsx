@@ -12,7 +12,6 @@ import {
 import EvolutionOverview from "@/components/evolution/EvolutionOverview";
 import SkillGenealogy from "@/components/evolution/SkillGenealogy";
 import EmergenceMonitor from "@/components/evolution/EmergenceMonitor";
-import PendingActions from "@/components/evolution/PendingActions";
 import LifecycleView from "@/components/evolution/LifecycleView";
 import RedlinesView from "@/components/evolution/RedlinesView";
 
@@ -44,12 +43,7 @@ const panels: Array<{
     icon: <WarningOutlined />,
     component: EmergenceMonitor,
   },
-  {
-    key: "pending",
-    label: "pending_actions",
-    icon: <CheckCircleOutlined />,
-    component: PendingActions,
-  },
+
   {
     key: "lifecycle",
     label: "lifecycle",

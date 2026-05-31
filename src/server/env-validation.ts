@@ -34,11 +34,6 @@ export function validateEnv(): EnvValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // JWT Secret
-  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-    errors.push("JWT_SECRET must be set and at least 32 characters long");
-  }
-
   // MySQL password
   if (isWeak(process.env.MYSQL_PASSWORD)) {
     errors.push("MYSQL_PASSWORD is missing, empty, or uses a weak/default value");

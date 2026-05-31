@@ -133,7 +133,9 @@ export class InboxRepository {
     const page = Math.max(1, query.page || 1);
     const pageSize = Math.min(100, Math.max(1, query.pageSize || 20));
     const offset = (page - 1) * pageSize;
-    const sortBy = query.sortBy || "created_at";
+    const allowedSortColumns = new Set(["created_at", "updated_at", "priority", "status", "due_at", "scheduled_at"]);
+    const rawSortBy = query.sortBy || "created_at";
+    const sortBy = allowedSortColumns.has(rawSortBy) ? rawSortBy : "created_at";
     const sortOrder = query.sortOrder === "asc" ? "ASC" : "DESC";
 
     const [countRows, dataRows] = await Promise.all([
@@ -151,7 +153,27 @@ export class InboxRepository {
   }
 
   /**
-   * 更新状态
+   * 更新状态（带条件检查，用于防止 TOCTOU 竞态）
+   * 返回受影响的行数（0 表示条件不满足）
+   */
+  async updateStatusIf(id: string, status: string, expectedStatuses: string[], completedAt?: number): Promise<number> {
+    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
+    const adapter = await getMySQLAdapter();
+
+    const placeholders = expectedStatuses.map(() => "?").join(", ");
+    const params = completedAt
+      ? [status, completedAt, id, ...expectedStatuses]
+      : [status, id, ...expectedStatuses];
+    const sql = completedAt
+      ? `UPDATE inbox_items SET status = ?, completed_at = ? WHERE id = ? AND status IN (${placeholders})`
+      : `UPDATE inbox_items SET status = ? WHERE id = ? AND status IN (${placeholders})`;
+
+    const result = await adapter.execute(sql, params);
+    return (result as any)?.affectedRows ?? 0;
+  }
+
+  /**
+   * 更新状态（无条件，仅用于内部系统回调等受控场景）
    */
   async updateStatus(id: string, status: string, completedAt?: number): Promise<void> {
     const { getMySQLAdapter } = await import("../db/mysql-adapter.js");

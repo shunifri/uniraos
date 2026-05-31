@@ -73,40 +73,84 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
     defineSystemSkill({
       name: "graph_path",
       visible: true,
-      description: "查找知识图谱中两个概念之间的最短路径。参数: source(string), target(string)",
+      description: "查找知识图谱中两个概念之间的最短路径。参数: source(string), target(string), owner?(string, 默认当前用户)",
       paramSchema: {
         properties: {
           source: { type: "string", description: "起始节点标签" },
           target: { type: "string", description: "目标节点标签" },
+          owner: { type: "string", description: "知识图谱所属用户（默认当前用户）" },
         },
         required: ["source", "target"],
       },
       handler: async (params) => {
-        const gm = getGraphManager();
+        const owner = (params.owner as string) || getCurrentUserId();
+        const gm = getGraphManager(owner);
         if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
+
+        // 获取允许的文档 ID 列表用于结果过滤
+        const kb = getKnowledgeBase(owner);
+        const ownDocIds = await kb.getAllDocIds();
+        const shareRepo = ShareRepository.getInstance();
+        const userRoles = await getUserRoles(owner);
+        const roleIds = userRoles.map(r => r.id);
+        const userDept = await getUserDepartment(owner);
+        const deptPath = userDept?.path || "/";
+        const sharedRules = await shareRepo.getSharedToUser(owner, roleIds, deptPath);
+        const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
+        const sharedDocIds = kbRules.map(rule => rule.resourceId);
+        const allowedDocIds = new Set([...ownDocIds, ...sharedDocIds]);
+
         const result = await gm.getPath(params.source as string, params.target as string);
         if (!result) return { success: true, data: { found: false, message: "未找到路径" } };
-        return { success: true, data: { found: true, pathLength: result.path.length, path: result.path.map((n: any) => n.label), edges: result.edges.length } };
+
+        // 过滤路径中的节点：kb_document 节点必须属于 allowedDocIds
+        const filteredPath = result.path.filter((n: any) => {
+          if (!n.tags?.some((t: string) => t === 'kb_document')) return true;
+          return allowedDocIds.size === 0 || [...allowedDocIds].some((id: string) => n.id.includes(id));
+        });
+
+        return { success: true, data: { found: true, pathLength: filteredPath.length, path: filteredPath.map((n: any) => n.label), edges: result.edges.length } };
       },
     }),
 
     defineSystemSkill({
       name: "graph_communities",
       visible: true,
-      description: "查看知识图谱的社区结构。参数: rebuild?(boolean)",
+      description: "查看知识图谱的社区结构。参数: rebuild?(boolean), owner?(string, 默认当前用户)",
       paramSchema: {
         properties: {
           rebuild: { type: "boolean", description: "是否重建社区（默认 false）" },
+          owner: { type: "string", description: "知识图谱所属用户（默认当前用户）" },
         },
       },
       handler: async (params) => {
-        const gm = getGraphManager();
+        const owner = (params.owner as string) || getCurrentUserId();
+        const gm = getGraphManager(owner);
         if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
+
+        // 获取允许的文档 ID 列表用于结果过滤
+        const kb = getKnowledgeBase(owner);
+        const ownDocIds = await kb.getAllDocIds();
+        const shareRepo = ShareRepository.getInstance();
+        const userRoles = await getUserRoles(owner);
+        const roleIds = userRoles.map(r => r.id);
+        const userDept = await getUserDepartment(owner);
+        const deptPath = userDept?.path || "/";
+        const sharedRules = await shareRepo.getSharedToUser(owner, roleIds, deptPath);
+        const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
+        const sharedDocIds = kbRules.map(rule => rule.resourceId);
+        const allowedDocIds = new Set([...ownDocIds, ...sharedDocIds]);
+
         if (params.rebuild) await gm.rebuildCommunities();
         const { communities, stats } = await gm.getCommunities();
-        const commList = [...communities.entries()].map(([id, nodeIds]: [number, string[]]) => ({
-          id, size: nodeIds.length, nodes: nodeIds.slice(0, 10),
-        }));
+        const commList = [...communities.entries()].map(([id, nodeIds]: [number, string[]]) => {
+          const filteredNodes = nodeIds.filter((nid: string) => {
+            // 非 kb_document 节点直接允许
+            if (!nid.startsWith('kb_doc_')) return true;
+            return allowedDocIds.size === 0 || [...allowedDocIds].some((docId: string) => nid.includes(docId));
+          });
+          return { id, size: filteredNodes.length, nodes: filteredNodes.slice(0, 10) };
+        });
         return { success: true, data: { ...stats, communities: commList } };
        },
      }),
@@ -114,10 +158,15 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
      defineSystemSkill({
        name: "graph_deduplicate",
        visible: true,
-       description: "知识图谱节点去重，合并相同标签的节点并转移关系。",
-       paramSchema: { properties: {} },
-       handler: async () => {
-         const gm = getGraphManager();
+       description: "知识图谱节点去重，合并相同标签的节点并转移关系。参数: owner?(string, 默认当前用户)",
+       paramSchema: {
+         properties: {
+           owner: { type: "string", description: "知识图谱所属用户（默认当前用户）" },
+         },
+       },
+       handler: async (params) => {
+         const owner = (params.owner as string) || getCurrentUserId();
+         const gm = getGraphManager(owner);
          if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
          const store = await gm.getStore();
          const result = store.deduplicateNodes();

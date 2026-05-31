@@ -18,10 +18,13 @@ import connectionsRoutes from "./connections-routes.js";
 import { createFormRoutes } from "./form-routes.js";
 import workflowFormRoutes from "./workflow-form-routes.js";
 import workflowTaskRoutes from "./workflow-task-routes.js";
+import workflowDefinitionRoutes from "./workflow-definition-routes.js";
+import docsRoutes from "./docs-routes.js";
 import formValidationRoutes from "./form-validation-routes.js";
 import inboxRoutes from "../inbox/inbox-routes.js";
 import schedulerRoutes from "../scheduler/scheduler-routes.js";
 import healthRoutes from "./health-routes.js";
+import { createAppRoutes } from "./app-routes.js";
 
 export type { RouteDependencies } from "./types.js";
 import type { RouteDependencies } from "./types.js";
@@ -44,8 +47,11 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
   app.use("/api", createFormRoutes(deps));
   app.use("/api", workflowFormRoutes);
   app.use("/api", workflowTaskRoutes);
+  app.use("/api", workflowDefinitionRoutes);
+  app.use("/api", docsRoutes);
   app.use("/api", formValidationRoutes);
   app.use("/api", inboxRoutes);
   app.use("/api", schedulerRoutes);
   app.use("/api", healthRoutes);
+  app.use("/api", createAppRoutes(deps));
 }

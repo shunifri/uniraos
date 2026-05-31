@@ -12,8 +12,8 @@ vi.mock("@/i18n", () => ({
 
 vi.mock("@/store/auth", () => ({
   useAuthStore: Object.assign(
-    (selector: any) => selector({ token: "test", user: { id: "1", username: "u", displayName: "U", roles: [] }, isAdmin: false, logout: vi.fn() }),
-    { getState: () => ({ token: "test", user: { id: "1", username: "u", displayName: "U", roles: [] }, isAdmin: false, logout: vi.fn() }) }
+    (selector: any) => selector({ token: "test", user: { id: "1", username: "u", displayName: "U", roles: [] }, isAdmin: false, logout: vi.fn(), hasPermission: () => true, isAnonymous: false }),
+    { getState: () => ({ token: "test", user: { id: "1", username: "u", displayName: "U", roles: [] }, isAdmin: false, logout: vi.fn(), hasPermission: () => true, isAnonymous: false }) }
   ),
 }));
 

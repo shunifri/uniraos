@@ -249,7 +249,8 @@ export async function testConnection(
 
     return { success: true, message: 'Connection successful' };
   } catch (error: any) {
-    return { success: false, message: error.message };
+    console.error('[database-connector] testConnection failed:', error);
+    return { success: false, message: 'Connection failed' };
   }
 }
 
@@ -303,6 +304,7 @@ export async function testConnectionConfig(
     }
     return { success: true, message: 'Connection successful' };
   } catch (error: any) {
-    return { success: false, message: error.message };
+    console.error('[database-connector] testConnectionConfig failed:', error);
+    return { success: false, message: 'Connection failed' };
   }
 }

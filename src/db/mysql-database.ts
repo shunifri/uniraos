@@ -560,14 +560,8 @@ export const MIGRATIONS: Migration[] = [
         ('role_viewer', 'perm_menu_chat_read'),
         ('role_viewer', 'perm_menu_knowledge_read');
 
-      -- 创建默认管理员用户（密码：admin123）
-      -- 密码哈希使用 scrypt: salt:hash 格式
-      INSERT INTO users (id, username, display_name, password_hash, department_id, status) VALUES
-        ('user_admin', 'admin', '系统管理员', '907d4a34227f0795be4d8eb490e5a3f4:7e641dc3d44e5e46318b7a7b5a3cbd272b983917a34ee4b47c5aad38ddfcf1c758e10f92aa487f3637efedb91f161d3468356dcbf913a0f408e00f707a8139f5', 'dept_root', 'active');
-
-      -- 给管理员分配admin角色
-      INSERT INTO user_roles (user_id, role_id) VALUES
-        ('user_admin', 'role_admin');
+      -- 默认管理员用户由应用启动时的 ensureAdminExists() 创建，使用随机密码
+      -- 避免在 migration 中硬编码密码
     `,
     down: `
       -- 删除所有表（按依赖顺序逆序）
@@ -710,7 +704,7 @@ export const MIGRATIONS: Migration[] = [
         value TEXT COMMENT '变量值',
         type VARCHAR(32) COMMENT '变量类型：string/number/boolean/json/date',
         INDEX idx_workflow_var_instance (instance_id),
-        INDEX idx_workflow_var_name (instance_id, name),
+        UNIQUE KEY idx_workflow_var_name (instance_id, name),
         FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工作流变量表';
 
@@ -826,8 +820,8 @@ export const MIGRATIONS: Migration[] = [
 
       CREATE TABLE IF NOT EXISTS workflow_form_instances (
         id VARCHAR(36) PRIMARY KEY COMMENT '快照ID',
-        instance_id VARCHAR(36) NOT NULL COMMENT '流程实例ID',
-        task_id VARCHAR(36) COMMENT '任务ID',
+        instance_id BIGINT UNSIGNED NOT NULL COMMENT '流程实例ID',
+        task_id BIGINT UNSIGNED COMMENT '任务ID',
         form_id VARCHAR(36) NOT NULL COMMENT '表单ID',
         form_version INT NOT NULL COMMENT '表单版本',
         schema_snapshot JSON NOT NULL COMMENT 'Schema快照',
@@ -937,6 +931,132 @@ export const MIGRATIONS: Migration[] = [
       SET FOREIGN_KEY_CHECKS = 0;
       ALTER TABLE workflow_tasks MODIFY COLUMN instance_id BIGINT NOT NULL COMMENT '流程实例ID';
       SET FOREIGN_KEY_CHECKS = 1;
+    `
+  },
+  {
+    version: 14,
+    name: 'add_kb_collections',
+    up: `
+      -- 1. 创建知识库集合表
+      CREATE TABLE IF NOT EXISTS kb_collections (
+        id VARCHAR(64) PRIMARY KEY COMMENT '集合ID',
+        name VARCHAR(200) NOT NULL COMMENT '集合名称',
+        description VARCHAR(500) DEFAULT '' COMMENT '集合描述',
+        owner_id VARCHAR(64) NOT NULL COMMENT '所有者ID',
+        created_at BIGINT NOT NULL COMMENT '创建时间',
+        updated_at BIGINT COMMENT '更新时间',
+        INDEX idx_kb_collections_owner (owner_id) COMMENT '所有者索引',
+        UNIQUE KEY uk_kb_collections_name_owner (name, owner_id) COMMENT '用户内集合名唯一'
+      ) COMMENT='知识库集合';
+
+      -- 2. 给 kb_documents 添加 collection_id 列
+      ALTER TABLE kb_documents
+        ADD COLUMN collection_id VARCHAR(64) DEFAULT NULL COMMENT '所属知识库集合ID' AFTER owner_id,
+        ADD INDEX idx_kb_documents_collection (collection_id) COMMENT '集合索引',
+        ADD FOREIGN KEY (collection_id) REFERENCES kb_collections(id) ON DELETE SET NULL;
+
+      -- 3. 为每个现有 owner 创建默认知识库
+      INSERT INTO kb_collections (id, name, description, owner_id, created_at)
+      SELECT DISTINCT CONCAT('kb_default_', owner_id), '默认知识库', '系统自动创建的默认知识库', owner_id, UNIX_TIMESTAMP() * 1000
+      FROM kb_documents;
+
+      -- 4. 将现有文档关联到默认知识库
+      UPDATE kb_documents d
+      JOIN kb_collections c ON c.owner_id = d.owner_id AND c.name = '默认知识库'
+      SET d.collection_id = c.id;
+    `,
+    down: `
+      ALTER TABLE kb_documents DROP FOREIGN KEY fk_kb_documents_collection;
+      ALTER TABLE kb_documents DROP COLUMN collection_id;
+      DROP TABLE IF EXISTS kb_collections;
+    `
+  },
+  {
+    version: 15,
+    name: 'add_pending_confirms',
+    up: `
+      CREATE TABLE IF NOT EXISTS pending_confirms (
+        confirm_id VARCHAR(32) PRIMARY KEY COMMENT '确认ID',
+        conversation_id VARCHAR(64) NOT NULL COMMENT '对话ID',
+        user_id VARCHAR(64) NOT NULL COMMENT '用户ID',
+        confirm_data JSON NOT NULL COMMENT '确认数据（表单定义等）',
+        response_data JSON DEFAULT NULL COMMENT '用户响应数据',
+        status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '状态: pending/resolved/expired',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间（毫秒）',
+        resolved_at BIGINT DEFAULT NULL COMMENT '解决时间（毫秒）',
+        INDEX idx_pending_confirms_conv (conversation_id) COMMENT '对话索引',
+        INDEX idx_pending_confirms_user (user_id) COMMENT '用户索引',
+        INDEX idx_pending_confirms_status (status) COMMENT '状态索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='待处理的用户确认';
+    `,
+    down: `
+      DROP TABLE IF EXISTS pending_confirms;
+    `
+  },
+  {
+    version: 16,
+    name: 'add_evolution_tables',
+    up: `
+      CREATE TABLE IF NOT EXISTS evolution_generations (
+        id VARCHAR(36) PRIMARY KEY COMMENT '生成记录ID',
+        skill_name VARCHAR(200) NOT NULL COMMENT 'Skill名称',
+        generated_by VARCHAR(200) NOT NULL COMMENT '生成者',
+        depth INT NOT NULL COMMENT '生成深度',
+        created_at BIGINT NOT NULL COMMENT '创建时间（毫秒）',
+        approved TINYINT NOT NULL DEFAULT 0 COMMENT '是否已审批',
+        data TEXT COMMENT '扩展数据JSON',
+        INDEX idx_ev_gen_skill (skill_name) COMMENT 'Skill索引',
+        INDEX idx_ev_gen_created (created_at) COMMENT '时间索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Skill生成历史';
+
+      CREATE TABLE IF NOT EXISTS evolution_violations (
+        id VARCHAR(36) PRIMARY KEY COMMENT '违规记录ID',
+        constraint_id VARCHAR(200) NOT NULL COMMENT '约束ID',
+        description TEXT NOT NULL COMMENT '违规描述',
+        blocking TINYINT NOT NULL DEFAULT 1 COMMENT '是否阻断',
+        skill_name VARCHAR(200) NOT NULL COMMENT 'Skill名称',
+        detected_at BIGINT NOT NULL COMMENT '检测时间（毫秒）',
+        INDEX idx_ev_viol_constraint (constraint_id) COMMENT '约束索引',
+        INDEX idx_ev_viol_detected (detected_at) COMMENT '时间索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Red Line违规记录';
+
+      CREATE TABLE IF NOT EXISTS evolution_approvals (
+        id VARCHAR(36) PRIMARY KEY COMMENT '审批记录ID',
+        name VARCHAR(200) NOT NULL COMMENT 'Skill名称',
+        description TEXT NOT NULL COMMENT '描述',
+        code LONGTEXT COMMENT '代码',
+        capabilities TEXT COMMENT '能力列表JSON',
+        generated_by VARCHAR(200) NOT NULL COMMENT '生成者',
+        depth INT NOT NULL COMMENT '生成深度',
+        created_at BIGINT NOT NULL COMMENT '创建时间（毫秒）',
+        status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '状态: pending/approved/rejected',
+        status_updated_at BIGINT COMMENT '状态更新时间（毫秒）',
+        INDEX idx_ev_app_status (status) COMMENT '状态索引',
+        INDEX idx_ev_app_created (created_at) COMMENT '时间索引'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Skill审批记录';
+    `,
+    down: `
+      DROP TABLE IF EXISTS evolution_approvals;
+      DROP TABLE IF EXISTS evolution_violations;
+      DROP TABLE IF EXISTS evolution_generations;
+    `
+  },
+  {
+    version: 17,
+    name: 'add_pending_confirms_expires_and_missing_indexes',
+    up: `
+      ALTER TABLE pending_confirms ADD COLUMN expires_at BIGINT DEFAULT NULL COMMENT '过期时间（毫秒）';
+      CREATE INDEX idx_pending_confirms_expires ON pending_confirms(expires_at);
+      CREATE INDEX idx_workflow_tasks_instance ON workflow_tasks(instance_id);
+      CREATE INDEX idx_workflow_tasks_node ON workflow_tasks(instance_id, node_id, status);
+      CREATE INDEX idx_form_instances_def ON form_instances(definition_id);
+    `,
+    down: `
+      ALTER TABLE pending_confirms DROP COLUMN expires_at;
+      DROP INDEX idx_pending_confirms_expires ON pending_confirms;
+      DROP INDEX idx_workflow_tasks_instance ON workflow_tasks;
+      DROP INDEX idx_workflow_tasks_node ON workflow_tasks;
+      DROP INDEX idx_form_instances_def ON form_instances;
     `
   }
 ];

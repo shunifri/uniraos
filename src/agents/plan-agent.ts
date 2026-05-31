@@ -16,6 +16,7 @@ import type {
   AgentStep,
 } from "./types.js";
 import { ReactAgent } from "./react-agent.js";
+import { resolveParams, injectCalculateContext } from "../skills/meta-skills.js";
 
 export class PlanAgent implements Agent {
   readonly name: string;
@@ -72,6 +73,8 @@ export class PlanAgent implements Agent {
 
     // 执行计划
     const results: Array<{ step: number; success: boolean; data?: unknown; error?: string }> = [];
+    const stepResults: Record<string, unknown> = {};
+    stepResults["$input"] = input.context ?? { message: input.message };
     let iterations = 0;
 
     for (let i = 0; i < plan.steps.length; i++) {
@@ -86,7 +89,12 @@ export class PlanAgent implements Agent {
       });
 
       try {
-        const result = await this.deps.engine.execute(step.skill, step.params);
+        // 解析 $steps/$input 引用，并为 calculate 注入前序结果上下文
+        const resolvedParams = resolveParams(step.params ?? {}, stepResults, input.context ?? {});
+        const finalParams = injectCalculateContext(step.skill, resolvedParams, stepResults);
+        const result = await this.deps.engine.execute(step.skill, finalParams);
+        // 记录结果供后续步骤引用（以 skill 名作为 key，同名 skill 覆盖）
+        stepResults[step.skill] = result.data;
         results.push({ step: i + 1, success: result.success, data: result.data });
 
         steps.push({
@@ -180,6 +188,8 @@ export class PlanAgent implements Agent {
 
     // 执行计划阶段
     const results: Array<{ step: number; success: boolean; data?: unknown; error?: string }> = [];
+    const stepResults: Record<string, unknown> = {};
+    stepResults["$input"] = input.context ?? { message: input.message };
     for (let i = 0; i < plan.steps.length; i++) {
       const step = plan.steps[i];
 
@@ -196,7 +206,11 @@ export class PlanAgent implements Agent {
       };
 
       try {
-        const result = await this.deps.engine.execute(step.skill, step.params);
+        // 解析 $steps/$input 引用，并为 calculate 注入前序结果上下文
+        const resolvedParams = resolveParams(step.params ?? {}, stepResults, input.context ?? {});
+        const finalParams = injectCalculateContext(step.skill, resolvedParams, stepResults);
+        const result = await this.deps.engine.execute(step.skill, finalParams);
+        stepResults[step.skill] = result.data;
         results.push({ step: i + 1, success: result.success, data: result.data });
 
         yield {
@@ -277,10 +291,13 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
 规则:
 1. 每个步骤使用一个可用 Skill
 2. 步骤之间可以传递数据（后续步骤可引用前序结果）
-3. 最多 ${this.maxSteps} 个步骤
-4. 如果任务无法用现有 Skill 完成，返回 {"steps": [], "reason": "原因"}
-5. 对于简单的信息查询或整理任务，通常只需要使用 1-2 个步骤
-6. 确保每个步骤的 params 是有效的，符合该 Skill 的预期参数格式
+3. 引用前序结果时使用 $steps.skillName.field 格式，直接访问 result.data 中的字段
+   - 示例：若 app_designer 返回 { designId: "abc" }，后续步骤引用 "$steps.app_designer.designId"
+   - 【重要】不要写 "$steps.app_designer.data.designId"，$steps 已经直接指向 result.data
+4. 最多 ${this.maxSteps} 个步骤
+5. 如果任务无法用现有 Skill 完成，返回 {"steps": [], "reason": "原因"}
+6. 对于简单的信息查询或整理任务，通常只需要使用 1-2 个步骤
+7. 确保每个步骤的 params 是有效的，符合该 Skill 的预期参数格式
 
 只输出 JSON，不要其他内容。`;
 

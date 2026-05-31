@@ -106,7 +106,7 @@ The function should implement the described functionality.`;
 
     // 6a. If requires approval: submit for approval
     if (action.requiresApproval) {
-      const approvalId = this.controller.submitForApproval(
+      const approvalId = await this.controller.submitForApproval(
         skillName,
         description,
         generatedCode,

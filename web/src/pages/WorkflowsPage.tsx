@@ -155,7 +155,7 @@ const WorkflowsPage: React.FC = () => {
     }
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (key: string) => {
     Modal.confirm({
       title: '确认删除',
       content: '删除后不可恢复，是否继续？',
@@ -163,15 +163,15 @@ const WorkflowsPage: React.FC = () => {
       okType: 'danger',
       onOk: async () => {
         try {
-          const res = await api.del<{ success: boolean; error?: string }>(`/api/workflow/definitions/${id}`);
+          const res = await api.del<{ success: boolean; error?: string }>(`/api/workflow/definitions/${key}`);
           if (res.success) {
             message.success('删除成功');
             fetchDefinitions();
           } else {
-            message.error('删除失败');
+            message.error(res.error || '删除失败');
           }
-        } catch {
-          message.error('请求失败');
+        } catch (e: any) {
+          message.error(e.message || '请求失败');
         }
       },
     });
@@ -267,7 +267,7 @@ const WorkflowsPage: React.FC = () => {
             { key: 'view', label: '查看', icon: <EyeOutlined />, onClick: () => openView(record) },
             { key: 'edit', label: '编辑', icon: <EditOutlined />, onClick: () => openEdit(record) },
             { key: 'test', label: '测试', icon: <RocketOutlined />, onClick: () => handleTest(record.key) },
-            { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: () => handleDelete(record.id) },
+            { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: () => handleDelete(record.key) },
           ]}}>
             <Button size="small" icon={<MoreOutlined />}>更多</Button>
           </Dropdown>

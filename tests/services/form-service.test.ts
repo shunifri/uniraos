@@ -49,6 +49,18 @@ function initSchema(db: Database.Database) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS workflow_form_bindings (
+      id TEXT PRIMARY KEY,
+      definition_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      form_id TEXT NOT NULL,
+      form_version INTEGER DEFAULT -1,
+      is_required INTEGER DEFAULT 1,
+      mapping_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 
@@ -214,10 +226,25 @@ describe("Form Service", () => {
       });
       const updated = await updateFormInstance(created.id, {
         dataJson: { a: 2, b: 3 },
-        status: "submitted",
       });
       expect(updated.data_json).toEqual({ a: 2, b: 3 });
-      expect(updated.status).toBe("submitted");
+      expect(updated.status).toBe("draft");
+    });
+
+    it("should reject direct status update", async () => {
+      const def = await createFormDefinition({
+        key: "status-inst",
+        name: "Status Instance",
+        schemaJson: {},
+        createdBy: "user_1",
+      });
+      const created = await createFormInstance({
+        definitionId: def.id,
+        dataJson: {},
+      });
+      await expect(
+        updateFormInstance(created.id, { status: "submitted" })
+      ).rejects.toThrow("不能直接修改表单状态");
     });
 
     it("should handle submitted_by on update", async () => {
@@ -232,10 +259,9 @@ describe("Form Service", () => {
         dataJson: {},
       });
       const updated = await updateFormInstance(created.id, {
-        status: "submitted",
         submittedBy: "user_2",
       });
-      expect(updated.status).toBe("submitted");
+      expect(updated.status).toBe("draft");
       expect(updated.submitted_by).toBe("user_2");
     });
   });

@@ -113,9 +113,15 @@ router.get("/inbox/stream", requireAuth, (req, res) => {
  */
 router.get("/inbox/:id", requireAuth, async (req, res) => {
   try {
+    const userId = req.user!.id;
     const item = await getInboxService().getItem(req.params.id as string);
     if (!item) {
       res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    // 所有权检查：只能查看自己的 inbox item
+    if (item.userId !== userId) {
+      res.status(403).json({ success: false, error: "Forbidden" });
       return;
     }
     res.json({ success: true, data: item });
@@ -130,6 +136,16 @@ router.get("/inbox/:id", requireAuth, async (req, res) => {
  */
 router.post("/inbox/:id/read", requireAuth, async (req, res) => {
   try {
+    const userId = req.user!.id;
+    const item = await getInboxService().getItem(req.params.id as string);
+    if (!item) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (item.userId !== userId) {
+      res.status(403).json({ success: false, error: "Forbidden" });
+      return;
+    }
     await getInboxService().markAsRead(req.params.id as string);
     res.json({ success: true });
   } catch (error: any) {
@@ -143,6 +159,16 @@ router.post("/inbox/:id/read", requireAuth, async (req, res) => {
  */
 router.post("/inbox/:id/complete", requireAuth, async (req, res) => {
   try {
+    const userId = req.user!.id;
+    const item = await getInboxService().getItem(req.params.id as string);
+    if (!item) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (item.userId !== userId) {
+      res.status(403).json({ success: false, error: "Forbidden" });
+      return;
+    }
     const result = await getInboxService().completeItem(req.params.id as string, req.body);
     if (!result) {
       res.status(404).json({ success: false, error: "Not found" });
@@ -160,6 +186,16 @@ router.post("/inbox/:id/complete", requireAuth, async (req, res) => {
  */
 router.post("/inbox/:id/dismiss", requireAuth, async (req, res) => {
   try {
+    const userId = req.user!.id;
+    const item = await getInboxService().getItem(req.params.id as string);
+    if (!item) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
+    if (item.userId !== userId) {
+      res.status(403).json({ success: false, error: "Forbidden" });
+      return;
+    }
     await getInboxService().dismissItem(req.params.id as string);
     res.json({ success: true });
   } catch (error: any) {

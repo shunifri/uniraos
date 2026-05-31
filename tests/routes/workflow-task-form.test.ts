@@ -123,7 +123,8 @@ describe("Workflow Task Form Service", () => {
 
     expect(result.taskId).toBe(1);
     expect(result.schema).toEqual({ type: "object", properties: { days: { type: "number" } } });
-    expect(result.initialData).toEqual({});
+    // 自动从流程变量按字段名匹配回填（days 变量与表单字段名匹配）
+    expect(result.initialData).toEqual({ days: 5 });
     expect(result.mappingApplied).toBe(false);
     expect(result.binding.form_id).toBe("form-001");
   });

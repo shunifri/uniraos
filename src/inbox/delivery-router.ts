@@ -21,11 +21,20 @@ export class DeliveryRouter {
 
     // 决策 1: 紧急事件直接投递到 Chat（即使不在关联页面）
     if (item.priority === "urgent") {
+      if (relatedConversationId && userOnline) {
+        return {
+          channel: "chat",
+          timing: "immediate",
+          targetConversationId: relatedConversationId,
+          reason: "urgent_priority",
+        };
+      }
+      // 用户不在线时，回退到 email（如有）否则 inbox，避免落入未实现的 push 通道
       return {
-        channel: relatedConversationId && userOnline ? "chat" : "push",
+        channel: "email",
         timing: "immediate",
         targetConversationId: relatedConversationId,
-        reason: "urgent_priority",
+        reason: "urgent_priority_offline_fallback",
       };
     }
 

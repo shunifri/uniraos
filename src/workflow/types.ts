@@ -181,7 +181,7 @@ export interface WorkflowInstance {
 // ===== 任务（运行时） =====
 
 /** 任务状态 */
-export type TaskStatus = "pending" | "claimed" | "completed" | "cancelled";
+export type TaskStatus = "pending" | "claimed" | "completed" | "cancelled" | "error";
 
 /** 任务类型 */
 export type TaskType = "user_task" | "service_task";
@@ -308,6 +308,7 @@ export type ConnectionType =
 export interface ApprovalQueryParams {
   scope?: "my_pending" | "my_submitted" | "my_approved" | "all";
   workflowKey?: string;
+  definitionId?: number;
   status?: InstanceStatus | InstanceStatus[];
   starter?: string;
   assignee?: string;
@@ -340,13 +341,13 @@ export interface IWorkflowRepository {
 
   createInstance(inst: Omit<WorkflowInstance, "id" | "startedAt">): Promise<WorkflowInstance>;
   getInstanceById(id: number): Promise<WorkflowInstance | undefined>;
-  updateInstance(id: number, updates: Partial<WorkflowInstance>): Promise<void>;
+  updateInstance(id: number, updates: Partial<WorkflowInstance>, expectedStatus?: string): Promise<number>;
   listInstances(params?: ApprovalQueryParams): Promise<{ items: WorkflowInstance[]; total: number }>;
 
   createTask(task: Omit<WorkflowTask, "id" | "createdAt">): Promise<WorkflowTask>;
   getTaskById(id: number): Promise<WorkflowTask | undefined>;
   getActiveTaskByInstanceAndNode(instanceId: number, nodeId: string): Promise<WorkflowTask | undefined>;
-  updateTask(id: number, updates: Partial<WorkflowTask>): Promise<void>;
+  updateTask(id: number, updates: Partial<WorkflowTask>, expectedStatus?: string | string[]): Promise<number>;
   listTasks(params?: TaskQueryParams): Promise<{ items: WorkflowTask[]; total: number }>;
 
   setVariable(instanceId: number, name: string, value: unknown, type?: string): Promise<void>;

@@ -305,6 +305,9 @@ function validateWorkflowJson(json: unknown): { valid: boolean; error?: string }
         return { valid: false, error: `节点 ${node.id} 的 next 引用不存在的节点: ${node.next}` };
       }
     }
+    if (node.type === "end_event" && node.next) {
+      return { valid: false, error: `end_event 节点不应包含 next 字段` };
+    }
     if (node.type === "user_task" || node.type === "service_task") {
       if (typeof node.next === "string" && node.next) {
         if (!ids.has(node.next)) {
@@ -348,6 +351,42 @@ function validateWorkflowJson(json: unknown): { valid: boolean; error?: string }
       }
       if (typeof sc.value !== "string" || !sc.value) {
         return { valid: false, error: `starterConstraint 缺少 value` };
+      }
+    }
+  }
+
+  // 检查可达性：所有节点必须能从 start_event 到达
+  if (startEvents.length === 1) {
+    const reachable = new Set<string>();
+    const startId = startEvents[0].id as string;
+    const queue = [startId];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      const node = nodes.find((n) => n.id === id);
+      if (!node) continue;
+      if (typeof node.next === "string" && node.next) {
+        queue.push(node.next);
+      }
+      if (node.type === "exclusive_gateway" && Array.isArray(node.conditions)) {
+        for (const cond of node.conditions) {
+          if (typeof cond.next === "string" && cond.next) {
+            queue.push(cond.next);
+          }
+        }
+      }
+      if (node.type === "parallel_gateway" && Array.isArray(node.branches)) {
+        for (const branchId of node.branches) {
+          if (typeof branchId === "string" && branchId) {
+            queue.push(branchId);
+          }
+        }
+      }
+    }
+    for (const node of nodes) {
+      if (!reachable.has(node.id as string)) {
+        return { valid: false, error: `节点 ${node.id} 从开始事件不可达` };
       }
     }
   }

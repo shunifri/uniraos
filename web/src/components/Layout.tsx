@@ -10,6 +10,10 @@ import {
   Dropdown,
   Typography,
   theme,
+  Modal,
+  Form,
+  Input,
+  message,
 } from 'antd';
 import {
   ThunderboltOutlined,
@@ -31,6 +35,9 @@ import {
   AuditOutlined,
   CheckSquareOutlined,
   FormOutlined,
+  ForkOutlined,
+  AppstoreOutlined,
+  LockOutlined,
 } from '@ant-design/icons';
 import { useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/theme';
@@ -38,6 +45,7 @@ import { useAuthStore } from '@/store/auth';
 import { useInboxStore } from '@/store/inbox-store';
 import InboxBadge from '@/components/inbox/InboxBadge';
 import { useEffect } from 'react';
+import { api } from '@/api';
 
 const { Header, Content } = AntLayout;
 const { Text } = Typography;
@@ -56,6 +64,9 @@ const Layout: React.FC = () => {
   const logout = useAuthStore((s) => s.logout);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const { token: antToken } = theme.useToken();
+  const [showPwdModal, setShowPwdModal] = useState(false);
+  const [pwdForm] = Form.useForm();
+  const [pwdLoading, setPwdLoading] = useState(false);
 
   const isDark = themeMode === 'dark';
   const selectedKey = location.pathname.split('/')[1] || 'chat';
@@ -73,7 +84,9 @@ const Layout: React.FC = () => {
     federation: 'menu:federation.read',
     connections: 'connection.read',
     approvals: 'workflow:task.read',
+    workflows: 'workflow:definition.read',
     forms: 'form:definition.read',
+    apps: 'menu:apps.read',
     admin: 'menu:admin.read',
   };
 
@@ -135,9 +148,19 @@ const Layout: React.FC = () => {
       label: '审批中心',
     },
     {
+      key: 'workflows',
+      icon: <ForkOutlined />,
+      label: '流程管理',
+    },
+    {
       key: 'forms',
       icon: <FormOutlined />,
       label: '表单中心',
+    },
+    {
+      key: 'apps',
+      icon: <AppstoreOutlined />,
+      label: '应用中心',
     },
 
     {
@@ -195,6 +218,11 @@ const Layout: React.FC = () => {
     },
     { type: 'divider' as const },
     {
+      key: 'change_password',
+      icon: <LockOutlined />,
+      label: t('change_password'),
+    },
+    {
       key: 'logout',
       icon: <LogoutOutlined />,
       label: t('logout'),
@@ -205,6 +233,28 @@ const Layout: React.FC = () => {
   const handleUserMenuClick = ({ key }: { key: string }) => {
     if (key === 'logout') {
       handleLogout();
+    } else if (key === 'change_password') {
+      setShowPwdModal(true);
+      pwdForm.resetFields();
+    }
+  };
+
+  const handleChangePassword = async (values: any) => {
+    try {
+      setPwdLoading(true);
+      await api.post('/api/user/password', {
+        oldPassword: values.oldPassword,
+        newPassword: values.newPassword,
+      });
+      setShowPwdModal(false);
+      pwdForm.resetFields();
+      message.success('密码修改成功，请重新登录');
+      logout();
+      navigate('/login');
+    } catch (e: any) {
+      message.error(e?.error || '修改密码失败');
+    } finally {
+      setPwdLoading(false);
     }
   };
 
@@ -282,6 +332,40 @@ const Layout: React.FC = () => {
           </Dropdown>
         </Space>
       </Header>
+
+      <Modal
+        title={t('change_password')}
+        open={showPwdModal}
+        onCancel={() => { setShowPwdModal(false); pwdForm.resetFields(); }}
+        onOk={() => pwdForm.submit()}
+        confirmLoading={pwdLoading}
+      >
+        <Form form={pwdForm} layout="vertical" onFinish={handleChangePassword}>
+          <Form.Item name="oldPassword" label={t('old_password')} rules={[{ required: true }]}>
+            <Input.Password />
+          </Form.Item>
+          <Form.Item name="newPassword" label={t('new_password')} rules={[{ required: true, min: 6, max: 100 }]}>
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="confirmPassword"
+            label={t('confirm_password')}
+            rules={[
+              { required: true },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('newPassword') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error(t('password_mismatch')));
+                },
+              }),
+            ]}
+          >
+            <Input.Password />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Content style={{ padding: 24 }}>
         <Outlet />

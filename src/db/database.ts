@@ -673,7 +673,7 @@ function runMigrations(db: Database.Database): void {
           FOREIGN KEY (instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_workflow_var_instance ON workflow_variables(instance_id);
-        CREATE INDEX IF NOT EXISTS idx_workflow_var_name ON workflow_variables(instance_id, name);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_var_name ON workflow_variables(instance_id, name);
 
         CREATE TABLE IF NOT EXISTS connections (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -816,8 +816,8 @@ function runMigrations(db: Database.Database): void {
 
         CREATE TABLE IF NOT EXISTS workflow_form_instances (
           id TEXT PRIMARY KEY,
-          instance_id TEXT NOT NULL,
-          task_id TEXT,
+          instance_id INTEGER NOT NULL,
+          task_id INTEGER,
           form_id TEXT NOT NULL,
           form_version INTEGER NOT NULL,
           schema_snapshot TEXT NOT NULL,
@@ -1071,6 +1071,108 @@ function runMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_app_designs_owner ON app_designs(owner_id);
         CREATE INDEX IF NOT EXISTS idx_app_designs_status ON app_designs(status);
       `);
+    },
+    // v19: 知识库集合支持
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS kb_collections (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          owner_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          updated_at INTEGER DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_collections_owner ON kb_collections(owner_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_collections_name_owner ON kb_collections(name, owner_id);
+      `);
+      db.exec(`
+        ALTER TABLE kb_documents ADD COLUMN collection_id TEXT DEFAULT NULL;
+        CREATE INDEX IF NOT EXISTS idx_kb_documents_collection ON kb_documents(collection_id);
+      `);
+      // 为每个现有 owner 创建默认知识库
+      db.exec(`
+        INSERT INTO kb_collections (id, name, description, owner_id, created_at)
+        SELECT DISTINCT 'kb_default_' || owner_id, '默认知识库', '系统自动创建的默认知识库', owner_id, unixepoch() * 1000
+        FROM kb_documents;
+      `);
+      // 将现有文档关联到默认知识库
+      db.exec(`
+        UPDATE kb_documents
+        SET collection_id = (
+          SELECT id FROM kb_collections c WHERE c.owner_id = kb_documents.owner_id AND c.name = '默认知识库'
+        );
+      `);
+    },
+    // v20: 待处理的用户确认（pending_confirms），支持刷新/重启后恢复表单交互
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_confirms (
+          confirm_id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          confirm_data TEXT NOT NULL,
+          response_data TEXT DEFAULT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','expired')),
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          resolved_at INTEGER DEFAULT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_confirms_conv ON pending_confirms(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_pending_confirms_user ON pending_confirms(user_id);
+        CREATE INDEX IF NOT EXISTS idx_pending_confirms_status ON pending_confirms(status);
+      `);
+    },
+    // v21: evolution 控制器表（从独立的 evolution.db 迁入主数据库）
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS evolution_generations (
+          id TEXT PRIMARY KEY,
+          skill_name TEXT NOT NULL,
+          generated_by TEXT NOT NULL,
+          depth INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          approved INTEGER NOT NULL DEFAULT 0,
+          data TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ev_gen_skill ON evolution_generations(skill_name);
+        CREATE INDEX IF NOT EXISTS idx_ev_gen_created ON evolution_generations(created_at);
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS evolution_violations (
+          id TEXT PRIMARY KEY,
+          constraint_id TEXT NOT NULL,
+          description TEXT NOT NULL,
+          blocking INTEGER NOT NULL DEFAULT 1,
+          skill_name TEXT NOT NULL,
+          detected_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ev_viol_constraint ON evolution_violations(constraint_id);
+        CREATE INDEX IF NOT EXISTS idx_ev_viol_detected ON evolution_violations(detected_at);
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS evolution_approvals (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL,
+          code TEXT,
+          capabilities TEXT,
+          generated_by TEXT NOT NULL,
+          depth INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          status_updated_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_ev_app_status ON evolution_approvals(status);
+        CREATE INDEX IF NOT EXISTS idx_ev_app_created ON evolution_approvals(created_at);
+      `);
+    },
+    // v22: pending_confirms 添加过期时间 + 补充缺失的查询索引
+    () => {
+      try { db.exec(`ALTER TABLE pending_confirms ADD COLUMN expires_at INTEGER DEFAULT NULL`); } catch (_) { }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_confirms_expires ON pending_confirms(expires_at)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_tasks_instance ON workflow_tasks(instance_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_tasks_node ON workflow_tasks(instance_id, node_id, status)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_form_instances_def ON form_instances(definition_id)`);
     },
   ];
 

@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { Card, Button, Tag, Space, Spin, Empty, Collapse, Descriptions, message } from "antd";
+import { Card, Button, Tag, Space, Spin, Empty, Collapse, Descriptions, message, Modal, Input, Select } from "antd";
 import {
   ThunderboltOutlined,
   FormOutlined,
@@ -16,6 +16,7 @@ import {
   LinkOutlined,
   BuildOutlined,
   RocketOutlined,
+  PlusOutlined,
 } from "@ant-design/icons";
 import { api } from "@/api";
 
@@ -50,11 +51,12 @@ interface DesignRelationship {
 interface DesignData {
   name: string;
   description: string;
+  systemPrompt?: string;
   components: {
     skills: Array<{ name: string; description: string; logic?: string }>;
     forms: Array<{ key: string; name: string; fields: DesignField[] }>;
     workflows: Array<{ key: string; name: string }>;
-    knowledgeBases: Array<{ name: string; documentTypes: string[] }>;
+    knowledgeBases: Array<{ name: string; documentTypes: string[]; collectionId?: string }>;
   };
   relationships: DesignRelationship[];
 }
@@ -103,6 +105,15 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
   const [expanded, setExpanded] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState<any | null>(null);
+  const [modifyOpen, setModifyOpen] = useState(false);
+  const [modifyInput, setModifyInput] = useState("");
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptInput, setPromptInput] = useState("");
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [creatingKb, setCreatingKb] = useState<string | null>(null);
+  const [relEditorOpen, setRelEditorOpen] = useState(false);
+  const [relDraft, setRelDraft] = useState<DesignRelationship[]>([]);
+  const [savingRels, setSavingRels] = useState(false);
 
   useEffect(() => {
     if (!designId) {
@@ -136,6 +147,43 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
     setLoading(false);
   };
 
+  const handleCreateKbCollection = async (kbName: string) => {
+    if (!designId) return;
+    setCreatingKb(kbName);
+    try {
+      // 1. 创建知识库集合
+      const createRes = await api.post<any>("/api/execute", {
+        skillName: "kb_collection_create",
+        params: { name: kbName },
+      });
+      if (!createRes.success) {
+        message.error(createRes.error || "创建知识库集合失败");
+        setCreatingKb(null);
+        return;
+      }
+      const collectionId = createRes.data?.collection?.id;
+      if (!collectionId) {
+        message.error("创建知识库集合成功但未返回 ID");
+        setCreatingKb(null);
+        return;
+      }
+      // 2. 关联到设计方案
+      const linkRes = await api.post<any>("/api/execute", {
+        skillName: "app_designer",
+        params: { action: "link_kb_collection", designId, kbName, collectionId },
+      });
+      if (linkRes.success) {
+        message.success(`知识库集合「${kbName}」已创建并关联`);
+        loadDesign();
+      } else {
+        message.error(linkRes.error || "关联知识库失败");
+      }
+    } catch (err: any) {
+      message.error(err.message || "请求失败");
+    }
+    setCreatingKb(null);
+  };
+
   if (loading) {
     return (
       <Card size="small" style={{ maxWidth: 600, margin: "8px 0" }}>
@@ -159,6 +207,7 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
     action === "create" ? "已创建" : action === "update" ? "已更新" : "预览";
 
   return (
+    <>
     <Card
       size="small"
       style={{ maxWidth: 640, margin: "8px 0", borderRadius: 12 }}
@@ -181,6 +230,15 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
     >
       <Descriptions column={1} size="small">
         <Descriptions.Item label="描述">{d.description || "-"}</Descriptions.Item>
+        <Descriptions.Item label="角色设定">
+          {d.systemPrompt ? (
+            <div style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#333", background: "#f5f5f5", padding: 8, borderRadius: 6, maxHeight: 120, overflow: "auto" }}>
+              {d.systemPrompt}
+            </div>
+          ) : (
+            <span style={{ color: "#999", fontSize: 12 }}>未设置自定义角色提示词</span>
+          )}
+        </Descriptions.Item>
       </Descriptions>
 
       <div style={{ marginTop: 8 }}>
@@ -221,7 +279,7 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
                         type="link"
                         icon={<EditOutlined />}
                         onClick={() => {
-                          window.open(`/forms/designer`, "_blank");
+                          window.open(`/forms/designer?key=${encodeURIComponent(f.key)}`, "_blank");
                         }}
                       >
                         设计
@@ -241,7 +299,7 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
                   <div key={w.key} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
                     <div style={{ fontWeight: 500 }}>
                       {w.name}{" "}
-                      <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => window.open(`/workflow`, "_blank")}>
+                      <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => window.open(`/workflow/designer/${encodeURIComponent(w.key)}`, "_blank")}>
                         查看
                       </Button>
                     </div>
@@ -256,11 +314,24 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
                   <div key={k.name} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
                     <div style={{ fontWeight: 500 }}>
                       {k.name}{" "}
-                      <Button size="small" type="link" icon={<LinkOutlined />} onClick={() => window.open(`/knowledge`, "_blank")}>
-                        上传
-                      </Button>
+                      {k.collectionId ? (
+                        <Button size="small" type="link" icon={<LinkOutlined />} onClick={() => window.open(`/knowledge?collectionId=${encodeURIComponent(k.collectionId || "")}`, "_blank")}>
+                          去上传
+                        </Button>
+                      ) : (
+                        <Button
+                          size="small"
+                          type="link"
+                          icon={<PlusOutlined />}
+                          loading={creatingKb === k.name}
+                          onClick={() => handleCreateKbCollection(k.name)}
+                        >
+                          创建分类
+                        </Button>
+                      )}
                     </div>
                     <div style={{ fontSize: 12, color: "#666" }}>文档类型: {k.documentTypes.join(", ")}</div>
+                    {k.collectionId && <div style={{ fontSize: 11, color: "#999" }}>集合 ID: {k.collectionId}</div>}
                   </div>
                 ))}
               </Collapse.Panel>
@@ -313,13 +384,21 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
                 size="small"
                 icon={<EditOutlined />}
                 onClick={() => {
-                  const input = window.prompt("请输入修改意见：");
-                  if (input) {
-                    message.info("请在对话中直接说：帮我修改 design_xxx，" + input);
-                  }
+                  setModifyInput("");
+                  setModifyOpen(true);
                 }}
               >
                 提出修改
+              </Button>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setPromptInput(d.systemPrompt || "");
+                  setPromptOpen(true);
+                }}
+              >
+                {d.systemPrompt ? "编辑角色设定" : "设置角色设定"}
               </Button>
               <Button size="small" icon={<FormOutlined />} onClick={() => window.open("/forms", "_blank")}>
                 表单中心
@@ -329,6 +408,16 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
               </Button>
               <Button size="small" icon={<BookOutlined />} onClick={() => window.open("/knowledge", "_blank")}>
                 知识库
+              </Button>
+              <Button
+                size="small"
+                icon={<LinkOutlined />}
+                onClick={() => {
+                  setRelDraft(d.relationships ? [...d.relationships] : []);
+                  setRelEditorOpen(true);
+                }}
+              >
+                配置关联
               </Button>
             </Space>
           </div>
@@ -349,6 +438,201 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
         </div>
       )}
     </Card>
+      <Modal
+        title="提出修改意见"
+        open={modifyOpen}
+        onOk={() => {
+          if (modifyInput.trim()) {
+            message.info("请在对话中直接说：帮我修改 design_xxx，" + modifyInput.trim());
+          }
+          setModifyOpen(false);
+        }}
+        onCancel={() => setModifyOpen(false)}
+        okText="确认"
+        cancelText="取消"
+      >
+        <Input
+          placeholder="请输入修改意见"
+          value={modifyInput}
+          onChange={(e) => setModifyInput(e.target.value)}
+          onPressEnter={() => {
+            if (modifyInput.trim()) {
+              message.info("请在对话中直接说：帮我修改 design_xxx，" + modifyInput.trim());
+            }
+            setModifyOpen(false);
+          }}
+          autoFocus
+        />
+      </Modal>
+
+      <Modal
+        title="编辑角色设定（系统提示词）"
+        open={promptOpen}
+        confirmLoading={savingPrompt}
+        onOk={async () => {
+          if (!designId) return;
+          setSavingPrompt(true);
+          try {
+            const result = await api.post<any>("/api/execute", {
+              skillName: "app_designer",
+              params: { action: "update_system_prompt", designId, systemPrompt: promptInput },
+            });
+            if (result.success) {
+              message.success("角色设定已保存");
+              setPromptOpen(false);
+              loadDesign();
+            } else {
+              message.error(result.error || "保存失败");
+            }
+          } catch (err: any) {
+            message.error(err.message || "请求失败");
+          }
+          setSavingPrompt(false);
+        }}
+        onCancel={() => setPromptOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        width={720}
+      >
+        <Input.TextArea
+          placeholder="请输入自定义角色提示词，例如：你是一名招生顾问，专门解答高等学历继续教育相关问题..."
+          value={promptInput}
+          onChange={(e) => setPromptInput(e.target.value)}
+          rows={8}
+          autoFocus
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: "#999" }}>
+          提示：此处设置的提示词会在用户与该应用对话时作为系统提示注入，优先级高于默认角色设定。
+        </div>
+      </Modal>
+
+      <Modal
+        title="配置组件关联关系"
+        open={relEditorOpen}
+        confirmLoading={savingRels}
+        onOk={async () => {
+          if (!designId) return;
+          setSavingRels(true);
+          try {
+            const result = await api.post<any>("/api/execute", {
+              skillName: "app_designer",
+              params: { action: "update_relationships", designId, relationships: relDraft },
+            });
+            if (result.success) {
+              message.success("关联关系已保存");
+              setRelEditorOpen(false);
+              loadDesign();
+            } else {
+              message.error(result.error || "保存失败");
+            }
+          } catch (err: any) {
+            message.error(err.message || "请求失败");
+          }
+          setSavingRels(false);
+        }}
+        onCancel={() => setRelEditorOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        width={720}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <Button
+            size="small"
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              setRelDraft([...relDraft, { from: "", to: "", type: "submits_to", description: "" }]);
+            }}
+          >
+            添加关联
+          </Button>
+        </div>
+        {relDraft.map((rel, idx) => (
+          <div key={idx} style={{ marginBottom: 16, padding: 12, background: "#fafafa", borderRadius: 8, border: "1px solid #f0f0f0" }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+              <Select
+                placeholder="来源组件"
+                value={rel.from || undefined}
+                onChange={(val) => {
+                  const next = [...relDraft];
+                  next[idx] = { ...rel, from: val };
+                  setRelDraft(next);
+                }}
+                style={{ width: 200 }}
+                options={components.map((c) => ({ label: `${typeLabels[c.type]}: ${c.name}`, value: `${c.type}:${c.key}` }))}
+                showSearch
+                filterOption={(input, option) => (option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
+              />
+              <span style={{ color: "#999" }}>→</span>
+              <Select
+                placeholder="目标组件"
+                value={rel.to || undefined}
+                onChange={(val) => {
+                  const next = [...relDraft];
+                  next[idx] = { ...rel, to: val };
+                  setRelDraft(next);
+                }}
+                style={{ width: 200 }}
+                options={components.map((c) => ({ label: `${typeLabels[c.type]}: ${c.name}`, value: `${c.type}:${c.key}` }))}
+                showSearch
+                filterOption={(input, option) => (option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
+              />
+              <Select
+                value={rel.type}
+                onChange={(val) => {
+                  const next = [...relDraft];
+                  next[idx] = { ...rel, type: val };
+                  setRelDraft(next);
+                }}
+                style={{ width: 130 }}
+                options={[
+                  { label: "submits_to (提交触发)", value: "submits_to" },
+                  { label: "triggers (触发)", value: "triggers" },
+                  { label: "calls (调用)", value: "calls" },
+                  { label: "binds (绑定)", value: "binds" },
+                  { label: "queries (查询)", value: "queries" },
+                  { label: "reads (读取)", value: "reads" },
+                  { label: "updates (更新)", value: "updates" },
+                  { label: "notifies (通知)", value: "notifies" },
+                  { label: "aggregates (聚合)", value: "aggregates" },
+                  { label: "validates (验证)", value: "validates" },
+                  { label: "transforms (转换)", value: "transforms" },
+                  { label: "filters (过滤)", value: "filters" },
+                ]}
+              />
+              <Button
+                size="small"
+                danger
+                onClick={() => {
+                  const next = [...relDraft];
+                  next.splice(idx, 1);
+                  setRelDraft(next);
+                }}
+              >
+                删除
+              </Button>
+            </div>
+            <Input
+              placeholder="关联描述（可选）"
+              value={rel.description || ""}
+              onChange={(e) => {
+                const next = [...relDraft];
+                next[idx] = { ...rel, description: e.target.value };
+                setRelDraft(next);
+              }}
+              size="small"
+              style={{ width: "100%" }}
+            />
+          </div>
+        ))}
+        {relDraft.length === 0 && (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无关联关系" />
+        )}
+        <div style={{ marginTop: 8, fontSize: 12, color: "#999" }}>
+          提示：选择来源组件和目标组件，类型说明：submits_to-表单提交后触发工作流，triggers-组件触发另一个组件，calls-调用，binds-绑定
+        </div>
+      </Modal>
+    </>
   );
 };
 

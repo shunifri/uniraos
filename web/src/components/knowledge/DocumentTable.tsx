@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Table, Tag, Space, Button, Popconfirm, Card, Switch, Typography } from "antd";
-import { EyeOutlined, DeleteOutlined, LoadingOutlined, ReloadOutlined, ShareAltOutlined } from "@ant-design/icons";
+import { Table, Tag, Space, Button, Popconfirm, Card, Switch, Typography, Modal, Select } from "antd";
+import { EyeOutlined, DeleteOutlined, LoadingOutlined, ReloadOutlined, ShareAltOutlined, FolderOpenOutlined } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
+import { useAuthStore } from "@/store/auth";
 import type { ColumnsType } from "antd/es/table";
 import type { KBDocument } from "./types";
 
@@ -9,6 +10,7 @@ const Text = Typography.Text;
 
 interface DocumentTableProps {
   documents: KBDocument[];
+  collections: Array<{ id: string; name: string }>;
   loading: boolean;
   onRefresh: () => void;
   onRebuild: () => void;
@@ -16,10 +18,12 @@ interface DocumentTableProps {
   onDelete: (docId: string) => void;
   onOpenShare: (doc: KBDocument) => void;
   onViewDoc: (docId: string, docName: string) => void;
+  onChangeCollection?: (docId: string, collectionId: string | null) => void;
 }
 
 export default function DocumentTable({
   documents,
+  collections,
   loading,
   onRefresh,
   onRebuild,
@@ -27,8 +31,17 @@ export default function DocumentTable({
   onDelete,
   onOpenShare,
   onViewDoc,
+  onChangeCollection,
 }: DocumentTableProps) {
   const t = useI18nStore((s) => s.t);
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const [changeCollectionModal, setChangeCollectionModal] = useState<{
+    open: boolean;
+    docId: string;
+    docName: string;
+    currentCollectionId?: string | null;
+  }>({ open: false, docId: "", docName: "" });
+  const [selectedCollection, setSelectedCollection] = useState<string | undefined>(undefined);
 
   const columns: ColumnsType<KBDocument> = [
     {
@@ -45,6 +58,20 @@ export default function DocumentTable({
           {name}
         </Text>
       ),
+    },
+    {
+      title: "来源",
+      key: "source",
+      width: 120,
+      render: (_: any, record: KBDocument) => {
+        const isShared = record.owner && record.owner !== currentUserId;
+        if (isShared) {
+          return <Tag color="blue" style={{ fontSize: 11 }}>共享</Tag>;
+        }
+        if (!record.collectionId) return <Text type="secondary" style={{ fontSize: 11 }}>—</Text>;
+        const collection = collections.find((c) => c.id === record.collectionId);
+        return <Tag style={{ fontSize: 11 }}>{collection?.name || "未知"}</Tag>;
+      },
     },
     {
       title: t("kb_tags"),
@@ -117,10 +144,27 @@ export default function DocumentTable({
     {
       title: t("actions"),
       key: "actions",
-      width: 110,
+      width: 140,
       render: (_: any, record: KBDocument) => (
         <Space size={0}>
           <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => onViewDoc(record.id, record.name)} />
+          {onChangeCollection && record.owner === currentUserId && (
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              title="修改分类"
+              onClick={() => {
+                setChangeCollectionModal({
+                  open: true,
+                  docId: record.id,
+                  docName: record.name,
+                  currentCollectionId: record.collectionId,
+                });
+                setSelectedCollection(record.collectionId || undefined);
+              }}
+            />
+          )}
           <Popconfirm title={t("confirm")} onConfirm={() => onDelete(record.id)}>
             <Button type="text" danger size="small" icon={<DeleteOutlined />} />
           </Popconfirm>
@@ -149,6 +193,26 @@ export default function DocumentTable({
         loading={loading}
         pagination={{ pageSize: 20 }}
       />
+      <Modal
+        title={`修改分类 — ${changeCollectionModal.docName}`}
+        open={changeCollectionModal.open}
+        onOk={() => {
+          onChangeCollection?.(changeCollectionModal.docId, selectedCollection || null);
+          setChangeCollectionModal({ open: false, docId: "", docName: "" });
+        }}
+        onCancel={() => setChangeCollectionModal({ open: false, docId: "", docName: "" })}
+        okText="确认"
+        cancelText="取消"
+      >
+        <Select
+          style={{ width: "100%", marginTop: 8 }}
+          placeholder="选择分类"
+          value={selectedCollection}
+          onChange={setSelectedCollection}
+          allowClear
+          options={collections.map((c) => ({ label: c.name, value: c.id }))}
+        />
+      </Modal>
     </Card>
   );
 }

@@ -44,16 +44,15 @@ export async function createSession(userId: string): Promise<{ token: string; ex
 
 /** 验证 token，返回用户（null 表示无效/过期） */
 export async function validateSession(token: string): Promise<User | null> {
-  if (!token) return null;
+  if (!token || token.length > 512) return null;
 
   let userId: string | null = null;
 
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
-    const now = Date.now();
     const rows: any[] = await adapter.query(
-      `SELECT user_id FROM sessions WHERE token = ? AND expires_at > ?`,
-      [token, now]
+      `SELECT user_id FROM sessions WHERE token = ? AND expires_at > UNIX_TIMESTAMP() * 1000`,
+      [token]
     );
     if (rows.length === 0) return null;
     userId = rows[0].user_id;
@@ -94,8 +93,7 @@ export async function destroyUserSessions(userId: string): Promise<void> {
 export async function cleanExpiredSessions(): Promise<number> {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
-    const now = Date.now();
-    const result = await adapter.execute(`DELETE FROM sessions WHERE expires_at <= ?`, [now]);
+    const result = await adapter.execute(`DELETE FROM sessions WHERE expires_at <= UNIX_TIMESTAMP() * 1000`, []);
     return result.affectedRows;
   } else {
     const result = getDb().prepare("DELETE FROM sessions WHERE expires_at <= unixepoch()").run();

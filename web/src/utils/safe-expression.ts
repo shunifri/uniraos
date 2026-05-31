@@ -267,9 +267,13 @@ function tokenize(input: string): Token[] {
 
 // ─── Parser (Pratt) ───
 
+const MAX_PARSE_DEPTH = 50;
+const MAX_EVAL_DEPTH = 100;
+
 class Parser {
   tokens: Token[];
   pos = 0;
+  depth = 0;
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
@@ -294,10 +298,18 @@ class Parser {
   }
 
   parseExpression(precedence = 0): ExprNode {
+    this.depth++;
+    if (this.depth > MAX_PARSE_DEPTH) {
+      throw new Error("Expression too deeply nested (max parse depth exceeded)");
+    }
     let left = this.parsePrefix();
 
     while (this.current().type !== "EOF") {
       const op = this.current();
+      // Don't consume ? or : as binary operators — they're handled by parseTernary.
+      // Only break when precedence > 0 (called from parseTernary), so that
+      // parseExpression(0) inside parentheses can fully parse nested ternaries.
+      if (precedence > 0 && (op.type === "QUESTION" || op.type === "COLON")) break;
       const opPrec = getPrecedence(op);
       if (opPrec === null || opPrec < precedence) break;
       this.advance();
@@ -305,6 +317,7 @@ class Parser {
       left = { type: "Binary", operator: op.value, left, right };
     }
 
+    this.depth--;
     return left;
   }
 
@@ -332,7 +345,7 @@ class Parser {
       }
       case "LPAREN": {
         this.advance();
-        const expr = this.parseExpression();
+        const expr = parseTernary(this);
         this.expect("RPAREN");
         return expr;
       }
@@ -478,10 +491,21 @@ const GLOBAL_WHITELIST: Record<string, unknown> = {
   Array,
   Object,
   JSON,
+  undefined,
+  NaN,
+  Infinity,
 };
 
+let evalDepth = 0;
+
 function evaluate(node: ExprNode, context: Record<string, unknown>): unknown {
-  switch (node.type) {
+  evalDepth++;
+  if (evalDepth > MAX_EVAL_DEPTH) {
+    evalDepth--;
+    throw new Error("Expression evaluation too deep (max eval depth exceeded)");
+  }
+  try {
+    switch (node.type) {
     case "Literal":
       return node.value;
     case "Identifier": {
@@ -499,6 +523,11 @@ function evaluate(node: ExprNode, context: Record<string, unknown>): unknown {
       if (obj === null || obj === undefined) {
         throw new Error(`Cannot read properties of ${obj === null ? "null" : "undefined"}`);
       }
+      const propStr = String(prop);
+      // Block prototype chain access to prevent sandbox escape via .constructor / __proto__ / prototype
+      if (propStr === "constructor" || propStr === "__proto__" || propStr === "prototype") {
+        throw new Error(`Access to "${propStr}" is not allowed`);
+      }
       return (obj as Record<string | number, unknown>)[prop as string | number];
     }
     case "Call": {
@@ -511,40 +540,44 @@ function evaluate(node: ExprNode, context: Record<string, unknown>): unknown {
     }
     case "Binary": {
       const left = evaluate(node.left, context) as any;
-      const right = evaluate(node.right, context) as any;
       switch (node.operator) {
-        case "+":
-          return left + right;
-        case "-":
-          return left - right;
-        case "*":
-          return left * right;
-        case "/":
-          return left / right;
-        case "%":
-          return left % right;
-        case ">":
-          return left > right;
-        case "<":
-          return left < right;
-        case ">=":
-          return left >= right;
-        case "<=":
-          return left <= right;
-        case "==":
-          return left == right;
-        case "===":
-          return left === right;
-        case "!=":
-          return left != right;
-        case "!==":
-          return left !== right;
         case "&&":
-          return left && right;
+          return left && evaluate(node.right, context);
         case "||":
-          return left || right;
-        default:
-          throw new Error(`Unknown operator: ${node.operator}`);
+          return left || evaluate(node.right, context);
+        default: {
+          const right = evaluate(node.right, context) as any;
+          switch (node.operator) {
+            case "+":
+              return left + right;
+            case "-":
+              return left - right;
+            case "*":
+              return left * right;
+            case "/":
+              return left / right;
+            case "%":
+              return left % right;
+            case ">":
+              return left > right;
+            case "<":
+              return left < right;
+            case ">=":
+              return left >= right;
+            case "<=":
+              return left <= right;
+            case "==":
+              return left == right;
+            case "===":
+              return left === right;
+            case "!=":
+              return left != right;
+            case "!==":
+              return left !== right;
+            default:
+              throw new Error(`Unknown operator: ${node.operator}`);
+          }
+        }
       }
     }
     case "Unary": {
@@ -576,6 +609,9 @@ function evaluate(node: ExprNode, context: Record<string, unknown>): unknown {
     }
     default:
       throw new Error(`Unknown node type: ${(node as any).type}`);
+    }
+  } finally {
+    evalDepth--;
   }
 }
 

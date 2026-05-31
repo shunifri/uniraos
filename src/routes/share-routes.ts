@@ -2,9 +2,11 @@
  * 共享规则 API 路由
  */
 import { Router } from "express";
+import { join } from "path";
 import { permissions } from "../permissions/index.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
+import { getDb, isMySQL } from "../db/database.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { RouteDependencies } from "./types.js";
 
@@ -84,6 +86,36 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
         }
       }
 
+      // 2. kb_document 分享需要 owner 验证
+      if (resourceType === "kb_document") {
+        let isOwner = false;
+        if (isMySQL()) {
+          const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
+          const adapter = await getMySQLAdapter();
+          const rows = await adapter.query("SELECT owner_id FROM kb_documents WHERE doc_id = ?", [resourceId]);
+          isOwner = rows.length > 0 && rows[0].owner_id === req.user!.id;
+        } else {
+          const db = getDb();
+          const row = db.prepare("SELECT owner_id FROM kb_documents WHERE doc_id = ?").get(resourceId) as { owner_id: string } | undefined;
+          isOwner = row?.owner_id === req.user!.id;
+        }
+        if (!isOwner) {
+          res.status(403).json({ success: false, error: "Only document owner can share this document" });
+          return;
+        }
+      }
+
+      // 3. file 分享需要 owner 验证（文件必须在当前用户的 uploads 目录下）
+      if (resourceType === "file") {
+        const wsBase = join(process.cwd(), ".raos", "workspace");
+        const absPath = join(wsBase, resourceId);
+        const userUploadBase = join(wsBase, "uploads", req.user!.id);
+        if (!absPath.startsWith(userUploadBase)) {
+          res.status(403).json({ success: false, error: "Only file owner can share this file" });
+          return;
+        }
+      }
+
       const rule = await repo.create({
         resourceType,
         resourceId,
@@ -94,7 +126,8 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       });
       res.json({ success: true, data: rule });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[share-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -115,7 +148,8 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       await repo.delete(id);
       res.json({ success: true });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[share-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -125,7 +159,8 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const rules = await repo.getByOwner(req.user!.id);
       res.json({ success: true, data: rules });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[share-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -139,7 +174,8 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const rules = await repo.getSharedToUser(userId, roleIds, deptPath);
       res.json({ success: true, data: rules });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[share-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -157,6 +193,28 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
         return;
       }
       const { scope, targetId, permission } = req.body;
+      if (scope !== undefined) {
+        const validScopes = ["all", "role", "department", "user"];
+        if (!validScopes.includes(scope)) {
+          res.status(400).json({ success: false, error: `scope must be one of: ${validScopes.join(", ")}` });
+          return;
+        }
+        if (scope !== "all" && !targetId) {
+          res.status(400).json({ success: false, error: "targetId is required when scope is not 'all'" });
+          return;
+        }
+      }
+      if (permission !== undefined) {
+        const validPermissions = ["read", "execute", "write"];
+        if (!validPermissions.includes(permission)) {
+          res.status(400).json({ success: false, error: `permission must be one of: ${validPermissions.join(", ")}` });
+          return;
+        }
+      }
+      if (targetId !== undefined && typeof targetId === "string" && targetId.length > 256) {
+        res.status(400).json({ success: false, error: "targetId too long (max 256 characters)" });
+        return;
+      }
       const updated = await repo.update(id, { scope, targetId, permission });
       if (!updated) {
         res.status(400).json({ success: false, error: "No valid fields to update" });
@@ -165,7 +223,8 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       const updatedRule = await repo.getById(id);
       res.json({ success: true, data: updatedRule });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[share-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 

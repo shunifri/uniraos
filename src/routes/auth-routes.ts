@@ -75,6 +75,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
           path: '/',
         });
 
+        log("info", "[AUDIT] auth.anonymous_login", { userId: user.id, phone: phone.slice(-4), ip: req.ip });
         res.json({
           success: true,
           token: session.token,
@@ -106,6 +107,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
         path: '/',
       });
 
+      log("info", "[AUDIT] auth.anonymous_login", { userId: user.id, phone: phone.slice(-4), ip: req.ip });
       res.json({
         success: true,
         token: session.token,
@@ -113,7 +115,8 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
         user: details,
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[auth-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -150,7 +153,8 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
         user: details,
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
+      console.error("[auth-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -160,6 +164,12 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     if (authHeader?.startsWith("Bearer ")) {
       await destroySession(authHeader.slice(7));
     }
+    // 同时清除 cookie 中的 token
+    const cookieToken = (req as any).cookies?.token;
+    if (cookieToken) {
+      await destroySession(cookieToken);
+    }
+    res.clearCookie("token", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" });
     log("info", "auth.logout", { userId });
     res.json({ success: true });
   });
@@ -203,6 +213,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const details = await userRepo.getUserWithDetails(user.id);
       res.json({ success: true, user: details });
     } catch (err) {
+      console.error("[auth-routes] unexpected error:", err);
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
@@ -247,6 +258,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     res.json({ success: true, roles });
   });
 
+  // 管理员修改任意用户密码（无需验证原密码）
   router.post("/users/:id/password", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const id = req.params.id as string;
     const { password } = req.body as { password: string };
@@ -256,6 +268,32 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     }
     const changed = await userRepo.changePassword(id, password);
     res.json({ success: true, changed });
+  });
+
+  // 个人修改自己的密码（需验证原密码）
+  router.post("/user/password", pm.requireAuth, async (req, res) => {
+    try {
+      const { oldPassword, newPassword } = req.body as { oldPassword: string; newPassword: string };
+      if (!oldPassword || !newPassword) {
+        res.status(400).json({ success: false, error: "oldPassword and newPassword are required" });
+        return;
+      }
+      if (newPassword.length < 6 || newPassword.length > 100) {
+        res.status(400).json({ success: false, error: "newPassword must be 6-100 characters" });
+        return;
+      }
+      // 验证原密码
+      const user = await userRepo.authenticate(req.user!.username, oldPassword);
+      if (!user) {
+        res.status(401).json({ success: false, error: "原密码不正确" });
+        return;
+      }
+      const changed = await userRepo.changePassword(req.user!.id, newPassword);
+      res.json({ success: true, changed });
+    } catch (err) {
+      console.error("[auth-routes] change own password error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
   });
 
   // ===== Department management API (admin) =====
@@ -275,6 +313,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const dept = await deptRepo.createDepartment({ name, parentId, description });
       res.json({ success: true, department: dept });
     } catch (err) {
+      console.error("[auth-routes] unexpected error:", err);
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
@@ -296,6 +335,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       await deptRepo.deleteDepartment(id);
       res.json({ success: true });
     } catch (err) {
+      console.error("[auth-routes] unexpected error:", err);
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
@@ -305,6 +345,10 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
       res.status(400).json({ success: false, error: "resourceIds array is required" });
+      return;
+    }
+    if (resourceIds.length > 100) {
+      res.status(400).json({ success: false, error: "resourceIds array too large (max 100)" });
       return;
     }
     await deptRepo.assignResources(id, resourceIds);
@@ -317,6 +361,10 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
     const { resourceIds } = req.body as { resourceIds: string[] };
     if (!resourceIds || !Array.isArray(resourceIds)) {
       res.status(400).json({ success: false, error: "resourceIds array is required" });
+      return;
+    }
+    if (resourceIds.length > 100) {
+      res.status(400).json({ success: false, error: "resourceIds array too large (max 100)" });
       return;
     }
     await deptRepo.removeResources(id, resourceIds);
@@ -371,11 +419,19 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
 
     // 检查是否是新格式（permissions）
     if (body.permissions && Array.isArray(body.permissions)) {
+      if (body.permissions.length > 200) {
+        res.status(400).json({ success: false, error: "permissions array too large (max 200)" });
+        return;
+      }
       console.log(`替换角色 ${id} 的权限，新权限数: ${body.permissions.length}`);
       await resRepo.replacePermissionsForRole(id, body.permissions);
     }
     // 检查是否是旧格式（permissionIds + action）
     else if (body.permissionIds && Array.isArray(body.permissionIds) && body.action) {
+      if (body.permissionIds.length > 200) {
+        res.status(400).json({ success: false, error: "permissionIds array too large (max 200)" });
+        return;
+      }
       if (body.action === "assign") {
         console.log(`为角色 ${id} 分配权限，权限数: ${body.permissionIds.length}`);
         await resRepo.assignPermissionsToRole(id, body.permissionIds);
@@ -403,21 +459,23 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const config = await userRepo.getRoleAgentConfig(id as string);
       res.json({ success: true, config });
     } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
+      console.error("[auth-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   router.post("/roles/:id/agent-config", pm.requireAuth, pm.requireAdmin(), async (req, res) => {
     const { id } = req.params;
     const config = req.body as import("../permissions/types/role.js").RoleAgentConfig | null;
-    console.log(`[POST /roles/${id}/agent-config] body=`, JSON.stringify(config));
+    console.log(`[POST /roles/${id}/agent-config] received (size=${JSON.stringify(config).length} bytes)`);
     try {
       await userRepo.updateRoleAgentConfig(id as string, config);
       console.log(`[POST /roles/${id}/agent-config] saved ok`);
       res.json({ success: true });
     } catch (err) {
       console.error(`[POST /roles/${id}/agent-config] error:`, err);
-      res.status(500).json({ success: false, error: String(err) });
+      console.error("[auth-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -436,6 +494,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       const role = await userRepo.createRole({ name, description });
       res.json({ success: true, role });
     } catch (err) {
+      console.error("[auth-routes] unexpected error:", err);
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });
@@ -450,6 +509,7 @@ export function createAuthRoutes(deps: RouteDependencies): Router {
       }
       res.json({ success: true });
     } catch (err) {
+      console.error("[auth-routes] unexpected error:", err);
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
     }
   });

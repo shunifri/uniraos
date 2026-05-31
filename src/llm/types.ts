@@ -84,6 +84,8 @@ export interface ChatOptions {
   deepThink?: boolean;
   /** 会话 ID，用于隔离对话历史 */
   conversationId?: string;
+  /** 临时覆盖的系统提示词（用于嵌入场景的应用设定） */
+  systemPrompt?: string;
 }
 
 /** LLM Provider 接口 */

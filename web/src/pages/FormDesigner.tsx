@@ -3,7 +3,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { message, Spin, Modal } from "antd";
 import {
   DesignerProvider,
@@ -76,16 +76,19 @@ const FormDesignerInner: React.FC = () => {
   const { state, newForm, loadForm, setFormMeta, dispatch } = useDesigner();
   const { id } = useParams<{ id?: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const keyParam = searchParams.get("key");
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Load existing form if editing
+  // Load existing form if editing (by id or key)
   useEffect(() => {
-    if (id) {
+    const formId = id || keyParam;
+    if (formId) {
       setLoading(true);
-      fetchFormDefinition(id)
+      fetchFormDefinition(formId)
         .then((def) => {
           if (def) {
             loadForm(def.schema_json, {
@@ -102,7 +105,7 @@ const FormDesignerInner: React.FC = () => {
     } else {
       newForm();
     }
-  }, [id]);
+  }, [id, keyParam]);
 
   const handleSave = useCallback(async () => {
     if (!state.formMeta.key.trim()) {

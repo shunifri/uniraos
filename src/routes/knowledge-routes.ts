@@ -5,10 +5,13 @@ import { cwd } from "process";
 import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
+import { createKBCollection, listKBCollections, deleteKBCollection } from "../services/kb-collection-service.js";
+import { getMySQLAdapter } from "../db/mysql-adapter.js";
 import type { RouteDependencies } from "./types.js";
 import type { ParsingUpdate } from "../services/parsing-queue.js";
 import { getParsingQueue } from "../services/parsing-queue.js";
 import { log } from "../utils/logger.js";
+import { ingestQueue } from "../utils/ingest-queue.js";
 
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
   const { engine } = deps;
@@ -24,10 +27,12 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         tags: req.query.tags ? String(req.query.tags).split(",") : undefined,
         limit: req.query.limit ? Number(req.query.limit) : undefined,
         owner: req.user!.id,
+        collectionId: req.query.collectionId ? String(req.query.collectionId) : undefined,
       });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -45,17 +50,16 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         log("info", "knowledge.path_mode", { name, path });
 
         const kb = getKnowledgeBase(userId);
-        const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [] });
-        log("info", "knowledge.placeholder_created", { docId });
+        const collectionId = req.body.collectionId ? String(req.body.collectionId) : undefined;
+        const docId = await kb.createPlaceholder(name, { source: path, tags: tags || [], collectionId });
+        log("info", "knowledge.placeholder_created", { docId, collectionId });
         res.json({ success: true, docId, chunkCount: 0, totalTokens: 0, parsing: true, message: `文档 "${name}" 已创建，正在后台解析...` });
 
-        log("info", "knowledge.starting_ingest", { docId });
-        try {
-          void requestContext.run({ userId }, async () => {
-            console.log(`[API] requestContext.run 回调已执行`);
-            try {
+        log("info", "knowledge.starting_ingest", { docId, collectionId });
+        ingestQueue.enqueue(
+          async () => {
+            await requestContext.run({ userId }, async () => {
               const kb2 = getKnowledgeBase(userId);
-              console.log(`[API] 调用 kb_ingest 传入 _placeholderDocId: ${docId}`);
               const result = await engine.execute("kb_ingest", {
                 name,
                 path,
@@ -63,38 +67,24 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
                 owner: userId,
                 skipEmbedding: true,
                 _placeholderDocId: docId,
+                collectionId,
               });
-              console.log(`[API] kb_ingest 执行结果:`, JSON.stringify(result));
               if (result.success) {
                 const resultDocId = (result.data as any).docId;
                 if (resultDocId) {
-                  engine.execute("kb_vectorize", { docId: resultDocId, owner: userId }).catch(() => {});
+                  await engine.execute("kb_vectorize", { docId: resultDocId, owner: userId });
                 }
               } else {
-                // 解析失败，标记占位文档为失败
                 console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
                 await kb2.updateParsingStatus(docId, {
                   parsingStatus: 'failed',
                   parsingProgress: 0,
                 });
               }
-            } catch (err) {
-              // 异常失败，标记占位文档为失败
-              console.error(`[kb_ingest] Async ingest threw exception for placeholder ${docId}:`, err);
-              try {
-                const kb2 = getKnowledgeBase(userId);
-                await kb2.updateParsingStatus(docId, {
-                  parsingStatus: 'failed',
-                  parsingProgress: 0,
-                });
-              } catch (updateErr) {
-                console.error(`[kb_ingest] Failed to update parsing status:`, updateErr);
-              }
-            }
-          });
-        } catch (ctxErr) {
-          console.error(`[API] requestContext.run 异常:`, ctxErr);
-        }
+            });
+          },
+          { id: `ingest_${docId}`, docId, userId, name }
+        );
         return;
       }
 
@@ -104,20 +94,27 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         tags: tags || [],
         owner: userId,
         skipEmbedding: true,
+        collectionId: req.body.collectionId ? String(req.body.collectionId) : undefined,
       };
       const result = await engine.execute("kb_ingest", params);
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
 
       if (result.success && result.data) {
-        const docId = (result.data as any).docId;
-        if (docId) {
-          requestContext.run({ userId }, () => {
-            engine.execute("kb_vectorize", { docId, owner: userId }).catch(() => {});
-          });
+        const resultDocId = (result.data as any).docId as string;
+        if (resultDocId) {
+          ingestQueue.enqueue(
+            async () => {
+              await requestContext.run({ userId }, async () => {
+                await engine.execute("kb_vectorize", { docId: resultDocId, owner: userId });
+              });
+            },
+            { id: `vectorize_${resultDocId}`, docId: resultDocId, userId, name }
+          );
         }
       }
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -128,24 +125,27 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         tags: req.query.tags ? String(req.query.tags).split(",") : undefined,
         limit: req.query.limit ? Number(req.query.limit) : 10,
         owner: req.user!.id,
+        collectionId: req.query.collectionId ? String(req.query.collectionId) : undefined,
       });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
-  router.get("/knowledge/documents/:docId/content", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
+  router.get("/knowledge/documents/:docId/content", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
       const kb = getKnowledgeBase(req.user!.id);
-      const content = kb.getDocumentContent(req.params.docId as string);
+      const content = await kb.getDocumentContent(req.params.docId as string);
       if (content === null) {
         res.status(404).json({ success: false, error: "文档不存在" });
       } else {
         res.json({ success: true, content });
       }
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -201,34 +201,66 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
         pageCount,
       });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   router.delete("/knowledge/documents/:docId", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
     try {
       const result = await engine.execute("kb_delete", { docId: req.params.docId, owner: req.user!.id });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  // 更新文档分类
+  router.put("/knowledge/documents/:docId", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
+    try {
+      const docId = req.params.docId;
+      const { collectionId } = req.body;
+      const owner = req.user!.id;
+
+      const adapter = getMySQLAdapter();
+      const result = await adapter.execute(
+        "UPDATE kb_documents SET collection_id = ? WHERE doc_id = ? AND owner_id = ?",
+        [collectionId || null, docId, owner]
+      );
+
+      if (result.affectedRows === 0) {
+        res.status(404).json({ success: false, error: "文档不存在或无权限" });
+        return;
+      }
+
+      res.json({ success: true, data: { docId, collectionId: collectionId || null } });
+    } catch (e: unknown) {
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   router.get("/knowledge/stats", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     try {
-      const result = await engine.execute("kb_stats", { owner: req.user!.id });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      const result = await engine.execute("kb_stats", {
+        owner: req.user!.id,
+        collectionId: req.query.collectionId ? String(req.query.collectionId) : undefined,
+      });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
   router.post("/knowledge/rebuild", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_MANAGE), async (req, res) => {
     try {
       const result = await engine.execute("kb_rebuild", { owner: req.user!.id });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -237,9 +269,10 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const { docId, shared } = req.body;
       const scope = shared ? "all" : "none";
       const result = await engine.execute("kb_share", { docId, scope, owner: req.user!.id });
-      res.json({ success: result.success, ...(result.success ? result.data as object : { error: (result as any).error?.message }) });
+      res.json({ success: result.success, ...(result.success ? result.data as object : { error: "Operation failed" }) });
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -365,8 +398,67 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       createReadStream(imagePath).pipe(res);
     } catch (e: unknown) {
-      res.status(500).json({ success: false, error: (e as Error).message });
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
+  });
+
+  // === 知识库集合（Collection）路由 ===
+
+  router.get("/knowledge/collections", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
+    try {
+      const owner = req.user!.id;
+      const collections = await listKBCollections(owner);
+      res.json({ success: true, data: { collections, total: collections.length } });
+    } catch (e: unknown) {
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  router.post("/knowledge/collections", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
+    try {
+      const { name, description } = req.body;
+      if (!name) {
+        res.status(400).json({ success: false, error: "name is required" });
+        return;
+      }
+      const owner = req.user!.id;
+      const collection = await createKBCollection(owner, { name, description });
+      res.json({ success: true, data: { collection } });
+    } catch (e: unknown) {
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  router.delete("/knowledge/collections/:id", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_WRITE), async (req, res) => {
+    try {
+      const owner = req.user!.id;
+      const id = req.params.id as string;
+      await deleteKBCollection(id, owner);
+      res.json({ success: true, data: { message: "集合已删除，文档已移回默认知识库" } });
+    } catch (e: unknown) {
+      console.error("[knowledge-routes] error:", e);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  // 查询全局文档处理队列状态
+  router.get("/knowledge/queue", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), (req, res) => {
+    const status = ingestQueue.getStatus();
+    // 只返回当前用户相关的任务
+    const userId = req.user!.id;
+    const userTasks = status.tasks.filter((t) => t.userId === userId);
+    res.json({
+      success: true,
+      data: {
+        ...status,
+        tasks: userTasks,
+        userPending: userTasks.filter((t) => t.status === "pending").length,
+        userRunning: userTasks.filter((t) => t.status === "running").length,
+      },
+    });
   });
 
   return router;

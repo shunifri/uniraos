@@ -8,6 +8,7 @@ import { defineSystemSkill } from "../types/index.js";
 import type { SkillRegistry } from "../registry/index.js";
 import type { ExecutionEngine } from "../engine/index.js";
 import type { LLMProvider } from "../llm/types.js";
+import { resolveParams, injectCalculateContext } from "./meta-skills.js";
 
 export function createPlanningSkill(
   registry: SkillRegistry,
@@ -62,8 +63,11 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
 规则:
 1. 每个步骤使用一个可用 Skill
 2. 步骤之间可以传递数据（后续步骤可引用前序结果）
-3. 最多 ${maxSteps} 个步骤
-4. 如果任务无法用现有 Skill 完成，返回 {"steps": [], "reason": "原因"}
+3. 引用前序结果时使用 $steps.skillName.field 格式，直接访问 result.data 中的字段
+   - 示例：若 app_designer 返回 { designId: "abc" }，后续步骤引用 "$steps.app_designer.designId"
+   - 【重要】不要写 "$steps.app_designer.data.designId"，$steps 已经直接指向 result.data
+4. 最多 ${maxSteps} 个步骤
+5. 如果任务无法用现有 Skill 完成，返回 {"steps": [], "reason": "原因"}
 
 只输出 JSON，不要其他内容。`;
 
@@ -99,6 +103,8 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
           data?: unknown;
           error?: string;
         }> = [];
+        const stepResults: Record<string, unknown> = {};
+        stepResults["$input"] = params;
 
         for (let i = 0; i < plan.steps.length; i++) {
           const step = plan.steps[i];
@@ -121,13 +127,12 @@ ${availableSkills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
           }
 
           try {
-            // 注入前序结果到参数
-            const enrichedParams = {
-              ...step.params,
-              _previous_results: results.filter((r) => r.success).map((r) => r.data),
-            };
+            // 解析 $steps/$input 引用，并为 calculate 注入前序结果上下文
+            const resolvedParams = resolveParams(step.params ?? {}, stepResults, params as Record<string, unknown>);
+            const finalParams = injectCalculateContext(step.skill, resolvedParams, stepResults);
 
-            const result = await engine.execute(step.skill, enrichedParams);
+            const result = await engine.execute(step.skill, finalParams);
+            stepResults[step.skill] = result.data;
             results.push({
               step: i + 1,
               skill: step.skill,

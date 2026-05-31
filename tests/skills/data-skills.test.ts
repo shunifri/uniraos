@@ -581,15 +581,43 @@ describe("data-skills.ts", () => {
   });
 
   describe("http_get", () => {
-    it("delegates to http_call", async () => {
+    it("executes GET request via shared handler", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Map([["content-type", "application/json"]]),
+        json: vi.fn().mockResolvedValue({ hello: "world" }),
+        text: vi.fn().mockResolvedValue('{"hello":"world"}'),
+      } as any);
+      vi.stubGlobal("fetch", mockFetch);
+
       const skill = registry.get("http_get");
       const result = await skill.handler(
-        { url: "https://example.com" },
+        { url: "https://example.com/api" },
         dummyContext
       );
       expect(result.success).toBe(true);
       const data = result.data as any;
-      expect(data.delegated).toBe(true);
+      expect(data.status).toBe(200);
+      expect(data.body).toEqual({ hello: "world" });
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://example.com/api",
+        expect.objectContaining({ method: "GET" })
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it("blocks intranet addresses", async () => {
+      const skill = registry.get("http_get");
+      const result = await skill.handler(
+        { url: "http://192.168.1.1/test" },
+        dummyContext
+      );
+      expect(result.success).toBe(false);
+      const err = result.error as Error;
+      expect(err.message).toContain("安全限制");
     });
   });
 });

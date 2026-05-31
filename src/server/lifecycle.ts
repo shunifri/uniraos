@@ -115,10 +115,7 @@ function setupGracefulShutdown(server: Server, evolutionController: BootstrapRes
       console.log("   HTTP server closed (no new connections accepted)");
     });
 
-    // 2. 关闭核心业务组件
-    evolutionController.close();
-
-    // 3. P2 修复：关闭外部连接（最佳努力）
+    // 2. 关闭外部连接（最佳努力）
     const closePromises: Promise<unknown>[] = [];
 
     // 关闭 Redis

@@ -141,8 +141,8 @@ function resolveFilterValue(value: any, formData: Record<string, any>): any {
 
 function evaluateFilter(fieldValue: any, operator: string, filterValue: any): boolean {
   switch (operator) {
-    case 'eq': return fieldValue == filterValue;
-    case 'ne': return fieldValue != filterValue;
+    case 'eq': return fieldValue === filterValue;
+    case 'ne': return fieldValue !== filterValue;
     case 'gt': return fieldValue > filterValue;
     case 'gte': return fieldValue >= filterValue;
     case 'lt': return fieldValue < filterValue;

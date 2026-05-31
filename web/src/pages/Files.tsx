@@ -19,6 +19,7 @@ import {
   Popconfirm,
   Segmented,
   Dropdown,
+  Select,
 } from "antd";
 import {
   FolderOutlined,
@@ -159,6 +160,11 @@ export default function FilesPage() {
   const [uploading, setUploading] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [kbTagModalOpen, setKbTagModalOpen] = useState(false);
+  const [kbTagFile, setKbTagFile] = useState<FileItem | null>(null);
+  const [kbTagsInput, setKbTagsInput] = useState("");
+  const [kbCollections, setKbCollections] = useState<Array<{ id: string; name: string }>>([]);
+  const [kbSelectedCollection, setKbSelectedCollection] = useState<string | undefined>(undefined);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 共享文件相关
@@ -402,13 +408,26 @@ export default function FilesPage() {
     }
   };
 
-  const handleAddToKb = async (file: FileItem) => {
-    const originalName = stripTimestamp(file.name);
+  const handleAddToKb = (file: FileItem) => {
+    setKbTagFile(file);
+    setKbTagsInput("");
+    setKbSelectedCollection(undefined);
+    setKbTagModalOpen(true);
+  };
+
+  const doAddToKb = async () => {
+    if (!kbTagFile) return;
+    const originalName = stripTimestamp(kbTagFile.name);
+    const tags = kbTagsInput.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    const body: Record<string, unknown> = { name: originalName, path: kbTagFile.path, tags };
+    if (kbSelectedCollection) {
+      body.collectionId = kbSelectedCollection;
+    }
     try {
       const res = await apiFetch("/api/knowledge/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: originalName, path: file.path, tags: [] }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.success) {
@@ -419,6 +438,9 @@ export default function FilesPage() {
       }
     } catch (e: any) {
       message.error(e.message);
+    } finally {
+      setKbTagModalOpen(false);
+      setKbTagFile(null);
     }
   };
 
@@ -611,11 +633,30 @@ export default function FilesPage() {
       render: (_: any, record: SharedFileItem) => (
         <Space size={0}>
           <Tooltip title="下载">
-            <Button 
-              type="text" 
-              size="small" 
-              icon={<DownloadOutlined />} 
-              onClick={() => window.open(`/api/download?path=${encodeURIComponent(record.path)}&token=${localStorage.getItem("token") || ""}`, "_blank")}
+            <Button
+              type="text"
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={async () => {
+                try {
+                  const token = localStorage.getItem("token");
+                  const res = await fetch(`/api/download?path=${encodeURIComponent(record.path)}`, {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                  });
+                  if (!res.ok) throw new Error("Download failed");
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = record.path.split("/").pop() || "download";
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch {
+                  message.error("下载失败");
+                }
+              }}
             />
           </Tooltip>
         </Space>
@@ -753,6 +794,37 @@ export default function FilesPage() {
           value={newFolderName}
           onChange={(e) => setNewFolderName(e.target.value)}
           onPressEnter={handleNewFolder}
+          autoFocus
+        />
+      </Modal>
+
+      {/* KB Tag Modal */}
+      <Modal
+        title="加入知识库"
+        open={kbTagModalOpen}
+        onOk={doAddToKb}
+        onCancel={() => { setKbTagModalOpen(false); setKbTagFile(null); }}
+        okText="确认"
+        cancelText="取消"
+      >
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary">文件: {kbTagFile ? stripTimestamp(kbTagFile.name) : ""}</Text>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <Select
+            style={{ width: "100%" }}
+            placeholder="选择知识库分类（可选）"
+            value={kbSelectedCollection}
+            onChange={(val) => setKbSelectedCollection(val)}
+            allowClear
+            options={kbCollections.map((c) => ({ label: c.name, value: c.id }))}
+          />
+        </div>
+        <Input
+          placeholder="输入标签，用逗号分隔（如：招生政策, 课程资料）"
+          value={kbTagsInput}
+          onChange={(e) => setKbTagsInput(e.target.value)}
+          onPressEnter={doAddToKb}
           autoFocus
         />
       </Modal>

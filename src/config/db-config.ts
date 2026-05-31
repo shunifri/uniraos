@@ -82,7 +82,7 @@ function loadMySQLConfig(): MySQLConfig {
       host: getSecret('MYSQL_PRIMARY_HOST') || 'localhost',
       port: parseInt(getSecret('MYSQL_PRIMARY_PORT') || '3306'),
       user: getSecret('MYSQL_USER') || 'raos',
-      password: getSecret('MYSQL_PASSWORD') || 'password',
+      password: getSecret('MYSQL_PASSWORD') || '',
       database: getSecret('MYSQL_DATABASE') || 'raos',
       connectionLimit: parseInt(getSecret('MYSQL_CONN_LIMIT') || '20'),
     },

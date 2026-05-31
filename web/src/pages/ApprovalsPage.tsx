@@ -19,6 +19,7 @@ import {
   Col,
   Divider,
   Statistic,
+  Badge,
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -30,6 +31,8 @@ import {
   ExperimentOutlined,
   LoadingOutlined,
   LinkOutlined,
+  CheckOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@/store/auth';
 import { useNavigate } from 'react-router-dom';
@@ -52,6 +55,8 @@ interface PendingApproval {
   generatedBy: string;
   depth: number;
   createdAt: number;
+  status?: string;
+  statusUpdatedAt?: number;
 }
 
 interface WorkflowTask {
@@ -104,30 +109,36 @@ function timeAgo(ts?: number): string {
 }
 
 // ───────────────────────────────────────────────────────────────
-// Evolution Approvals List
+// Evolution Approvals List (with status tabs)
 // ───────────────────────────────────────────────────────────────
 
+type EvoStatus = 'pending' | 'approved' | 'rejected';
+
+const evoStatusConfig: Record<EvoStatus, { label: string; color: string; icon: React.ReactNode }> = {
+  pending: { label: '待审核', color: 'orange', icon: <ClockCircleOutlined /> },
+  approved: { label: '已审核', color: 'green', icon: <CheckCircleOutlined /> },
+  rejected: { label: '已驳回', color: 'red', icon: <StopOutlined /> },
+};
+
 const EvolutionApprovalList: React.FC = () => {
+  const [activeStatus, setActiveStatus] = useState<EvoStatus>('pending');
   const [data, setData] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<PendingApproval | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [counts, setCounts] = useState<Record<EvoStatus, number>>({ pending: 0, approved: 0, rejected: 0 });
   const token = useAuthStore((s) => s.token);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (status: EvoStatus) => {
     setLoading(true);
     try {
-      const res = await fetch('/api/evolution/approvals', {
+      const res = await fetch(`/api/evolution/approvals?status=${status}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const json = await res.json();
-      if (json.approvals) {
-        setData(json.approvals);
-      } else if (Array.isArray(json)) {
-        setData(json);
-      } else {
-        setData([]);
-      }
+      const approvals = json.approvals || [];
+      setData(approvals);
+      setCounts(prev => ({ ...prev, [status]: approvals.length }));
     } catch (err) {
       message.error('获取进化审批失败');
       setData([]);
@@ -136,9 +147,25 @@ const EvolutionApprovalList: React.FC = () => {
     }
   }, [token]);
 
+  const fetchAllCounts = useCallback(async () => {
+    const statuses: EvoStatus[] = ['pending', 'approved', 'rejected'];
+    const newCounts = { pending: 0, approved: 0, rejected: 0 };
+    for (const s of statuses) {
+      try {
+        const res = await fetch(`/api/evolution/approvals?status=${s}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const json = await res.json();
+        newCounts[s] = (json.approvals || []).length;
+      } catch { /* ignore */ }
+    }
+    setCounts(newCounts);
+  }, [token]);
+
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchData(activeStatus);
+    fetchAllCounts();
+  }, [activeStatus, fetchData, fetchAllCounts]);
 
   const handleApprove = async (id: string) => {
     setActionLoading(id);
@@ -152,7 +179,8 @@ const EvolutionApprovalList: React.FC = () => {
       });
       if (res.ok) {
         message.success('已通过');
-        fetchData();
+        fetchData(activeStatus);
+        fetchAllCounts();
       } else {
         const json = await res.json().catch(() => ({}));
         message.error(json.error || '审批失败');
@@ -177,7 +205,8 @@ const EvolutionApprovalList: React.FC = () => {
       });
       if (res.ok) {
         message.success('已拒绝');
-        fetchData();
+        fetchData(activeStatus);
+        fetchAllCounts();
       } else {
         const json = await res.json().catch(() => ({}));
         message.error(json.error || '拒绝失败');
@@ -229,7 +258,7 @@ const EvolutionApprovalList: React.FC = () => {
       width: 120,
     },
     {
-      title: '时间',
+      title: '创建时间',
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 160,
@@ -243,47 +272,68 @@ const EvolutionApprovalList: React.FC = () => {
       title: '操作',
       key: 'action',
       width: 200,
-      render: (_: any, record: PendingApproval) => (
-        <Space>
-          <Button
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => setDetail(record)}
-          >
-            查看
-          </Button>
-          <Button
-            type="primary"
-            size="small"
-            icon={<CheckCircleOutlined />}
-            loading={actionLoading === record.id}
-            onClick={() => handleApprove(record.id)}
-          >
-            通过
-          </Button>
-          <Button
-            danger
-            size="small"
-            icon={<CloseCircleOutlined />}
-            loading={actionLoading === record.id}
-            onClick={() => handleReject(record.id)}
-          >
-            拒绝
-          </Button>
-        </Space>
-      ),
+      render: (_: any, record: PendingApproval) => {
+        if (activeStatus === 'pending') {
+          return (
+            <Space>
+              <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>
+                查看
+              </Button>
+              <Button
+                type="primary"
+                size="small"
+                icon={<CheckCircleOutlined />}
+                loading={actionLoading === record.id}
+                onClick={() => handleApprove(record.id)}
+              >
+                通过
+              </Button>
+              <Button
+                danger
+                size="small"
+                icon={<CloseCircleOutlined />}
+                loading={actionLoading === record.id}
+                onClick={() => handleReject(record.id)}
+              >
+                拒绝
+              </Button>
+            </Space>
+          );
+        }
+        return (
+          <Space>
+            <Button size="small" icon={<EyeOutlined />} onClick={() => setDetail(record)}>
+              查看
+            </Button>
+            <Tag color={evoStatusConfig[activeStatus].color}>
+              {evoStatusConfig[activeStatus].label}
+            </Tag>
+          </Space>
+        );
+      },
     },
   ];
 
+  const tabItems = (['pending', 'approved', 'rejected'] as EvoStatus[]).map((s) => ({
+    key: s,
+    label: (
+      <span>
+        {evoStatusConfig[s].icon} {evoStatusConfig[s].label}
+        <Badge count={counts[s]} style={{ marginLeft: 8 }} showZero={false} />
+      </span>
+    ),
+  }));
+
   return (
     <>
+      <Tabs activeKey={activeStatus} onChange={(k) => setActiveStatus(k as EvoStatus)} items={tabItems} size="small" />
       <Table
         columns={columns as any}
         dataSource={data}
         rowKey="id"
         loading={loading}
         pagination={{ pageSize: 20 }}
-        locale={{ emptyText: <Empty description="暂无待审批的进化请求" /> }}
+        locale={{ emptyText: <Empty description={`暂无${evoStatusConfig[activeStatus].label}的进化请求`} /> }}
       />
       <Drawer
         title={detail?.name}
@@ -291,20 +341,16 @@ const EvolutionApprovalList: React.FC = () => {
         onClose={() => setDetail(null)}
         width={720}
         extra={
-          detail && (
+          detail && activeStatus === 'pending' ? (
             <Space>
               <Button onClick={() => handleReject(detail.id)} danger loading={actionLoading === detail.id}>
                 拒绝
               </Button>
-              <Button
-                type="primary"
-                onClick={() => handleApprove(detail.id)}
-                loading={actionLoading === detail.id}
-              >
+              <Button type="primary" onClick={() => handleApprove(detail.id)} loading={actionLoading === detail.id}>
                 通过
               </Button>
             </Space>
-          )
+          ) : null
         }
       >
         {detail && (
@@ -314,6 +360,9 @@ const EvolutionApprovalList: React.FC = () => {
               <Descriptions.Item label="深度">{detail.depth}</Descriptions.Item>
               <Descriptions.Item label="生成者">{detail.generatedBy}</Descriptions.Item>
               <Descriptions.Item label="创建时间">{formatTime(detail.createdAt)}</Descriptions.Item>
+              {detail.statusUpdatedAt && (
+                <Descriptions.Item label="处理时间">{formatTime(detail.statusUpdatedAt)}</Descriptions.Item>
+              )}
               <Descriptions.Item label="能力" span={2}>
                 {detail.capabilities?.map((c) => (
                   <Tag key={c}>{c}</Tag>
@@ -348,11 +397,21 @@ const EvolutionApprovalList: React.FC = () => {
 };
 
 // ───────────────────────────────────────────────────────────────
-// Workflow Task List
+// Workflow Task List (with status tabs)
 // ───────────────────────────────────────────────────────────────
 
+type WfStatus = 'pending' | 'completed' | 'cancelled';
+
+const wfStatusConfig: Record<WfStatus | 'claimed', { label: string; color: string }> = {
+  pending: { label: '待办', color: 'orange' },
+  claimed: { label: '已认领', color: 'blue' },
+  completed: { label: '已办', color: 'green' },
+  cancelled: { label: '已取消', color: 'default' },
+};
+
 const WorkflowTaskList: React.FC = () => {
-  const [data, setData] = useState<WorkflowTask[]>([]);
+  const [allData, setAllData] = useState<WorkflowTask[]>([]);
+  const [activeStatus, setActiveStatus] = useState<WfStatus>('pending');
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<WorkflowTask | null>(null);
   const [formPayload, setFormPayload] = useState<TaskFormPayload | null>(null);
@@ -366,18 +425,18 @@ const WorkflowTaskList: React.FC = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/workflow/tasks?page=1&pageSize=100', {
+      const res = await fetch('/api/workflow/tasks?page=1&pageSize=1000', {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
-        setData(json.data);
+        setAllData(json.data);
       } else {
-        setData([]);
+        setAllData([]);
       }
     } catch (err) {
       message.error('获取工作流任务失败');
-      setData([]);
+      setAllData([]);
     } finally {
       setLoading(false);
     }
@@ -386,6 +445,17 @@ const WorkflowTaskList: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const filteredData = allData.filter((t) => {
+    if (activeStatus === 'pending') return t.status === 'pending' || t.status === 'claimed';
+    return t.status === activeStatus;
+  });
+
+  const counts = {
+    pending: allData.filter((t) => t.status === 'pending' || t.status === 'claimed').length,
+    completed: allData.filter((t) => t.status === 'completed').length,
+    cancelled: allData.filter((t) => t.status === 'cancelled').length,
+  };
 
   const loadTaskFormData = async (task: WorkflowTask) => {
     setFormLoading(true);
@@ -399,7 +469,6 @@ const WorkflowTaskList: React.FC = () => {
         setFormPayload(json.data);
       }
     } catch {
-      // Task may not have a form binding — that's OK
       setFormPayload(null);
     } finally {
       setFormLoading(false);
@@ -439,20 +508,6 @@ const WorkflowTaskList: React.FC = () => {
     }
   };
 
-  const statusColor: Record<string, string> = {
-    pending: 'orange',
-    claimed: 'blue',
-    completed: 'green',
-    cancelled: 'default',
-  };
-
-  const statusText: Record<string, string> = {
-    pending: '待处理',
-    claimed: '已认领',
-    completed: '已完成',
-    cancelled: '已取消',
-  };
-
   const columns = [
     {
       title: '任务',
@@ -472,7 +527,7 @@ const WorkflowTaskList: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (s: string) => <Tag color={statusColor[s] || 'default'}>{statusText[s] || s}</Tag>,
+      render: (s: string) => <Tag color={wfStatusConfig[s as WfStatus]?.color || 'default'}>{wfStatusConfig[s as WfStatus]?.label || s}</Tag>,
     },
     {
       title: '任务类型',
@@ -515,7 +570,7 @@ const WorkflowTaskList: React.FC = () => {
           >
             打开
           </Button>
-          {record.status !== 'completed' && record.status !== 'cancelled' && (
+          {(record.status === 'pending' || record.status === 'claimed') && (
             <Button
               type="primary"
               size="small"
@@ -531,15 +586,26 @@ const WorkflowTaskList: React.FC = () => {
     },
   ];
 
+  const tabItems = (['pending', 'completed', 'cancelled'] as WfStatus[]).map((s) => ({
+    key: s,
+    label: (
+      <span>
+        {s === 'pending' ? '待办' : s === 'completed' ? '已办' : '已取消'}
+        <Badge count={counts[s]} style={{ marginLeft: 8 }} showZero={false} />
+      </span>
+    ),
+  }));
+
   return (
     <>
+      <Tabs activeKey={activeStatus} onChange={(k) => setActiveStatus(k as WfStatus)} items={tabItems} size="small" />
       <Table
         columns={columns as any}
-        dataSource={data}
+        dataSource={filteredData}
         rowKey="id"
         loading={loading}
         pagination={{ pageSize: 20 }}
-        locale={{ emptyText: <Empty description="暂无工作流任务" /> }}
+        locale={{ emptyText: <Empty description={`暂无${activeStatus === 'pending' ? '待办' : activeStatus === 'completed' ? '已办' : '已取消'}任务`} /> }}
       />
       <Drawer
         title={detail ? (detail.nodeName || detail.nodeId) : ''}
@@ -583,7 +649,7 @@ const WorkflowTaskList: React.FC = () => {
                 <Statistic title="流程实例" value={`#${detail.instanceId}`} />
               </Col>
               <Col span={8}>
-                <Statistic title="状态" value={statusText[detail.status] || detail.status} />
+                <Statistic title="状态" value={wfStatusConfig[detail.status]?.label || detail.status} />
               </Col>
             </Row>
 
@@ -602,7 +668,6 @@ const WorkflowTaskList: React.FC = () => {
               )}
             </Descriptions>
 
-            {/* Form section */}
             {formLoading ? (
               <Spin />
             ) : formPayload?.schema ? (
@@ -638,7 +703,6 @@ const WorkflowTaskList: React.FC = () => {
               </>
             ) : null}
 
-            {/* Action section */}
             {detail.status !== 'completed' && detail.status !== 'cancelled' && (
               <>
                 <Divider orientation="left">审批操作</Divider>

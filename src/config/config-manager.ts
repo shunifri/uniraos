@@ -168,6 +168,12 @@ export class ConfigManager {
       if (existsSync(this.configPath)) {
         const raw = readFileSync(this.configPath, "utf-8");
         const saved = JSON.parse(raw) as Partial<RAOSConfig>;
+        // 安全：净化原型污染键
+        for (const key of Object.keys(saved)) {
+          if (key === "__proto__" || key === "constructor" || key === "prototype") {
+            delete (saved as any)[key];
+          }
+        }
         const merged: RAOSConfig = {
           llm: saved.llm ?? DEFAULT_CONFIG.llm,
           multimodal: { ...DEFAULT_CONFIG.multimodal, ...saved.multimodal },
@@ -224,10 +230,10 @@ export class ConfigManager {
     }
   }
 
-  /** 持久化到文件 */
+  /** 持久化到文件（设置 0o600 权限防止密钥泄露） */
   private save(): void {
     try {
-      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), "utf-8");
+      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), { encoding: "utf-8", mode: 0o600 });
     } catch (err) {
       console.error("Failed to save config:", err);
     }

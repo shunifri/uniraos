@@ -64,7 +64,7 @@ describe("DeliveryRouter", () => {
       expect(decision.reason).toBe("urgent_priority");
     });
 
-    it("should route urgent items to push when user is offline", async () => {
+    it("should route urgent items to email fallback when user is offline", async () => {
       const event: DeliveryEvent = {
         item: makeItem({ priority: "urgent" }),
         userOnline: false,
@@ -73,11 +73,12 @@ describe("DeliveryRouter", () => {
 
       const decision = await router.route(event);
 
-      expect(decision.channel).toBe("push");
+      expect(decision.channel).toBe("email");
       expect(decision.timing).toBe("immediate");
+      expect(decision.reason).toBe("urgent_priority_offline_fallback");
     });
 
-    it("should route urgent items to push when no conversation", async () => {
+    it("should route urgent items to email fallback when no conversation", async () => {
       const event: DeliveryEvent = {
         item: makeItem({ priority: "urgent" }),
         userOnline: true,
@@ -85,7 +86,8 @@ describe("DeliveryRouter", () => {
 
       const decision = await router.route(event);
 
-      expect(decision.channel).toBe("push");
+      expect(decision.channel).toBe("email");
+      expect(decision.reason).toBe("urgent_priority_offline_fallback");
     });
 
     it("should route high priority + related conversation + chat location to chat", async () => {

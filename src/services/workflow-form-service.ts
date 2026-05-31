@@ -116,6 +116,58 @@ export async function updateWorkflowFormBinding(id: string, updates: Partial<Wor
   return getWorkflowFormBinding(id);
 }
 
+export async function listWorkflowFormBindingsByFormId(formId: string) {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query('SELECT * FROM workflow_form_bindings WHERE form_id = ?', [formId]);
+    return (rows as any[]).map(row => ({
+      ...row,
+      mapping_json: row.mapping_json ? (typeof row.mapping_json === 'string' ? JSON.parse(row.mapping_json) : row.mapping_json) : null,
+    }));
+  }
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM workflow_form_bindings WHERE form_id = ?').all(formId) as any[];
+  return rows.map(row => ({
+    ...row,
+    mapping_json: row.mapping_json ? JSON.parse(row.mapping_json) : null,
+  }));
+}
+
+/** 同时按 form definition UUID 或 form key 查询绑定（向后兼容） */
+export async function findWorkflowFormBindingsByFormIdOrKey(formId: string, formKey: string) {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query(
+      'SELECT * FROM workflow_form_bindings WHERE form_id = ? OR form_id = ?',
+      [formId, formKey]
+    );
+    return (rows as any[]).map(row => ({
+      ...row,
+      mapping_json: row.mapping_json ? (typeof row.mapping_json === 'string' ? JSON.parse(row.mapping_json) : row.mapping_json) : null,
+    }));
+  }
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM workflow_form_bindings WHERE form_id = ? OR form_id = ?').all(formId, formKey) as any[];
+  return rows.map(row => ({
+    ...row,
+    mapping_json: row.mapping_json ? JSON.parse(row.mapping_json) : null,
+  }));
+}
+
+export async function countWorkflowFormBindingsByFormId(formId: string): Promise<number> {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const rows = await adapter.query<{ count: number }>(
+      'SELECT COUNT(*) as count FROM workflow_form_bindings WHERE form_id = ?',
+      [formId]
+    );
+    return rows[0]?.count ?? 0;
+  }
+  const db = getDb();
+  const row = db.prepare('SELECT COUNT(*) as count FROM workflow_form_bindings WHERE form_id = ?').get(formId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
 export async function deleteWorkflowFormBinding(id: string) {
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
@@ -123,5 +175,25 @@ export async function deleteWorkflowFormBinding(id: string) {
   } else {
     const db = getDb();
     db.prepare('DELETE FROM workflow_form_bindings WHERE id = ?').run(id);
+  }
+}
+
+export async function deleteWorkflowFormBindingsByDefinitionKey(definitionKey: string) {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    await adapter.execute('DELETE FROM workflow_form_bindings WHERE definition_key = ?', [definitionKey]);
+  } else {
+    const db = getDb();
+    db.prepare('DELETE FROM workflow_form_bindings WHERE definition_key = ?').run(definitionKey);
+  }
+}
+
+export async function deleteWorkflowFormBindingsByFormId(formId: string) {
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    await adapter.execute('DELETE FROM workflow_form_bindings WHERE form_id = ?', [formId]);
+  } else {
+    const db = getDb();
+    db.prepare('DELETE FROM workflow_form_bindings WHERE form_id = ?').run(formId);
   }
 }

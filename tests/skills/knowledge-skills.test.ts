@@ -34,6 +34,9 @@ vi.mock("../../src/db/mysql-adapter.js", () => ({
 
 vi.mock("../../src/user/request-context.js", () => ({
   getCurrentUserId: vi.fn().mockReturnValue("default"),
+  requestContext: {
+    getStore: vi.fn().mockReturnValue(undefined),
+  },
 }));
 
 vi.mock("../../src/services/doc-parser.js", () => ({

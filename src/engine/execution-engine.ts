@@ -464,11 +464,16 @@ export class ExecutionEngine {
 
       const expectedType = prop.type;
       const actualType = Array.isArray(value) ? "array" : typeof value;
+      const allowedTypes = Array.isArray(expectedType) ? expectedType : [expectedType];
 
-      if (expectedType === "array" && !Array.isArray(value)) {
-        throw new Error(`Skill "${skillName}" 参数 "${key}" 应为 array，实际为 ${actualType}`);
-      } else if (expectedType !== "array" && expectedType !== "object" && actualType !== expectedType) {
-        throw new Error(`Skill "${skillName}" 参数 "${key}" 应为 ${expectedType}，实际为 ${actualType}`);
+      const isValidType = allowedTypes.some((t) => {
+        if (t === "array") return Array.isArray(value);
+        if (t === "object") return true; // object 保持宽松
+        return actualType === t;
+      });
+
+      if (!isValidType && !allowedTypes.includes("object")) {
+        throw new Error(`Skill "${skillName}" 参数 "${key}" 应为 ${allowedTypes.join("/")}，实际为 ${actualType}`);
       }
 
       if (prop.enum && !prop.enum.includes(String(value))) {

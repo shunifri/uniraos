@@ -1,57 +1,27 @@
 /**
- * Evolution Controller SQLite 持久化测试
+ * Evolution Controller 基础功能测试（内存逻辑，不涉及数据库持久化）
+ * 持久化逻辑已迁移至 EvolutionRepository
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { EvolutionController } from "../../src/engine/evolution-controller.js";
-import { mkdirSync, rmSync, existsSync } from "fs";
-import { join } from "path";
 
-const testDbDir = join(process.cwd(), ".test-raos");
-const testDbPath = join(testDbDir, "test-evolution.db");
+describe("EvolutionController Memory Logic", () => {
+  it("should record generations in memory", async () => {
+    const controller = new EvolutionController();
 
-beforeEach(() => {
-  if (existsSync(testDbDir)) {
-    rmSync(testDbDir, { recursive: true });
-  }
-  mkdirSync(testDbDir, { recursive: true });
-});
+    await controller.recordGeneration("skill_gen_1", "root_skill");
+    await controller.recordGeneration("skill_gen_2", "root_skill");
 
-afterEach(() => {
-  if (existsSync(testDbDir)) {
-    rmSync(testDbDir, { recursive: true });
-  }
-});
-
-describe("EvolutionController Persistence", () => {
-  it("should initialize database on creation with dbPath", () => {
-    const controller = new EvolutionController(undefined, testDbPath);
-
-    expect(existsSync(testDbPath)).toBe(true);
-    controller.close();
-  });
-
-  it("should persist skill generation to database", () => {
-    const controller = new EvolutionController(undefined, testDbPath);
-
-    controller.recordGeneration("skill_gen_1", "root_skill");
-    controller.recordGeneration("skill_gen_2", "root_skill");
-
-    controller.close();
-
-    // Create new controller with same db path - should restore data
-    const controller2 = new EvolutionController(undefined, testDbPath);
-    const history = controller2.getGenerationHistory();
+    const history = controller.getGenerationHistory();
 
     expect(history).toHaveLength(2);
     expect(history[0].name).toBe("skill_gen_1");
     expect(history[1].name).toBe("skill_gen_2");
     expect(history[0].generatedBy).toBe("root_skill");
-
-    controller2.close();
   });
 
-  it("should persist red line violations to database", () => {
-    const controller = new EvolutionController(undefined, testDbPath);
+  it("should track red line violations in memory", () => {
+    const controller = new EvolutionController();
 
     // Trigger a violation
     controller.checkRedLines({
@@ -61,24 +31,18 @@ describe("EvolutionController Persistence", () => {
       depth: 1,
     });
 
-    controller.close();
-
-    // Create new controller with same db path
-    const controller2 = new EvolutionController(undefined, testDbPath);
-    const violations = controller2.getViolations();
+    const violations = controller.getViolations();
 
     expect(violations.length).toBeGreaterThan(0);
     expect(violations[0].skillName).toBe("bad_skill");
-
-    controller2.close();
   });
 
-  it("should persist pending approvals to database", () => {
+  it("should track pending approvals in memory", async () => {
     const controller = new EvolutionController({
       requireHumanApproval: true,
-    }, testDbPath);
+    });
 
-    const id = controller.submitForApproval(
+    const id = await controller.submitForApproval(
       "new_skill",
       "A new skill",
       "async function() { return 42; }",
@@ -86,29 +50,20 @@ describe("EvolutionController Persistence", () => {
       "generator_skill"
     );
 
-    controller.close();
-
-    // Create new controller with same db path
-    const controller2 = new EvolutionController(
-      { requireHumanApproval: true },
-      testDbPath
-    );
-    const pending = controller2.getPendingApprovals();
+    const pending = controller.getPendingApprovals();
 
     expect(pending).toHaveLength(1);
     expect(pending[0].id).toBe(id);
     expect(pending[0].name).toBe("new_skill");
-
-    controller2.close();
   });
 
-  it("should restore full state across restarts", () => {
-    const controller = new EvolutionController(undefined, testDbPath);
+  it("should track full state (generations + violations + approvals)", async () => {
+    const controller = new EvolutionController();
 
     // Generate some skills
-    controller.recordGeneration("skill_a", "root");
-    controller.recordGeneration("skill_b", "skill_a");
-    controller.recordGeneration("skill_c", "skill_a");
+    await controller.recordGeneration("skill_a", "root");
+    await controller.recordGeneration("skill_b", "skill_a");
+    await controller.recordGeneration("skill_c", "skill_a");
 
     // Trigger a violation
     controller.checkRedLines({
@@ -118,53 +73,28 @@ describe("EvolutionController Persistence", () => {
       depth: 1,
     });
 
-    controller.close();
-
-    // Create new controller and verify state
-    const controller2 = new EvolutionController(undefined, testDbPath);
-
     // Check generations
-    const history = controller2.getGenerationHistory();
+    const history = controller.getGenerationHistory();
     expect(history).toHaveLength(3);
 
     // Check violations
-    const violations = controller2.getViolations();
+    const violations = controller.getViolations();
     expect(violations.length).toBeGreaterThan(0);
 
     // Check genealogy
-    const ancestors = controller2.getAncestry("skill_b");
+    const ancestors = controller.getAncestry("skill_b");
     expect(ancestors).toContain("skill_b");
     expect(ancestors).toContain("skill_a");
     expect(ancestors).toContain("root");
-
-    controller2.close();
   });
 
-  it("should work without database when dbPath is undefined", () => {
+  it("should work without init (memory-only mode)", async () => {
     const controller = new EvolutionController();
 
-    controller.recordGeneration("skill_x", "root");
+    await controller.recordGeneration("skill_x", "root");
 
     const history = controller.getGenerationHistory();
     expect(history).toHaveLength(1);
     expect(history[0].name).toBe("skill_x");
-
-    controller.close();
-  });
-
-  it("should handle database close gracefully", () => {
-    const controller = new EvolutionController(undefined, testDbPath);
-
-    controller.recordGeneration("skill_test", "root");
-
-    // Close should not throw
-    expect(() => {
-      controller.close();
-    }).not.toThrow();
-
-    // Second close should not throw
-    expect(() => {
-      controller.close();
-    }).not.toThrow();
   });
 });

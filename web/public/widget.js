@@ -23,6 +23,8 @@
  *   data-height     — 弹窗高度 px（默认 640）
  *   data-z-index    — 层级（默认 999999）
  *   data-role       — 角色标识，对应后端角色配置（如 presales, support）
+ *   data-app        — 应用ID（app_designs.id），widget 会自动加载该应用包含的 skills
+ *   data-skill      — 指定优先使用的 Skill 名称（单 skill，与 data-app 互斥时优先用 data-app）
  */
 (function () {
   "use strict";
@@ -47,10 +49,13 @@
     token: ds.token || "",
     baseUrl: (ds.baseUrl || inferredBase).replace(/\/$/, ""),
     title: ds.title || "RAOS 智能助手",
+    icon: ds.icon || "",
     width: parseInt(ds.width, 10) || 420,
     height: parseInt(ds.height, 10) || 640,
     zIndex: parseInt(ds.zIndex, 10) || 999999,
     role: ds.role || "",
+    app: ds.app || "",
+    skill: ds.skill || "",
   };
 
   if (!config.baseUrl) {
@@ -249,7 +254,11 @@
     btn.id = "raos-widget-btn";
     btn.type = "button";
     btn.setAttribute("aria-label", config.title);
-    btn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`;
+    if (config.icon) {
+      btn.innerHTML = `<img src="${escapeHtml(config.icon)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;">`;
+    } else {
+      btn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`;
+    }
 
     const pos = computeInitialPos();
     Object.assign(btn.style, pos);
@@ -268,9 +277,12 @@
 
     const header = document.createElement("div");
     header.id = "raos-widget-header";
+    const headerIconHtml = config.icon
+      ? `<img src="${escapeHtml(config.icon)}" alt="" style="width:18px;height:18px;border-radius:50%;object-fit:cover;">`
+      : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`;
     header.innerHTML = `
       <div id="raos-widget-header-title">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        ${headerIconHtml}
         <span>${escapeHtml(config.title)}</span>
       </div>
     `;
@@ -289,12 +301,22 @@
     iframe = document.createElement("iframe");
     iframe.id = "raos-widget-iframe";
     const queryParams = new URLSearchParams();
-    if (config.token) queryParams.set("token", config.token);
+    // token 不放在 URL 中，避免泄漏到浏览器历史 / Referer / access log
+    // 改为通过 postMessage 在 iframe 加载完成后安全传递
     if (config.role) queryParams.set("role", config.role);
+    if (config.app) queryParams.set("app", config.app);
+    if (config.skill) queryParams.set("skill", config.skill);
+    if (config.title) queryParams.set("title", config.title);
+    if (config.icon) queryParams.set("icon", config.icon);
     const queryString = queryParams.toString();
     iframe.src = `${config.baseUrl}/embed${queryString ? "?" + queryString : ""}`;
     iframe.title = config.title;
     iframe.allow = "clipboard-write; fullscreen";
+    iframe.sandbox = "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads";
+    // iframe 加载失败时给出提示
+    iframe.onerror = () => {
+      console.error("[RAOS Widget] iframe 加载失败，请检查 baseUrl 配置");
+    };
 
     el.appendChild(header);
     el.appendChild(iframe);
@@ -310,7 +332,7 @@
     isOpen = true;
     toggleBtn.style.display = "none";
 
-    // 如果 token 是通过 postMessage 传递的（跨域且不在 URL 中），在 iframe 加载完成后发送
+    // token 通过 postMessage 安全传递（避免出现在 URL / 历史记录 / Referer 中）
     if (config.token && iframe.contentWindow) {
       const sendToken = () => {
         iframe.contentWindow.postMessage(

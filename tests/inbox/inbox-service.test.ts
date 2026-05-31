@@ -16,6 +16,7 @@ const mockRepo = {
   findBySourceAndSourceId: vi.fn(),
   list: vi.fn(),
   updateStatus: vi.fn(),
+  updateStatusIf: vi.fn(),
   updateAISuggestion: vi.fn(),
   getStats: vi.fn(),
   getUnreadCount: vi.fn(),
@@ -217,14 +218,15 @@ describe("InboxService", () => {
   describe("completeItem", () => {
     it("should update status to completed and emit event", async () => {
       const item = makeItem({ category: "workflow_task", source: "workflow" });
-      mockRepo.updateStatus.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
+      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
       mockRepo.findById
         .mockResolvedValueOnce(item)
         .mockResolvedValueOnce({ ...item, status: "completed" });
 
       const result = await service.completeItem("inbx_test001", { action: "approve" });
 
-      expect(mockRepo.updateStatus).toHaveBeenCalledWith("inbx_test001", "completed", expect.any(Number));
+      expect(mockRepo.updateStatusIf).toHaveBeenCalledWith("inbx_test001", "completed", ["unread", "pending", "read"], expect.any(Number));
       expect(mockEmit).toHaveBeenCalledWith(
         expect.objectContaining({ type: "item_updated", itemId: "inbx_test001", status: "completed" })
       );
@@ -234,8 +236,8 @@ describe("InboxService", () => {
     it("should callback workflow for workflow_task items", async () => {
       const item = makeItem({ category: "workflow_task", source: "workflow", sourceId: "42" });
       mockRepo.findById.mockResolvedValue(item);
-      mockRepo.updateStatus.mockResolvedValue(undefined);
-      mockWorkflowEngine.completeTask.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
+      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
 
       await service.completeItem("inbx_test001", { action: "reject", comment: "不同意" });
 
@@ -249,7 +251,8 @@ describe("InboxService", () => {
     it("should callback evolution for evolution_approval items", async () => {
       const item = makeItem({ category: "evolution_approval", source: "evolution", sourceId: "evo_1" });
       mockRepo.findById.mockResolvedValue(item);
-      mockRepo.updateStatus.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
+      mockEvolutionController.approve.mockResolvedValue({ success: true });
 
       await service.completeItem("inbx_test001", { action: "approve" });
 
@@ -259,7 +262,8 @@ describe("InboxService", () => {
     it("should callback evolution reject action", async () => {
       const item = makeItem({ category: "evolution_approval", source: "evolution", sourceId: "evo_2" });
       mockRepo.findById.mockResolvedValue(item);
-      mockRepo.updateStatus.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
+      mockEvolutionController.reject.mockResolvedValue({ success: true });
 
       await service.completeItem("inbx_test001", { action: "reject", reason: "质量不达标" });
 
@@ -273,17 +277,36 @@ describe("InboxService", () => {
 
       expect(result).toBeNull();
     });
+
+    it("should skip completed or dismissed items", async () => {
+      const item = makeItem({ status: "completed" });
+      mockRepo.findById.mockResolvedValue(item);
+
+      const result = await service.completeItem("inbx_test001");
+
+      expect(mockRepo.updateStatusIf).not.toHaveBeenCalled();
+      expect(result?.status).toBe("completed");
+    });
   });
 
   describe("dismissItem", () => {
     it("should update status to dismissed", async () => {
       const item = makeItem();
       mockRepo.findById.mockResolvedValue(item);
-      mockRepo.updateStatus.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
 
       await service.dismissItem("inbx_test001");
 
-      expect(mockRepo.updateStatus).toHaveBeenCalledWith("inbx_test001", "dismissed", expect.any(Number));
+      expect(mockRepo.updateStatusIf).toHaveBeenCalledWith("inbx_test001", "dismissed", ["unread", "pending", "read"]);
+    });
+
+    it("should skip dismissing already completed or dismissed items", async () => {
+      const item = makeItem({ status: "completed" });
+      mockRepo.findById.mockResolvedValue(item);
+
+      await service.dismissItem("inbx_test001");
+
+      expect(mockRepo.updateStatusIf).not.toHaveBeenCalled();
     });
 
     it("should do nothing when item not found", async () => {
@@ -291,7 +314,7 @@ describe("InboxService", () => {
 
       await service.dismissItem("nonexistent");
 
-      expect(mockRepo.updateStatus).not.toHaveBeenCalled();
+      expect(mockRepo.updateStatusIf).not.toHaveBeenCalled();
     });
   });
 
@@ -302,12 +325,13 @@ describe("InboxService", () => {
       mockRepo.findById
         .mockResolvedValueOnce(item)
         .mockResolvedValueOnce({ ...item, status: "completed" });
-      mockRepo.updateStatus.mockResolvedValue(undefined);
+      mockRepo.updateStatusIf.mockResolvedValue(1);
+      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
 
       const result = await service.completeBySource("workflow", "42", { action: "approve" });
 
       expect(mockRepo.findBySourceAndSourceId).toHaveBeenCalledWith("workflow", "42");
-      expect(mockRepo.updateStatus).toHaveBeenCalledWith("inbx_src001", "completed", expect.any(Number));
+      expect(mockRepo.updateStatusIf).toHaveBeenCalledWith("inbx_src001", "completed", ["unread", "pending", "read"], expect.any(Number));
       expect(result?.status).toBe("completed");
     });
 

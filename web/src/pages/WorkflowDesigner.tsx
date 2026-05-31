@@ -18,6 +18,7 @@ import {
   InputNumber,
   Spin,
   Card,
+  Divider,
 } from 'antd';
 import {
   PlusOutlined,
@@ -45,6 +46,8 @@ import {
   updateWorkflowDefinition,
   validateWorkflowDefinition,
   testWorkflowDefinition,
+  getUsers,
+  getRoles,
 } from '@/api';
 
 const { Text } = Typography;
@@ -77,9 +80,9 @@ interface DesignerNode {
   dueDuration?: string;
   // service_task
   service?: string;
-  config?: Record<string, unknown>;
+  config?: Record<string, any>;
   // exclusive_gateway
-  conditions?: Array<{ name?: string; expression: string; next: string }>;
+  conditions?: Array<{ name?: string; expression: string; next?: string }>;
   // parallel_gateway
   mode?: 'split' | 'join';
   branches?: string[];
@@ -130,9 +133,112 @@ function fromDesignerState(state: WorkflowDesignerState): any {
     name: state.name,
     nodes: state.nodes.map((n) => {
       const { x, y, ...rest } = n;
-      return rest;
+      // 过滤掉空字符串的 next，避免后端验证误判
+      const cleaned: any = { ...rest };
+      if (cleaned.next === '') {
+        delete cleaned.next;
+      }
+      // 过滤掉条件中空字符串的 next
+      if (cleaned.conditions && Array.isArray(cleaned.conditions)) {
+        cleaned.conditions = cleaned.conditions
+          .filter((c: any) => c.next && c.next !== '')
+          .map((c: any) => ({ ...c }));
+      }
+      // 过滤掉分支中空字符串
+      if (cleaned.branches && Array.isArray(cleaned.branches)) {
+        cleaned.branches = cleaned.branches.filter((b: any) => b && b !== '');
+      }
+      return cleaned;
     }),
   };
+}
+
+/** 客户端验证流程定义 */
+function validateDesignerState(state: WorkflowDesignerState): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const nodes = state.nodes;
+  if (!state.key || !state.key.trim()) {
+    errors.push('流程标识不能为空');
+  }
+  if (!state.name || !state.name.trim()) {
+    errors.push('流程名称不能为空');
+  }
+  if (nodes.length === 0) {
+    errors.push('流程必须至少有一个节点');
+    return { valid: false, errors };
+  }
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const startEvents = nodes.filter((n) => n.type === 'start_event');
+  const endEvents = nodes.filter((n) => n.type === 'end_event');
+  if (startEvents.length === 0) {
+    errors.push('流程必须包含一个开始事件 (start_event)');
+  }
+  if (startEvents.length > 1) {
+    errors.push('流程只能包含一个开始事件');
+  }
+  if (endEvents.length === 0) {
+    errors.push('流程必须包含至少一个结束事件 (end_event)');
+  }
+  for (const node of nodes) {
+    if (node.type === 'start_event') {
+      if (!node.next) {
+        errors.push(`开始事件 "${node.name || node.id}" 必须连接到下一个节点`);
+      } else if (!nodeIds.has(node.next)) {
+        errors.push(`开始事件 "${node.name || node.id}" 连接的目标节点不存在`);
+      }
+    }
+    if (node.type === 'end_event' && node.next) {
+      errors.push(`结束事件 "${node.name || node.id}" 不应有后续节点`);
+    }
+    if (node.next && node.next !== '' && !nodeIds.has(node.next)) {
+      errors.push(`节点 "${node.name || node.id}" 连接的目标节点不存在: ${node.next}`);
+    }
+    if (node.type === 'exclusive_gateway' && node.conditions) {
+      for (const cond of node.conditions) {
+        if (!cond.next || cond.next === '') {
+          errors.push(`排他网关 "${node.name || node.id}" 的条件 "${cond.name || cond.expression}" 缺少目标节点`);
+        } else if (!nodeIds.has(cond.next)) {
+          errors.push(`排他网关 "${node.name || node.id}" 的条件连接的目标节点不存在`);
+        }
+      }
+    }
+    if (node.type === 'parallel_gateway' && node.mode === 'split' && node.branches) {
+      for (const branchId of node.branches) {
+        if (!nodeIds.has(branchId)) {
+          errors.push(`并行网关 "${node.name || node.id}" 的分支节点不存在: ${branchId}`);
+        }
+      }
+    }
+  }
+  // 可达性检查
+  if (startEvents.length === 1) {
+    const reachable = new Set<string>();
+    const queue = [startEvents[0].id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      const node = nodes.find((n) => n.id === id);
+      if (!node) continue;
+      if (node.next && node.next !== '') queue.push(node.next);
+      if (node.type === 'exclusive_gateway' && node.conditions) {
+        for (const cond of node.conditions) {
+          if (cond.next && cond.next !== '') queue.push(cond.next);
+        }
+      }
+      if (node.type === 'parallel_gateway' && node.mode === 'split' && node.branches) {
+        for (const branchId of node.branches) {
+          if (branchId && branchId !== '') queue.push(branchId);
+        }
+      }
+    }
+    for (const node of nodes) {
+      if (!reachable.has(node.id)) {
+        errors.push(`节点 "${node.name || node.id}" 从开始事件不可达`);
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors };
 }
 
 function getNodeConnections(nodes: DesignerNode[]): Array<{ from: string; to: string; label?: string }> {
@@ -143,7 +249,9 @@ function getNodeConnections(nodes: DesignerNode[]): Array<{ from: string; to: st
     }
     if (node.type === 'exclusive_gateway' && node.conditions) {
       for (const cond of node.conditions) {
-        connections.push({ from: node.id, to: cond.next, label: cond.name || cond.expression });
+        if (cond.next) {
+          connections.push({ from: node.id, to: cond.next, label: cond.name || cond.expression });
+        }
       }
     }
     if (node.type === 'parallel_gateway' && node.mode === 'split' && node.branches) {
@@ -166,7 +274,20 @@ const WorkflowDesigner: React.FC = () => {
   // ── State ──
   const [loading, setLoading] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [state, setState] = useState<WorkflowDesignerState>({ key: '', name: '', nodes: [] });
+  // 默认新建流程时包含 start_event 和 end_event
+  const createDefaultState = (): WorkflowDesignerState => {
+    const startId = generateId('start');
+    const endId = generateId('end');
+    return {
+      key: '',
+      name: '',
+      nodes: [
+        { id: startId, type: 'start_event', name: '开始', x: 100, y: 150, next: endId },
+        { id: endId, type: 'end_event', name: '结束', x: 400, y: 150 },
+      ],
+    };
+  };
+  const [state, setState] = useState<WorkflowDesignerState>(createDefaultState());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonText, setJsonText] = useState('');
@@ -175,18 +296,38 @@ const WorkflowDesigner: React.FC = () => {
   const [saveAsName, setSaveAsName] = useState('');
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  // ── Drag state ──
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragOffset = useRef({ x: 0, y: 0 });
+  const hasDragged = useRef(false);
+
+  // ── User / Role lists for selectors ──
+  const [userList, setUserList] = useState<Array<{ id: string; username: string; displayName?: string }>>([]);
+  const [roleList, setRoleList] = useState<Array<{ id: string; name: string }>>([]);
+
+  useEffect(() => {
+    getUsers().then((res: any) => {
+      if (res.success) setUserList(res.users || []);
+    }).catch(() => {});
+    getRoles().then((res: any) => {
+      if (res.success) setRoleList(res.roles || []);
+    }).catch(() => {});
+  }, []);
+
   const selectedNode = useMemo(() => state.nodes.find((n) => n.id === selectedNodeId) ?? null, [state.nodes, selectedNodeId]);
 
   // ── New / Load based on route param ──
   const newWorkflow = () => {
     const key = `workflow_${Date.now()}`;
+    const startId = generateId('start');
+    const endId = generateId('end');
     setActiveKey(null);
     setState({
       key,
       name: '新建流程',
       nodes: [
-        { id: 'start', type: 'start_event', name: '开始', x: 100, y: 100, next: 'end' },
-        { id: 'end', type: 'end_event', name: '结束', x: 100, y: 300 },
+        { id: startId, type: 'start_event', name: '开始', x: 100, y: 100, next: endId },
+        { id: endId, type: 'end_event', name: '结束', x: 400, y: 100 },
       ],
     });
     setSelectedNodeId(null);
@@ -240,7 +381,7 @@ const WorkflowDesigner: React.FC = () => {
       newNode.config = {};
     }
     if (type === 'exclusive_gateway') {
-      newNode.conditions = [{ expression: 'default', next: '' }];
+      newNode.conditions = [{ expression: 'default' }];
     }
     if (type === 'parallel_gateway') {
       newNode.mode = 'split';
@@ -277,6 +418,41 @@ const WorkflowDesigner: React.FC = () => {
     }));
   };
 
+  // ── Drag handlers ──
+  const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
+    e.stopPropagation();
+    const node = state.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    dragOffset.current = {
+      x: e.clientX - rect.left - node.x,
+      y: e.clientY - rect.top - node.y,
+    };
+    setDraggingId(nodeId);
+    setSelectedNodeId(nodeId);
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent) => {
+    if (!draggingId || !canvasRef.current) return;
+    hasDragged.current = true;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left - dragOffset.current.x;
+    const y = e.clientY - rect.top - dragOffset.current.y;
+    updateNode(draggingId, { x: Math.max(0, x), y: Math.max(0, y) });
+  };
+
+  const handleCanvasMouseUp = () => {
+    const wasDragging = draggingId;
+    setDraggingId(null);
+    // 如果点击（没有拖动），则选中节点
+    if (wasDragging && !hasDragged.current) {
+      setSelectedNodeId(wasDragging);
+    }
+    // 重置拖动标记，供下次交互使用
+    hasDragged.current = false;
+  };
+
   const connectNodes = (fromId: string, toId: string) => {
     const fromNode = state.nodes.find((n) => n.id === fromId);
     if (!fromNode) return;
@@ -295,6 +471,21 @@ const WorkflowDesigner: React.FC = () => {
 
   // ── Save ──
   const handleSave = async (asNew = false) => {
+    // 客户端验证
+    const validation = validateDesignerState(state);
+    if (!validation.valid) {
+      Modal.error({
+        title: '流程定义验证失败',
+        content: (
+          <List
+            size="small"
+            dataSource={validation.errors}
+            renderItem={(item: string) => <List.Item><Text type="danger">{item}</Text></List.Item>}
+          />
+        ),
+      });
+      return;
+    }
     const spec = fromDesignerState(state);
     try {
       if (asNew || !activeKey) {
@@ -572,11 +763,77 @@ const WorkflowDesigner: React.FC = () => {
                 setSelectedNodeId(null);
                 setConnectSource(null);
               }}
+              onMouseMove={handleCanvasMouseMove}
+              onMouseUp={handleCanvasMouseUp}
             >
-              {/* SVG Connections */}
+              {/* Nodes */}
+              {state.nodes.map((node) => {
+                const nt = NODE_TYPES.find((t) => t.type === node.type);
+                const isSelected = selectedNodeId === node.id;
+                return (
+                  <div
+                    key={node.id}
+                    style={{
+                      position: 'absolute',
+                      left: node.x,
+                      top: node.y,
+                      width: NODE_WIDTH,
+                      height: NODE_HEIGHT,
+                      background: '#fff',
+                      border: `2px solid ${isSelected ? '#1677ff' : nt?.color || '#d9d9d9'}`,
+                      borderRadius: 8,
+                      padding: 8,
+                      cursor: 'pointer',
+                      boxShadow: isSelected ? '0 0 0 2px rgba(22,119,255,0.2)' : '0 2px 4px rgba(0,0,0,0.06)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      gap: 2,
+                      zIndex: isSelected ? 10 : 1,
+                    }}
+                    onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (hasDragged.current) return;
+                      handleNodeClick(node.id);
+                    }}
+                  >
+                    <div style={{ color: nt?.color, fontSize: 16 }}>{nt?.icon}</div>
+                    <div style={{ fontSize: 12, fontWeight: 500, textAlign: 'center', wordBreak: 'break-all' }}>
+                      {node.name || node.id}
+                    </div>
+                    <Tag
+                      style={{
+                        position: 'absolute',
+                        top: -10,
+                        right: -8,
+                        cursor: 'pointer',
+                        fontSize: 10,
+                        lineHeight: '16px',
+                        padding: '0 4px',
+                      }}
+                      color="red"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeNode(node.id);
+                      }}
+                    >
+                      <DeleteOutlined />
+                    </Tag>
+                  </div>
+                );
+              })}
+
+              {/* SVG Connections — 渲染在节点之上 */}
               <svg
-                style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+                style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 20 }}
               >
+                <defs>
+                  <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#999" />
+                  </marker>
+                </defs>
                 {connections.map((conn, idx) => {
                   const fromNode = state.nodes.find((n) => n.id === conn.from);
                   const toNode = state.nodes.find((n) => n.id === conn.to);
@@ -610,69 +867,7 @@ const WorkflowDesigner: React.FC = () => {
                     </g>
                   );
                 })}
-                <defs>
-                  <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                    <polygon points="0 0, 10 3.5, 0 7" fill="#999" />
-                  </marker>
-                </defs>
               </svg>
-
-              {/* Nodes */}
-              {state.nodes.map((node) => {
-                const nt = NODE_TYPES.find((t) => t.type === node.type);
-                const isSelected = selectedNodeId === node.id;
-                return (
-                  <div
-                    key={node.id}
-                    style={{
-                      position: 'absolute',
-                      left: node.x,
-                      top: node.y,
-                      width: NODE_WIDTH,
-                      height: NODE_HEIGHT,
-                      background: '#fff',
-                      border: `2px solid ${isSelected ? '#1677ff' : nt?.color || '#d9d9d9'}`,
-                      borderRadius: 8,
-                      padding: 8,
-                      cursor: 'pointer',
-                      boxShadow: isSelected ? '0 0 0 2px rgba(22,119,255,0.2)' : '0 2px 4px rgba(0,0,0,0.06)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      gap: 2,
-                      zIndex: isSelected ? 10 : 1,
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleNodeClick(node.id);
-                    }}
-                  >
-                    <div style={{ color: nt?.color, fontSize: 16 }}>{nt?.icon}</div>
-                    <div style={{ fontSize: 12, fontWeight: 500, textAlign: 'center', wordBreak: 'break-all' }}>
-                      {node.name || node.id}
-                    </div>
-                    <Tag
-                      style={{
-                        position: 'absolute',
-                        top: -10,
-                        right: -8,
-                        cursor: 'pointer',
-                        fontSize: 10,
-                        lineHeight: '16px',
-                        padding: '0 4px',
-                      }}
-                      color="red"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeNode(node.id);
-                      }}
-                    >
-                      <DeleteOutlined />
-                    </Tag>
-                  </div>
-                );
-              })}
             </div>
           )}
         </div>
@@ -764,33 +959,52 @@ const WorkflowDesigner: React.FC = () => {
             {selectedNode.type === 'user_task' && (
               <>
                 <Form.Item label="分配人">
-                  <Input
-                    value={selectedNode.assignee || ''}
-                    onChange={(e) => updateNode(selectedNode.id, { assignee: e.target.value })}
-                    placeholder="用户ID"
-                  />
+                  <Select
+                    value={selectedNode.assignee || undefined}
+                    onChange={(v) => updateNode(selectedNode.id, { assignee: v })}
+                    allowClear
+                    placeholder="选择用户"
+                    showSearch
+                    optionFilterProp="children"
+                  >
+                    {userList.map((u) => (
+                      <Option key={u.id} value={u.id}>
+                        {u.displayName || u.username} ({u.id})
+                      </Option>
+                    ))}
+                  </Select>
                 </Form.Item>
-                <Form.Item label="候选人 (逗号分隔)">
-                  <Input
-                    value={(selectedNode.candidateUsers || []).join(', ')}
-                    onChange={(e) =>
-                      updateNode(selectedNode.id, {
-                        candidateUsers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
-                      })
-                    }
-                    placeholder="user1, user2"
-                  />
+                <Form.Item label="候选人">
+                  <Select
+                    mode="multiple"
+                    value={selectedNode.candidateUsers || []}
+                    onChange={(v) => updateNode(selectedNode.id, { candidateUsers: v })}
+                    placeholder="选择候选用户"
+                    showSearch
+                    optionFilterProp="children"
+                  >
+                    {userList.map((u) => (
+                      <Option key={u.id} value={u.id}>
+                        {u.displayName || u.username} ({u.id})
+                      </Option>
+                    ))}
+                  </Select>
                 </Form.Item>
-                <Form.Item label="候选组 (逗号分隔)">
-                  <Input
-                    value={(selectedNode.candidateGroups || []).join(', ')}
-                    onChange={(e) =>
-                      updateNode(selectedNode.id, {
-                        candidateGroups: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
-                      })
-                    }
-                    placeholder="group1, group2"
-                  />
+                <Form.Item label="候选角色">
+                  <Select
+                    mode="multiple"
+                    value={selectedNode.candidateGroups || []}
+                    onChange={(v) => updateNode(selectedNode.id, { candidateGroups: v })}
+                    placeholder="选择候选角色"
+                    showSearch
+                    optionFilterProp="children"
+                  >
+                    {roleList.map((r) => (
+                      <Option key={r.id} value={r.name}>
+                        {r.name}
+                      </Option>
+                    ))}
+                  </Select>
                 </Form.Item>
                 <Form.Item label="超时时间 (ISO 8601)">
                   <Input
@@ -808,13 +1022,195 @@ const WorkflowDesigner: React.FC = () => {
                 <Form.Item label="服务名称">
                   <Select
                     value={selectedNode.service || 'echo'}
-                    onChange={(v) => updateNode(selectedNode.id, { service: v })}
+                    onChange={(v) => {
+                      // 切换服务时保留通用配置，重置服务专属配置
+                      const oldConfig = selectedNode.config || {};
+                      const commonConfig = {
+                        retries: oldConfig.retries,
+                        retryDelay: oldConfig.retryDelay,
+                        timeout: oldConfig.timeout,
+                        compensation: oldConfig.compensation,
+                      };
+                      updateNode(selectedNode.id, { service: v, config: commonConfig });
+                    }}
                   >
-                    <Option value="echo">echo</Option>
-                    <Option value="http_request">http_request</Option>
+                    <Option value="echo">echo（调试回显）</Option>
+                    <Option value="http_request">http_request（HTTP 调用）</Option>
+                    <Option value="notify">notify（发送通知）</Option>
+                    <Option value="email_notification">email_notification（发送邮件）</Option>
+                    <Option value="im_bot_send">im_bot_send（IM 机器人消息）</Option>
                   </Select>
                 </Form.Item>
-                <Form.Item label="配置 JSON">
+
+                {/* http_request 专属配置 */}
+                {selectedNode.service === 'http_request' && (
+                  <>
+                    <Form.Item label="请求地址 (url)">
+                      <Input
+                        value={selectedNode.config?.url || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, url: e.target.value } })}
+                        placeholder="https://api.example.com/data"
+                      />
+                    </Form.Item>
+                    <Form.Item label="请求方法">
+                      <Select
+                        value={selectedNode.config?.method || 'GET'}
+                        onChange={(v) => updateNode(selectedNode.id, { config: { ...selectedNode.config, method: v } })}
+                      >
+                        <Option value="GET">GET</Option>
+                        <Option value="POST">POST</Option>
+                        <Option value="PUT">PUT</Option>
+                        <Option value="DELETE">DELETE</Option>
+                      </Select>
+                    </Form.Item>
+                    <Form.Item label="请求体 (body)">
+                      <TextArea
+                        rows={2}
+                        value={typeof selectedNode.config?.body === 'string' ? selectedNode.config.body : JSON.stringify(selectedNode.config?.body || {})}
+                        onChange={(e) => {
+                          try {
+                            const body = JSON.parse(e.target.value);
+                            updateNode(selectedNode.id, { config: { ...selectedNode.config, body } });
+                          } catch {
+                            updateNode(selectedNode.id, { config: { ...selectedNode.config, body: e.target.value } });
+                          }
+                        }}
+                        placeholder='{"key": "value"} 或纯文本'
+                        style={{ fontFamily: 'monospace', fontSize: 12 }}
+                      />
+                    </Form.Item>
+                  </>
+                )}
+
+                {/* notify 专属配置 */}
+                {selectedNode.service === 'notify' && (
+                  <>
+                    <Form.Item label="通知标题">
+                      <Input
+                        value={selectedNode.config?.title || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, title: e.target.value } })}
+                        placeholder="审批已通过"
+                      />
+                    </Form.Item>
+                    <Form.Item label="通知内容">
+                      <TextArea
+                        rows={2}
+                        value={selectedNode.config?.content || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, content: e.target.value } })}
+                        placeholder="您的报销申请已审批通过"
+                      />
+                    </Form.Item>
+                    <Form.Item label="接收用户ID（可选，默认发给发起人）">
+                      <Input
+                        value={selectedNode.config?.userId || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, userId: e.target.value } })}
+                        placeholder="${starter} 或具体用户ID"
+                      />
+                    </Form.Item>
+                  </>
+                )}
+
+                {/* email_notification 专属配置 */}
+                {selectedNode.service === 'email_notification' && (
+                  <>
+                    <Form.Item label="SMTP 连接配置">
+                      <Input
+                        value={selectedNode.config?.connection || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, connection: e.target.value } })}
+                        placeholder="连接配置名称（留空使用默认）"
+                      />
+                    </Form.Item>
+                    <Form.Item label="收件人">
+                      <Input
+                        value={selectedNode.config?.to || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, to: e.target.value } })}
+                        placeholder="${starter.email} 或邮箱地址"
+                      />
+                    </Form.Item>
+                    <Form.Item label="邮件主题">
+                      <Input
+                        value={selectedNode.config?.subject || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, subject: e.target.value } })}
+                        placeholder="审批结果通知"
+                      />
+                    </Form.Item>
+                    <Form.Item label="邮件正文">
+                      <TextArea
+                        rows={3}
+                        value={selectedNode.config?.body || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, body: e.target.value } })}
+                        placeholder="您的申请已审批通过"
+                      />
+                    </Form.Item>
+                    <Form.Item label="HTML 格式">
+                      <Select
+                        value={selectedNode.config?.html ? 'true' : 'false'}
+                        onChange={(v) => updateNode(selectedNode.id, { config: { ...selectedNode.config, html: v === 'true' } })}
+                      >
+                        <Option value="false">纯文本</Option>
+                        <Option value="true">HTML</Option>
+                      </Select>
+                    </Form.Item>
+                  </>
+                )}
+
+                {/* im_bot_send 专属配置 */}
+                {selectedNode.service === 'im_bot_send' && (
+                  <>
+                    <Form.Item label="IM 连接配置">
+                      <Input
+                        value={selectedNode.config?.connection || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, connection: e.target.value } })}
+                        placeholder="连接配置名称（留空使用默认）"
+                      />
+                    </Form.Item>
+                    <Form.Item label="消息内容">
+                      <TextArea
+                        rows={2}
+                        value={selectedNode.config?.content || ''}
+                        onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, content: e.target.value } })}
+                        placeholder="审批已通过"
+                      />
+                    </Form.Item>
+                    <Form.Item label="消息类型">
+                      <Select
+                        value={selectedNode.config?.msgType || 'text'}
+                        onChange={(v) => updateNode(selectedNode.id, { config: { ...selectedNode.config, msgType: v } })}
+                      >
+                        <Option value="text">文本</Option>
+                        <Option value="markdown">Markdown</Option>
+                      </Select>
+                    </Form.Item>
+                  </>
+                )}
+
+                {/* 通用执行配置 */}
+                <Divider style={{ margin: '12px 0' }} />
+                <Form.Item label="超时时间 (ms)">
+                  <Input
+                    type="number"
+                    value={selectedNode.config?.timeout || 30000}
+                    onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, timeout: parseInt(e.target.value, 10) || 30000 } })}
+                  />
+                </Form.Item>
+                <Form.Item label="重试次数">
+                  <Input
+                    type="number"
+                    value={selectedNode.config?.retries || 0}
+                    onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, retries: parseInt(e.target.value, 10) || 0 } })}
+                  />
+                </Form.Item>
+                <Form.Item label="补偿服务（Saga，可选）">
+                  <Input
+                    value={selectedNode.config?.compensation || ''}
+                    onChange={(e) => updateNode(selectedNode.id, { config: { ...selectedNode.config, compensation: e.target.value } })}
+                    placeholder="取消流程时执行的补偿服务名"
+                  />
+                </Form.Item>
+
+                {/* 高级：JSON 编辑 */}
+                <Divider style={{ margin: '12px 0' }} />
+                <Form.Item label="完整配置 JSON（高级）">
                   <TextArea
                     rows={4}
                     value={JSON.stringify(selectedNode.config || {}, null, 2)}
@@ -895,7 +1291,7 @@ const WorkflowDesigner: React.FC = () => {
                     size="small"
                     onClick={() => {
                       const conditions = [...(selectedNode.conditions || [])];
-                      conditions.push({ expression: 'default', next: '' });
+                      conditions.push({ expression: 'default' });
                       updateNode(selectedNode.id, { conditions });
                     }}
                   >

@@ -8,7 +8,7 @@ describe("Worker Thread Sandbox", () => {
       { a: 3, b: 5 },
     );
     expect(result.success).toBe(true);
-    expect(result.data).toEqual({ success: true, data: { sum: 8 } });
+    expect(result.data).toEqual({ sum: 8 });
   });
 
   it("catches errors in sandboxed code", async () => {
@@ -46,6 +46,6 @@ describe("Worker Thread Sandbox", () => {
       {},
     );
     expect(result.success).toBe(true);
-    expect(result.data).toEqual({ success: true, data: "undefined" });
+    expect(result.data).toEqual("undefined");
   });
 });

@@ -4,6 +4,7 @@ import zhCN from "antd/locale/zh_CN";
 import { useAuthStore } from "@/store/auth";
 import Login from "@/components/Login";
 import ChatPage from "@/pages/Chat";
+import { api } from "@/api";
 
 /** 嵌入版聊天页面
  *  通过 postMessage 或 URL 参数接收 token，用于第三方 iframe 嵌入场景。
@@ -13,16 +14,24 @@ export default function EmbedChat() {
   const [ready, setReady] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [defaultSkill, setDefaultSkill] = useState<string | undefined>(undefined);
+  const [defaultSkills, setDefaultSkills] = useState<string[] | undefined>(undefined);
+  const [appId, setAppId] = useState<string | undefined>(undefined);
+  const [embedTitle, setEmbedTitle] = useState<string>("RAOS 智能助手");
+  const [embedIcon, setEmbedIcon] = useState<string>("");
 
   useEffect(() => {
-    // 1. 尝试从 URL 参数获取 token、role 和 skill
+    // 1. 尝试从 URL 参数获取 token、role、skill、app、title、icon
     const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = params.get("token");
     const roleFromUrl = params.get("role");
     const skillFromUrl = params.get("skill");
-    if (skillFromUrl) {
-      setDefaultSkill(skillFromUrl);
-    }
+    const appFromUrl = params.get("app");
+    const titleFromUrl = params.get("title");
+    const iconFromUrl = params.get("icon");
+
+    if (titleFromUrl) setEmbedTitle(titleFromUrl);
+    if (iconFromUrl) setEmbedIcon(iconFromUrl);
+
     if (roleFromUrl) {
       useAuthStore.setState({ embeddedRole: roleFromUrl });
     }
@@ -39,10 +48,14 @@ export default function EmbedChat() {
       }
     }
 
+    const extraSkills: string[] = skillFromUrl ? [skillFromUrl] : [];
+
     const applyToken = async (token: string) => {
       useAuthStore.setState({ token });
       try {
         await useAuthStore.getState().checkSession();
+        // token 就绪后再加载 skills，确保 /api/apps/:appId 能带认证调用
+        await loadSkills(appFromUrl, extraSkills);
         setReady(true);
       } catch {
         // token 过期或无效，清除后显示登录
@@ -62,8 +75,11 @@ export default function EmbedChat() {
     }
 
     // 3. 等待 postMessage 注入 token（跨域 iframe 场景）
+    // 必须验证 origin，防止恶意页面伪造消息
+    const expectedOrigin = window.location.origin;
     let resolved = false;
     const handler = (e: MessageEvent) => {
+      if (e.origin !== expectedOrigin) return;
       if (e.data?.type === "RAOS_AUTH" && e.data?.token && !resolved) {
         resolved = true;
         applyToken(e.data.token);
@@ -92,11 +108,58 @@ export default function EmbedChat() {
     return () => {
       window.removeEventListener("message", handler);
       clearTimeout(timer);
+      // 清理 embeddedRole，避免影响同页面后续导航
+      useAuthStore.setState({ embeddedRole: undefined });
+      // 如果当前是访客身份，清除 token 避免污染主站登录状态
+      //（嵌入场景获取的访客 token 不应持久化到 localStorage）
+      if (useAuthStore.getState().isAnonymous) {
+        useAuthStore.getState().logout();
+      }
     };
   }, []);
 
-  const handleLoginSuccess = () => {
+  const loadSkills = async (appId: string | null, extraSkills: string[]) => {
+    try {
+      // 并行加载 anonymous 基础 skills 和 app skills
+      const [anonRes, appRes] = await Promise.all([
+        api.get<any>("/api/permissions/anonymous-skills").catch(() => null),
+        appId ? api.get<any>(`/api/apps/${appId}`).catch(() => null) : null,
+      ]);
+
+      const anonSkills: string[] = anonRes?.success ? anonRes.data?.skills ?? [] : [];
+      const appData = appRes?.success ? appRes.data : null;
+      const appSkills: string[] = appData
+        ? appData.skills?.map((s: { key: string }) => s.key) ?? []
+        : [];
+
+      // 合并去重：anonymous 基础 skills + app skills + 额外传入的 skill
+      const merged = Array.from(new Set([...anonSkills, ...appSkills, ...extraSkills]));
+
+      if (merged.length > 0) {
+        setDefaultSkills(merged);
+        // 单 skill 场景同时设置 defaultSkill，兼容后端单 skill 语义
+        if (merged.length === 1) {
+          setDefaultSkill(merged[0]);
+        }
+      }
+
+      // 记住 appId，让后端自己加载应用设定（避免前端传递 systemPrompt 被篡改）
+      if (appId) {
+        setAppId(appId);
+      }
+    } catch {
+      // 加载 skills 失败，静默处理，让对话正常进行
+    }
+  };
+
+  const handleLoginSuccess = async () => {
     setShowLogin(false);
+    // 手动登录成功后重新加载 skills（URL 参数中可能带有 app/skill）
+    const params = new URLSearchParams(window.location.search);
+    const skillFromUrl = params.get("skill");
+    const appFromUrl = params.get("app");
+    const extraSkills: string[] = skillFromUrl ? [skillFromUrl] : [];
+    await loadSkills(appFromUrl, extraSkills);
     setReady(true);
   };
 
@@ -136,19 +199,22 @@ export default function EmbedChat() {
                   color: "#333",
                 }}
               >
-                <img
-                  src="/ai-avatar.png"
-                  alt="AI"
-                  style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: 14,
-                    marginBottom: 12,
-                    display: "inline-block",
-                    boxShadow: "0 4px 16px rgba(139, 92, 246, 0.25)",
-                  }}
-                />
-                <div>RAOS 智能助手</div>
+                {embedIcon ? (
+                  <img
+                    src={embedIcon}
+                    alt=""
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 14,
+                      marginBottom: 12,
+                      display: "inline-block",
+                      boxShadow: "0 4px 16px rgba(139, 92, 246, 0.25)",
+                      objectFit: "cover",
+                    }}
+                  />
+                ) : null}
+                <div>{embedTitle}</div>
               </div>
               <Login onSuccess={handleLoginSuccess} />
             </div>
@@ -204,7 +270,7 @@ export default function EmbedChat() {
             flexDirection: "column",
           }}
         >
-          <ChatPage embedded defaultSkill={defaultSkill} />
+          <ChatPage embedded defaultSkill={defaultSkill} defaultSkills={defaultSkills} appId={appId} title={embedTitle} icon={embedIcon} />
         </div>
       </AntApp>
     </ConfigProvider>

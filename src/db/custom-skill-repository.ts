@@ -8,6 +8,23 @@ import { getDb, isMySQL } from "./database.js";
 import type { SkillDefinition } from "../types/index.js";
 import { defineSkill, defineSystemSkill } from "../types/index.js";
 
+/** 自定义 Skill 默认可调用的系统 Skill 白名单 */
+const DEFAULT_ALLOWED_SKILLS = new Set([
+  "form_data_query",
+  "db_query",
+  "mysql_query",
+  "file_provide",
+  "file_provide_multi",
+  "file_list",
+  "calculate",
+  "chart_generate",
+  "chart_recommend",
+  "kb_search",
+  "kb_list",
+  "kb_stats",
+  "kb_formats",
+]);
+
 export interface CustomSkill {
   id: string;
   name: string;
@@ -147,14 +164,13 @@ export class CustomSkillRepository {
     return rows.map(this.mapRow);
   }
 
-  /** 获取所有自定义 Skill */
+  /** 获取所有自定义 Skill（仅用于系统启动加载） */
   async findAll(): Promise<CustomSkill[]> {
     if (isMySQL()) {
       const adapter = await getMySQLAdapter();
       const rows = await adapter.query("SELECT * FROM custom_skills");
       return rows.map(this.mapRow);
     }
-
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const rows = this.sqliteDb.prepare("SELECT * FROM custom_skills").all();
     return rows.map(this.mapRow);
@@ -179,6 +195,24 @@ export class CustomSkillRepository {
     const result = this.sqliteDb.prepare(
       "DELETE FROM custom_skills WHERE id = ?"
     ).run(id);
+    return result.changes > 0;
+  }
+
+  /** 按名称删除自定义 Skill（需要 ownerId 校验） */
+  async deleteByName(name: string, ownerId: string): Promise<boolean> {
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const result = await adapter.execute(
+        "DELETE FROM custom_skills WHERE name = ? AND owner_id = ?",
+        [name, ownerId]
+      );
+      return result.affectedRows > 0;
+    }
+
+    if (!this.sqliteDb) throw new Error("SQLite database not provided");
+    const result = this.sqliteDb.prepare(
+      "DELETE FROM custom_skills WHERE name = ? AND owner_id = ?"
+    ).run(name, ownerId);
     return result.changes > 0;
   }
 
@@ -207,21 +241,43 @@ export class CustomSkillRepository {
     // 根据类型选择合适的构建方法
     const builder = definition.isSystem ? defineSystemSkill : defineSkill;
 
-    // 优先从 _handlerCode 恢复 handler 函数
+    // 安全：通过 Worker 沙箱执行自定义 handler，替代危险的 new Function
     let restoredHandler: import("../types/index.js").SkillHandler;
     if (definition._handlerCode && typeof definition._handlerCode === "string") {
-      try {
-        const fn = new Function("return " + definition._handlerCode)();
-        if (typeof fn === "function") {
-          restoredHandler = fn as import("../types/index.js").SkillHandler;
-        } else {
-          throw new Error("Restored handler is not a function");
-        }
-      } catch {
-        restoredHandler = async (params: Record<string, unknown>) => {
-          return { success: true, data: { echo: params } };
+      const handlerCode = definition._handlerCode;
+      restoredHandler = async (params, context) => {
+        const { runInSandbox } = await import("../engine/worker-sandbox.js");
+        const { getGlobalExecutionEngine } = await import("../engine/execution-engine.js");
+        const sandboxCtx = {
+          callSkill: async (skillName: string, skillParams: Record<string, unknown>) => {
+            if (!DEFAULT_ALLOWED_SKILLS.has(skillName)) {
+              throw new Error(
+                `Skill "${skillName}" 不在自定义 Skill 的白名单中。` +
+                `允许的 Skill: ${[...DEFAULT_ALLOWED_SKILLS].join(", ")}`
+              );
+            }
+            const engine = getGlobalExecutionEngine();
+            if (!engine) throw new Error("Execution engine not available");
+            const result = await engine.execute(skillName, skillParams);
+            if (!result.success) {
+              throw new Error(result.error?.message || `Skill "${skillName}" 执行失败`);
+            }
+            return result.data;
+          },
+          user: context?.user,
         };
-      }
+        const result = await runInSandbox(
+          handlerCode,
+          params as Record<string, unknown>,
+          { timeout: definition.timeout ?? 30000 },
+          sandboxCtx
+        );
+        if (!result.success) {
+          return { success: false, error: new Error(result.error ?? "Sandbox execution failed") };
+        }
+        // Worker 沙箱已透传 skill handler 的标准返回对象，无需再次包装
+        return { success: true, data: result.data };
+      };
     } else {
       restoredHandler = async (params: Record<string, unknown>) => {
         return { success: true, data: { echo: params } };
@@ -261,12 +317,17 @@ export class CustomSkillRepository {
   }
 
   private mapRow(row: any): CustomSkill {
+    // MySQL JSON 字段可能返回对象，确保 definition 为字符串
+    let definition = row.definition;
+    if (typeof definition !== "string") {
+      definition = JSON.stringify(definition);
+    }
     return {
       id: row.id,
       name: row.name,
       description: row.description || "",
       version: row.version || "1.0.0",
-      definition: row.definition,
+      definition,
       ownerId: row.owner_id,
       isSystem: !!row.is_system,
       createdAt: row.created_at,

@@ -23,6 +23,7 @@ import { saveImages, extractDocumentImages, describeImages } from "../utils/imag
 import type { ImageWithDescription } from "../utils/image-extractor.js";
 import type { KnowledgeGraphManager } from "../memory/knowledge-graph/index.js";
 import type { LLMProvider } from "../llm/types.js";
+import { ingestQueue } from "../utils/ingest-queue.js";
 
 /** 工作空间根目录 */
 const WORKSPACE_BASE = resolve(cwd(), ".raos", "workspace");
@@ -282,11 +283,18 @@ export class ParsingQueue extends EventEmitter {
       // 读取文件内容
       const content = readFileSync(filePath, 'utf-8');
       
-      // 直接入库
-      await kb.ingest(docName, content, {
+      // 直接入库（跳过 embedding，向量化工序统一进全局队列）
+      const ingestResult = await kb.ingest(docName, content, {
         source: filePath,
         tags,
+        skipEmbedding: true,
       });
+
+      // 向量化加入全局队列
+      ingestQueue.enqueue(
+        async () => { await kb.vectorizeDoc(ingestResult.docId); },
+        { id: `vectorize_${ingestResult.docId}`, docId: ingestResult.docId, userId: owner, name: docName }
+      );
 
       const task: ParsingTask = {
         docId,
@@ -840,12 +848,19 @@ export class ParsingQueue extends EventEmitter {
       ? task.filePath.slice(WORKSPACE_BASE.length + 1)
       : task.filePath;
 
-    await kb.ingest(task.docName, content, {
+    const ingestResult = await kb.ingest(task.docName, content, {
       source: relativePath,
       tags: finalTags,
+      skipEmbedding: true,
       _placeholderDocId: task.docId,
       _skipQueue: true,
     } as unknown as IngestWithSkipQueue);
+
+    // 向量化加入全局队列
+    ingestQueue.enqueue(
+      async () => { await kb.vectorizeDoc(ingestResult.docId); },
+      { id: `vectorize_${ingestResult.docId}`, docId: ingestResult.docId, userId: task.owner, name: task.docName }
+    );
   }
 
   /**
@@ -1185,7 +1200,7 @@ export class ParsingQueue extends EventEmitter {
         const result = await kb.ingest(task.docName, content, {
           source: task.filePath,
           tags: task.tags,
-          skipEmbedding: false,
+          skipEmbedding: true,
           _placeholderDocId: task.docId,
           _skipQueue: true,
           images: savedImages.map((img) => ({
@@ -1196,6 +1211,12 @@ export class ParsingQueue extends EventEmitter {
           })),
         } as unknown as IngestWithImages);
         console.log(`[ParsingQueue] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}`);
+
+        // 向量化加入全局队列
+        ingestQueue.enqueue(
+          async () => { await kb.vectorizeDoc(result.docId); },
+          { id: `vectorize_${result.docId}`, docId: result.docId, userId: task.owner, name: task.docName }
+        );
 
        task.progress = 100;
        task.processedSegments = result.chunkCount;

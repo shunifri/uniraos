@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
+import { getUserRoles } from "../db/user-repository.js";
 import type { RouteDependencies } from "./types.js";
 
 export function createMemoryRoutes(deps: RouteDependencies): Router {
@@ -35,10 +36,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(500).json({ success: false, error: result.error?.message || "Failed to get stats" });
+        res.status(500).json({ success: false, error: "Internal server error" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -107,16 +109,28 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
   const profileHandler = async (req: any, res: any) => {
     const targetUserId = req.params.userId || req.user!.id;
 
+    // 权限校验：只能查看自己的 profile，管理员除外
+    const currentUserId = req.user!.id;
+    if (targetUserId !== currentUserId) {
+      const roles = await getUserRoles(currentUserId);
+      const isAdmin = roles.some((r) => r.name === "admin");
+      if (!isAdmin) {
+        res.status(403).json({ success: false, error: "无权查看其他用户的记忆画像" });
+        return;
+      }
+    }
+
     try {
       const result = await engine.execute("ltm_profile", { userId: targetUserId });
 
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
+        res.json({ success: false, error: "Enhanced memory backend not enabled" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   };
   router.get("/memory/profile/:userId", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), profileHandler);
@@ -137,10 +151,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
+        res.json({ success: false, error: "Enhanced memory backend not enabled" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -159,10 +174,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
+        res.json({ success: false, error: "Enhanced memory backend not enabled" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -190,10 +206,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.json({ success: false, error: result.error?.message || "Enhanced memory backend not enabled" });
+        res.json({ success: false, error: "Enhanced memory backend not enabled" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -217,10 +234,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Fact extraction requires LLM provider" });
+        res.status(400).json({ success: false, error: "Fact extraction requires LLM provider" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -254,10 +272,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Store operation failed" });
+        res.status(400).json({ success: false, error: "Store operation failed" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -283,6 +302,14 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (filters) {
         try {
           parsedFilters = JSON.parse(filters);
+          // 安全：净化原型污染键
+          if (parsedFilters && typeof parsedFilters === "object") {
+            for (const key of Object.keys(parsedFilters)) {
+              if (key === "__proto__" || key === "constructor" || key === "prototype") {
+                delete parsedFilters[key];
+              }
+            }
+          }
         } catch {
           res.status(400).json({ success: false, error: "Invalid filters JSON" });
           return;
@@ -302,10 +329,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Search operation failed" });
+        res.status(400).json({ success: false, error: "Search operation failed" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 
@@ -330,10 +358,11 @@ export function createMemoryRoutes(deps: RouteDependencies): Router {
       if (result.success) {
         res.json({ success: true, ...result.data as object });
       } else {
-        res.status(400).json({ success: false, error: result.error?.message || "Delete operation failed" });
+        res.status(400).json({ success: false, error: "Delete operation failed" });
       }
     } catch (err) {
-      res.status(500).json({ success: false, error: err instanceof Error ? err.message : "Internal error" });
+      console.error("[memory-routes] error:", err);
+      res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
 

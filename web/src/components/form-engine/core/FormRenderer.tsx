@@ -37,6 +37,7 @@ export interface FormRendererProps {
   onChange?: (formData: Record<string, any>) => void;
   onSubmit?: (formData: Record<string, any>) => void;
   autoSave?: AutoSaveConfig;
+  children?: React.ReactNode;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -169,6 +170,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
   onChange,
   onSubmit,
   autoSave,
+  children,
 }) => {
   const { token } = theme.useToken();
 
@@ -588,6 +590,7 @@ export const FormRenderer: React.FC<FormRendererProps> = ({
       onSubmitCapture={handleSubmit}
     >
       {renderLayout()}
+      {children}
       {autoSave?.showStatus && saveStatus !== 'idle' && (
         <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
           {saveStatus === 'saving' ? '保存中...' : '已自动保存'}

@@ -38,11 +38,14 @@ import { getAllTenants } from "../db/kb-tenants.js";
 import { configManager } from "../config/config-manager.js";
 import { ShareRepository } from "../db/share-repository.js";
 import { getUserRoles, getUserById, getUserDepartment } from "../db/user-repository.js";
+import { createKBCollection, listKBCollections, deleteKBCollection, getOrCreateDefaultCollection } from "../services/kb-collection-service.js";
 import { getDepartmentById } from "../db/department-repository.js";
+import { ingestQueue } from "../utils/ingest-queue.js";
 
 /** 解析器版本号 — 每次解析逻辑有重大变更时递增，强制已有文档重新入库 */
 const PARSER_VERSION = 2;
-import { getCurrentUserId } from "../user/request-context.js";
+import { getCurrentUserId, requestContext } from "../user/request-context.js";
+import { isMySQL, getDb } from "../db/database.js";
 
 // ===== 类型定义 =====
 
@@ -67,6 +70,7 @@ interface DocRecord {
   doc_mind_task_id: string | null;
   media_type: string;
   duration_ms: number | null;
+  collection_id: string | null;
 }
 
 /** 简化文档记录（用于查询） */
@@ -348,9 +352,10 @@ export class KnowledgeBase {
   }
 
   /** 创建文档占位记录（用于异步解析，立即在列表中显示） */
-  async createPlaceholder(docName: string, opts?: { source?: string; tags?: string[] }): Promise<string> {
+  async createPlaceholder(docName: string, opts?: { source?: string; tags?: string[]; collectionId?: string }): Promise<string> {
     const source = opts?.source ?? "";
     const tags = opts?.tags ?? [];
+    const collectionId = opts?.collectionId;
 
     const rows = await this.adapter.query<DocIdRecord>(
       "SELECT doc_id FROM kb_documents WHERE name = ? AND owner_id = ?",
@@ -360,10 +365,17 @@ export class KnowledgeBase {
     if (rows.length > 0) return rows[0].doc_id;
 
     const docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    await this.adapter.execute(
-      "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content, parsing_status, parsing_progress) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?, ?, ?)",
-      [docId, this.owner, docName, source, Date.now(), JSON.stringify(tags), '', '', 'processing', 0.00]
-    );
+    if (collectionId) {
+      await this.adapter.execute(
+        "INSERT INTO kb_documents (doc_id, owner_id, collection_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content, parsing_status, parsing_progress) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?, ?, ?)",
+        [docId, this.owner, collectionId, docName, source, Date.now(), JSON.stringify(tags), '', '', 'processing', 0.00]
+      );
+    } else {
+      await this.adapter.execute(
+        "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content, parsing_status, parsing_progress) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, 0, ?, ?, ?, ?)",
+        [docId, this.owner, docName, source, Date.now(), JSON.stringify(tags), '', '', 'processing', 0.00]
+      );
+    }
     return docId;
   }
 
@@ -374,7 +386,7 @@ export class KnowledgeBase {
   async ingest(
     docName: string,
     content: string,
-    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string; _placeholderDocId?: string; images?: Array<{ id: string; description: string; page?: number; url: string }> },
+    opts?: { source?: string; tags?: string[]; chunkSize?: number; chunkOverlap?: number; shared?: boolean; skipEmbedding?: boolean; pages?: PageResult[]; fileHash?: string; _placeholderDocId?: string; images?: Array<{ id: string; description: string; page?: number; url: string }>; collectionId?: string },
   ): Promise<{ docId: string; chunkCount: number; totalTokens: number; updated: boolean; version: number }> {
     const chunkSize = opts?.chunkSize ?? 500;
     const chunkOverlap = opts?.chunkOverlap ?? 50;
@@ -389,6 +401,7 @@ export class KnowledgeBase {
 
     // 检查是否有占位符 docId
     const placeholderDocId = opts?._placeholderDocId;
+    const collectionId = opts?.collectionId;
 
     let docId: string;
     let version: number;
@@ -485,7 +498,8 @@ export class KnowledgeBase {
     // 事务写入（包含删除旧数据、插入新数据，保证原子性）
     let totalTokens = 0;
 
-    await this.adapter.transaction(async (connection) => {
+    const doTransaction = async () => {
+      await this.adapter.transaction(async (connection) => {
       // 检查是否是占位符文档
       const isPlaceholderDoc = opts?._placeholderDocId !== undefined;
 
@@ -508,16 +522,23 @@ export class KnowledgeBase {
         // 更新文档记录
         const totalChunkCount = chunks.length + (opts?.images?.length ?? 0);
         await connection.execute(
-          "UPDATE kb_documents SET chunk_count = ?, total_tokens = 0, updated_at = ?, version = ?, tags = ?, shared = ?, content_hash = ?, source = ?, parsed_content = ? WHERE doc_id = ?",
-          [totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, docId]
+          "UPDATE kb_documents SET chunk_count = ?, total_tokens = 0, updated_at = ?, version = ?, tags = ?, shared = ?, content_hash = ?, source = ?, parsed_content = ?, collection_id = ? WHERE doc_id = ?",
+          [totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, source, content, collectionId ?? null, docId]
         );
       } else {
         // 新文档，插入记录
         const totalChunkCount = chunks.length + (opts?.images?.length ?? 0);
-        await connection.execute(
-          "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
-          [docId, this.owner, docName, source, totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
-        );
+        if (collectionId) {
+          await connection.execute(
+            "INSERT INTO kb_documents (doc_id, owner_id, collection_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+            [docId, this.owner, collectionId, docName, source, totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
+          );
+        } else {
+          await connection.execute(
+            "INSERT INTO kb_documents (doc_id, owner_id, name, source, chunk_count, total_tokens, ingested_at, version, tags, shared, content_hash, parsed_content) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+            [docId, this.owner, docName, source, totalChunkCount, Date.now(), version, JSON.stringify(tags), shared, contentHash, content]
+          );
+        }
       }
 
       // 插入标签关联
@@ -609,6 +630,25 @@ export class KnowledgeBase {
         [totalTokens, docId]
       );
     });
+    };
+
+    // 死锁重试：最多 3 次
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await doTransaction();
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        const isDeadlock = err?.code === "ER_LOCK_DEADLOCK" || err?.errno === 1213 || String(err?.message).includes("Deadlock");
+        if (isDeadlock && attempt < 3) {
+          console.warn(`[KnowledgeBase] Transaction deadlock detected, retrying ${attempt}/3...`);
+          await new Promise((r) => setTimeout(r, 100 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     this.vectorCacheDirty = true;
 
@@ -662,15 +702,15 @@ export class KnowledgeBase {
   /** 混合检索（支持限定范围和共享文档） */
   async search(
     query: string,
-    opts?: { limit?: number; threshold?: number; docIds?: string[]; tags?: string[]; includeShared?: boolean },
+    opts?: { limit?: number; threshold?: number; docIds?: string[]; tags?: string[]; includeShared?: boolean; collectionId?: string },
   ): Promise<KBSearchResultItem[]> {
     const limit = opts?.limit ?? 10;
     // threshold 为相对阈值 (0-1)，表示结果至少达到最高分的该比例才保留，默认 0.4
     const threshold = opts?.threshold ?? 0.4;
     const candidateCount = Math.max(limit * 3, 30);
 
-    const keywordResults = await this.keywordSearch(query, candidateCount, opts?.docIds, opts?.tags);
-    const semanticResults = await this.semanticSearch(query, candidateCount, opts?.docIds);
+    const keywordResults = await this.keywordSearch(query, candidateCount, opts?.docIds, opts?.tags, opts?.collectionId, opts?.includeShared);
+    const semanticResults = await this.semanticSearch(query, candidateCount, opts?.docIds, opts?.collectionId, opts?.includeShared);
 
     // RRF 混合评分 — k=60，keyword 权重 0.4 / semantic 权重 0.6
     const scoreMap = new Map<number, { score: number; matchType: string; data: SearchResultData }>();
@@ -773,6 +813,8 @@ export class KnowledgeBase {
     limit: number,
     docIds?: string[],
     tags?: string[],
+    collectionId?: string,
+    includeShared?: boolean,
   ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; score: number; shared: number; page_number: number | null; bbox_data: string }>> {
     const queryKeywords = this.extractKeywords(query);
     if (queryKeywords.size === 0) return [];
@@ -804,10 +846,20 @@ export class KnowledgeBase {
       sql += ` AND c.doc_id IN (${docIds.map(() => "?").join(",")})`;
       params.push(...docIds);
     }
-    
-    // 添加 owner_id 限制
-    sql += ` AND d.owner_id = ?`;
-    params.push(this.owner);
+
+    // collectionId 过滤：指定了 collectionId 时跨 owner 搜索（应用嵌入场景）
+    if (collectionId) {
+      sql += ` AND d.collection_id = ?`;
+      params.push(collectionId);
+    } else {
+      // 未指定 collectionId 时，按 owner + shared 过滤
+      if (includeShared) {
+        sql += ` AND (d.owner_id = ? OR d.shared = 1)`;
+      } else {
+        sql += ` AND d.owner_id = ?`;
+      }
+      params.push(this.owner);
+    }
 
     // DISTINCT 因为一个 doc 可能匹配多个标签，会产生重复行
     sql += ` GROUP BY c.id ORDER BY score DESC LIMIT ?`;
@@ -820,20 +872,26 @@ export class KnowledgeBase {
     query: string,
     limit: number,
     docIds?: string[],
+    collectionId?: string,
+    includeShared?: boolean,
   ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; similarity: number; shared: number; page_number: number | null; bbox_data: string }>> {
-    if (this.embeddingProvider.name === "local" && this.vectorCache.size === 0) {
+    if (this.embeddingProvider.name === "local") {
       // local provider 没有预训练语义，跳过全表扫描
       return [];
     }
 
     const [queryVector] = await this.embeddingProvider.embed([query]);
-    await this.ensureVectorCache();
 
+    // collectionId 跨 owner 搜索时，直接从数据库加载目标 collection 的向量
+    if (collectionId) {
+      return this.semanticSearchWithCollection(queryVector, limit, collectionId, docIds);
+    }
+
+    await this.ensureVectorCache();
     if (this.vectorCache.size === 0) return [];
 
     // Top-K 选择：维护一个大小为 limit 的最小堆，避免全量排序
-    // 对于万级以下直接线性扫描 + 部分排序已足够高效
-    const minSim = 0.3; // 语义相似度绝对下限，低于此的直接跳过
+    const minSim = 0.3;
     const topK: Array<{ id: number; similarity: number }> = [];
     let heapMin = minSim;
 
@@ -847,14 +905,11 @@ export class KnowledgeBase {
       if (topK.length < limit) {
         topK.push({ id: chunkId, similarity: sim });
         if (topK.length === limit) {
-          // 建堆：找到当前最小值
           topK.sort((a, b) => a.similarity - b.similarity);
           heapMin = topK[0].similarity;
         }
       } else {
-        // 替换堆顶（最小值）
         topK[0] = { id: chunkId, similarity: sim };
-        // 重新找最小值（简单实现，limit 通常 < 100）
         let minIdx = 0;
         for (let i = 1; i < topK.length; i++) {
           if (topK[i].similarity < topK[minIdx].similarity) minIdx = i;
@@ -867,45 +922,105 @@ export class KnowledgeBase {
     }
 
     if (topK.length === 0) return [];
-
     topK.sort((a, b) => b.similarity - a.similarity);
 
     const ids = topK.map((c) => c.id);
     const placeholders = ids.map(() => "?").join(",");
-
-    let sql = `
-      SELECT c.id, c.doc_id as docId, d.name as docName, c.chunk_index as chunkIndex, c.content, d.shared, c.page_number, c.bbox_data
-      FROM kb_chunks c
-      JOIN kb_documents d ON c.doc_id = d.doc_id
-      WHERE c.id IN (${placeholders})
-    `;
+    let sql = `SELECT c.id, c.doc_id as docId, d.name as docName, c.chunk_index as chunkIndex, c.content, d.shared, c.page_number, c.bbox_data FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE c.id IN (${placeholders})`;
     const params: unknown[] = [...ids];
 
     if (docIds && docIds.length > 0) {
       sql += ` AND c.doc_id IN (${docIds.map(() => "?").join(",")})`;
       params.push(...docIds);
     }
-    
-    // 添加 owner_id 限制
-    sql += ` AND d.owner_id = ?`;
+
+    if (includeShared) {
+      sql += ` AND (d.owner_id = ? OR d.shared = 1)`;
+    } else {
+      sql += ` AND d.owner_id = ?`;
+    }
     params.push(this.owner);
 
     interface ChunkRow {
-      id: number;
-      docId: string;
-      docName: string;
-      chunkIndex: number;
-      content: string;
-      shared: number;
-      page_number: number | null;
-      bbox_data: string;
+      id: number; docId: string; docName: string; chunkIndex: number; content: string; shared: number; page_number: number | null; bbox_data: string;
     }
     const rows = await this.adapter.query<ChunkRow>(sql, params);
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    return topK.filter((c) => rowMap.has(c.id)).map((c) => ({ ...rowMap.get(c.id)!, similarity: c.similarity }));
+  }
 
-    return topK
-      .filter((c) => rowMap.has(c.id))
-      .map((c) => ({ ...rowMap.get(c.id)!, similarity: c.similarity }));
+  /** collectionId 跨 owner 语义搜索：直接从数据库加载目标 collection 的向量 */
+  private async semanticSearchWithCollection(
+    queryVector: number[],
+    limit: number,
+    collectionId: string,
+    docIds?: string[],
+  ): Promise<Array<{ id: number; docId: string; docName: string; chunkIndex: number; content: string; similarity: number; shared: number; page_number: number | null; bbox_data: string }>> {
+    let sql = `SELECT c.id, c.doc_id as docId, d.name as docName, c.chunk_index as chunkIndex, c.content, d.shared, c.page_number, c.bbox_data, c.vector FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE c.vector IS NOT NULL AND d.collection_id = ?`;
+    const params: unknown[] = [collectionId];
+
+    if (docIds && docIds.length > 0) {
+      sql += ` AND c.doc_id IN (${docIds.map(() => "?").join(",")})`;
+      params.push(...docIds);
+    }
+
+    interface ChunkRow {
+      id: number; docId: string; docName: string; chunkIndex: number; content: string; shared: number; page_number: number | null; bbox_data: string; vector: Buffer;
+    }
+    const rows = await this.adapter.query<ChunkRow>(sql, params);
+
+    const minSim = 0.3;
+    const topK: Array<{ id: number; similarity: number; row: ChunkRow }> = [];
+    let heapMin = minSim;
+
+    for (const row of rows) {
+      if (!row.vector || row.vector.length === 0) continue;
+      let floats: Float32Array;
+      if (row.vector.byteOffset % 4 === 0) {
+        floats = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.length / 4);
+      } else {
+        const copied = Buffer.alloc(row.vector.length);
+        row.vector.copy(copied);
+        floats = new Float32Array(copied.buffer, copied.byteOffset, copied.length / 4);
+      }
+      const vector = Array.from(floats);
+      const sim = cosineSimilarity(queryVector, vector);
+      if (sim <= heapMin && topK.length >= limit) continue;
+      if (sim <= minSim) continue;
+
+      if (topK.length < limit) {
+        topK.push({ id: row.id, similarity: sim, row });
+        if (topK.length === limit) {
+          topK.sort((a, b) => a.similarity - b.similarity);
+          heapMin = topK[0].similarity;
+        }
+      } else {
+        topK[0] = { id: row.id, similarity: sim, row };
+        let minIdx = 0;
+        for (let i = 1; i < topK.length; i++) {
+          if (topK[i].similarity < topK[minIdx].similarity) minIdx = i;
+        }
+        if (minIdx !== 0) {
+          [topK[0], topK[minIdx]] = [topK[minIdx], topK[0]];
+        }
+        heapMin = topK[0].similarity;
+      }
+    }
+
+    if (topK.length === 0) return [];
+    topK.sort((a, b) => b.similarity - a.similarity);
+
+    return topK.map((c) => ({
+      id: c.row.id,
+      docId: c.row.docId,
+      docName: c.row.docName,
+      chunkIndex: c.row.chunkIndex,
+      content: c.row.content,
+      similarity: c.similarity,
+      shared: c.row.shared,
+      page_number: c.row.page_number,
+      bbox_data: c.row.bbox_data,
+    }));
   }
 
   private async ensureVectorCache(): Promise<void> {
@@ -1003,17 +1118,29 @@ export class KnowledgeBase {
     return vector;
   }
 
-  /** 列出文档（增强版筛选） */
+  /** 列出文档（增强版筛选，支持自建+共享合并） */
   async listDocuments(opts?: {
     query?: string;
     tags?: string[];
     sharedOnly?: boolean;
     limit?: number;
     format?: string;  // 文件格式筛选，如 "pdf", "docx", "md"
-  }): Promise<Array<{ docId: string; id: string; name: string; source: string; chunkCount: number; totalTokens: number; ingestedAt: number; updatedAt: number | null; version: number; tags: string[]; shared: boolean; vectorized: number; vectorTotal: number; format: string; parsingStatus: string; parsingProgress: number; docMindTaskId: string | null; mediaType: string; durationMs: number | null }>> {
+    collectionId?: string;
+    includeShared?: boolean; // 是否包含共享文档
+  }): Promise<Array<{ docId: string; id: string; name: string; source: string; chunkCount: number; totalTokens: number; ingestedAt: number; updatedAt: number | null; version: number; tags: string[]; shared: boolean; vectorized: number; vectorTotal: number; format: string; parsingStatus: string; parsingProgress: number; docMindTaskId: string | null; mediaType: string; durationMs: number | null; collectionId: string | null; owner: string }>> {
     const limit = opts?.limit ?? 100;
-    let sql = "SELECT d.* FROM kb_documents d WHERE d.owner_id = ?";
-    const params: unknown[] = [this.owner];
+    const includeShared = opts?.includeShared ?? true;
+
+    // 1. 自己的文档（collectionId 存在时跨 owner 查询，用于应用嵌入场景）
+    let sql: string;
+    const params: unknown[] = [];
+    if (opts?.collectionId) {
+      sql = "SELECT d.* FROM kb_documents d WHERE d.collection_id = ?";
+      params.push(opts.collectionId);
+    } else {
+      sql = "SELECT d.* FROM kb_documents d WHERE d.owner_id = ?";
+      params.push(this.owner);
+    }
 
     // 使用标签关联表索引筛选
     if (opts?.tags && opts.tags.length > 0) {
@@ -1038,7 +1165,7 @@ export class KnowledgeBase {
 
     const rows = await this.adapter.query<DocRecord>(sql, params);
 
-    return await Promise.all(rows.map(async (r) => {
+    const ownDocs = await Promise.all(rows.map(async (r) => {
       const vs = await this.getDocVectorStatus(r.doc_id);
       // MySQL JSON 字段可能直接返回对象/数组，需要兼容处理
       let tags: string[] = [];
@@ -1051,6 +1178,19 @@ export class KnowledgeBase {
           } catch {
             tags = [];
           }
+        }
+      }
+      // 访问时恢复：解析成功但有未向量化的 chunks，自动加入队列（作为内存队列丢失的兜底）
+      // 失败的任务不再自动重试，避免 API 错误时无限循环；由启动时恢复或用户手动触发
+      if (vs.total > 0 && vs.vectorized === 0 && r.parsing_status === 'success') {
+        const taskId = `vectorize_${r.doc_id}_recovery`;
+        const existingTask = ingestQueue.getTask(taskId);
+        if (!existingTask) {
+          console.log(`[KnowledgeBase] 访问时恢复向量化: ${r.doc_id} (${r.name})`);
+          ingestQueue.enqueue(
+            async () => { await this.vectorizeDoc(r.doc_id); },
+            { id: taskId, docId: r.doc_id, userId: this.owner, name: r.name || r.doc_id }
+          );
         }
       }
       return {
@@ -1073,8 +1213,61 @@ export class KnowledgeBase {
         docMindTaskId: r.doc_mind_task_id,
         mediaType: r.media_type,
         durationMs: r.duration_ms,
+        collectionId: r.collection_id,
+        owner: this.owner,
       };
     }));
+
+    // 2. 共享文档（如果需要）
+    if (!includeShared || opts?.collectionId) {
+      return ownDocs;
+    }
+
+    const shareRepo = ShareRepository.getInstance();
+    const userRoles = await getUserRoles(this.owner);
+    const roleIds = userRoles.map(r => r.id);
+    const userDept = await getUserDepartment(this.owner);
+    const deptPath = userDept?.path || "/";
+    const sharedRules = await shareRepo.getSharedToUser(this.owner, roleIds, deptPath);
+    const kbRules = sharedRules.filter(rule => rule.resourceType === "kb_document");
+    const sharedDocIds = [...new Set(kbRules.map(rule => rule.resourceId))];
+
+    if (sharedDocIds.length === 0) {
+      return ownDocs;
+    }
+
+    const sharedDocs: typeof ownDocs = [];
+    const processedOwners = new Set<string>();
+
+    for (const rule of kbRules) {
+      if (processedOwners.has(rule.ownerId)) continue;
+      processedOwners.add(rule.ownerId);
+
+      const kb = getKnowledgeBase(rule.ownerId);
+      const docs = await kb.listDocuments({ limit, includeShared: false });
+      for (const doc of docs) {
+        if (sharedDocIds.includes(doc.docId)) {
+          sharedDocs.push({ ...doc, owner: rule.ownerId });
+        }
+      }
+    }
+
+    // 合并并去重（按 docId），共享文档排在后面
+    const seen = new Set<string>();
+    const result: typeof ownDocs = [];
+    for (const doc of ownDocs) {
+      if (!seen.has(doc.docId)) {
+        seen.add(doc.docId);
+        result.push(doc);
+      }
+    }
+    for (const doc of sharedDocs) {
+      if (!seen.has(doc.docId)) {
+        seen.add(doc.docId);
+        result.push(doc);
+      }
+    }
+    return result;
   }
 
   /** 获取文件格式 */
@@ -1084,12 +1277,16 @@ export class KnowledgeBase {
   }
 
   /** 获取所有标签及其使用次数（按次数降序） */
-  async getAllTags(): Promise<Array<{ tag: string; count: number }>> {
+  async getAllTags(collectionId?: string): Promise<Array<{ tag: string; count: number }>> {
     // 使用标签关联表统计，更高效准确
-    const rows = await this.adapter.query<TagCountRecord>(
-      "SELECT tag, COUNT(*) as count FROM kb_tags WHERE doc_id IN (SELECT doc_id FROM kb_documents WHERE owner_id = ?) GROUP BY tag ORDER BY count DESC",
-      [this.owner]
-    );
+    let sql = "SELECT tag, COUNT(*) as count FROM kb_tags WHERE doc_id IN (SELECT doc_id FROM kb_documents WHERE owner_id = ?";
+    const params: unknown[] = [this.owner];
+    if (collectionId) {
+      sql += " AND collection_id = ?";
+      params.push(collectionId);
+    }
+    sql += ") GROUP BY tag ORDER BY count DESC";
+    const rows = await this.adapter.query<TagCountRecord>(sql, params);
     return rows.map(row => ({ tag: row.tag, count: row.count }));
   }
 
@@ -1158,11 +1355,13 @@ export class KnowledgeBase {
 
   /** 删除文档 */
   async deleteDocument(docId: string): Promise<boolean> {
-    const exists = await this.adapter.query(
-      "SELECT 1 FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
+    const docRows = await this.adapter.query<{ source: string | null }>(
+      "SELECT source FROM kb_documents WHERE doc_id = ? AND owner_id = ?",
       [docId, this.owner]
     );
-    if (exists.length === 0) return false;
+    if (docRows.length === 0) return false;
+
+    const sourcePath = docRows[0].source;
 
     // 先删子表（外键依赖），再删父表
     await this.adapter.execute(
@@ -1173,33 +1372,59 @@ export class KnowledgeBase {
     await this.adapter.execute("DELETE FROM kb_tags WHERE doc_id = ?", [docId]);
     await this.adapter.execute("DELETE FROM kb_versions WHERE doc_id = ?", [docId]);
     await this.adapter.execute("DELETE FROM kb_documents WHERE doc_id = ?", [docId]);
-    
+
+    // 删除原文件及关联的图片目录
+    if (sourcePath) {
+      try {
+        const absolutePath = resolve(process.cwd(), sourcePath);
+        if (existsSync(absolutePath)) {
+          fs.unlinkSync(absolutePath);
+          console.log(`[KnowledgeBase] Deleted source file: ${absolutePath}`);
+        }
+        // 删除文档内嵌图片目录
+        const docImageDir = resolve(process.cwd(), ".raos", "knowledge", this.owner, "doc-images", docId);
+        if (existsSync(docImageDir)) {
+          fs.rmSync(docImageDir, { recursive: true, force: true });
+          console.log(`[KnowledgeBase] Deleted doc-images dir: ${docImageDir}`);
+        }
+        // 删除页面图片目录
+        const pageImageDir = resolve(process.cwd(), ".raos", "knowledge", this.owner, "page-images", docId);
+        if (existsSync(pageImageDir)) {
+          fs.rmSync(pageImageDir, { recursive: true, force: true });
+          console.log(`[KnowledgeBase] Deleted page-images dir: ${pageImageDir}`);
+        }
+      } catch (err: unknown) {
+        console.warn(`[KnowledgeBase] Failed to delete source files for ${docId}:`, err instanceof Error ? err.message : String(err));
+      }
+    }
+
     this.vectorCacheDirty = true;
     return true;
   }
 
   /** 统计信息 */
-  async stats(): Promise<{ owner: string; documentCount: number; sharedCount: number; chunkCount: number; totalTokens: number; vectorCacheSize: number; keywordCount: number; embeddingProvider: string }> {
-    const docCountRows = await this.adapter.query<CountRecord>(
-      "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ?",
-      [this.owner]
-    );
-    const chunkCountRows = await this.adapter.query<CountRecord>(
-      "SELECT COUNT(*) as c FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
-      [this.owner]
-    );
-    const totalTokensRows = await this.adapter.query<SumRecord>(
-      "SELECT COALESCE(SUM(c.tokens), 0) as t FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
-      [this.owner]
-    );
-    const keywordCountRows = await this.adapter.query<CountRecord>(
-      "SELECT COUNT(DISTINCT k.keyword) as c FROM kb_keywords k JOIN kb_chunks c ON k.chunk_id = c.id JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?",
-      [this.owner]
-    );
-    const sharedCountRows = await this.adapter.query<CountRecord>(
-      "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ? AND shared = 1",
-      [this.owner]
-    );
+  async stats(collectionId?: string): Promise<{ owner: string; documentCount: number; sharedCount: number; chunkCount: number; totalTokens: number; vectorCacheSize: number; keywordCount: number; embeddingProvider: string }> {
+    let docSql = "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ?";
+    let chunkSql = "SELECT COUNT(*) as c FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?";
+    let tokenSql = "SELECT COALESCE(SUM(c.tokens), 0) as t FROM kb_chunks c JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?";
+    let keywordSql = "SELECT COUNT(DISTINCT k.keyword) as c FROM kb_keywords k JOIN kb_chunks c ON k.chunk_id = c.id JOIN kb_documents d ON c.doc_id = d.doc_id WHERE d.owner_id = ?";
+    let sharedSql = "SELECT COUNT(*) as c FROM kb_documents WHERE owner_id = ? AND shared = 1";
+    const params: unknown[] = [this.owner];
+
+    if (collectionId) {
+      docSql += " AND collection_id = ?";
+      chunkSql += " AND d.collection_id = ?";
+      tokenSql += " AND d.collection_id = ?";
+      keywordSql += " AND d.collection_id = ?";
+      sharedSql += " AND collection_id = ?";
+      params.push(collectionId);
+    }
+
+    const docCountRows = await this.adapter.query<CountRecord>(docSql, params);
+    const chunkCountRows = await this.adapter.query<CountRecord>(chunkSql, params);
+    const totalTokensRows = await this.adapter.query<SumRecord>(tokenSql, params);
+    const keywordCountRows = await this.adapter.query<CountRecord>(keywordSql, params);
+    const sharedCountRows = await this.adapter.query<CountRecord>(sharedSql, params);
 
     return {
       owner: this.owner,
@@ -1962,6 +2187,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
           chunkSize: { type: "number", description: "Maximum tokens per chunk (default: 500)" },
           chunkOverlap: { type: "number", description: "Token overlap between chunks (default: 50)" },
+          collectionId: { type: "string", description: "关联的知识库分类 ID" },
+          skipEmbedding: { type: "boolean", description: "Internal: skip vectorization during ingest (vectorize later via kb_vectorize)" },
           _placeholderDocId: { type: "string", description: "Internal: placeholder document ID for async parsing" },
           _skipQueue: { type: "boolean", description: "Internal: skip Document Mind queue and use local parsing" },
         },
@@ -2147,6 +2374,8 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             pages: parsePages,
             fileHash,
             _placeholderDocId,
+            collectionId: params.collectionId as string | undefined,
+            skipEmbedding: (params.skipEmbedding as boolean) ?? false,
           });
           console.log(`[kb_ingest] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}, totalTokens: ${result.totalTokens}, 是否更新: ${result.updated}`);
 
@@ -2661,21 +2890,44 @@ interface ClassifiedQuery {
   relations: string[];
 }
 
+/** 根据当前 requestContext 中的 appId 自动解析应用关联的知识库 collectionIds */
+async function getAppCollectionIds(): Promise<string[]> {
+  const appId = requestContext.getStore()?.appId;
+  if (!appId) return [];
+  try {
+    let row: any;
+    if (isMySQL()) {
+      const adapter = await getMySQLAdapter();
+      const rows = await adapter.query("SELECT design_json FROM app_designs WHERE id = ? AND status = ?", [appId, "applied"]);
+      row = rows[0];
+    } else {
+      row = getDb().prepare("SELECT design_json FROM app_designs WHERE id = ? AND status = ?").get(appId, "applied");
+    }
+    if (!row) return [];
+    const design = typeof row.design_json === "string" ? JSON.parse(row.design_json) : row.design_json;
+    const kbs = design?.components?.knowledgeBases ?? [];
+    return kbs.filter((k: any) => k.collectionId).map((k: any) => k.collectionId as string);
+  } catch {
+    return [];
+  }
+}
+
   registry.register(
     defineSystemSkill({
       name: "kb_search",
       description:
-        "知识图谱原生检索。自动分类查询类型（事实/关系/发现）并选择最优检索策略。参数: query(string), limit?(number, 默认5), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true)",
+        "知识图谱原生检索。自动分类查询类型（事实/关系/发现）并选择最优检索策略。参数: query(string), limit?(number, 默认15), threshold?(number, 0-1 相对阈值, 结果须达到最高分的该比例, 默认0.4), tags?(string[]), docIds?(string[]), owner?(string, 默认 default), includeShared?(boolean, 是否包含其他用户共享的知识, 默认 true), collectionId?(string, 按知识库集合筛选)。注意：当用户询问'有哪些专业/课程/项目'等需要完整列表的问题时，请传入 limit=30 或更大，以确保返回完整结果。",
       timeout: 30000,
       paramSchema: {
         properties: {
           query: { type: "string", description: "Search query" },
-          limit: { type: "number", description: "Maximum number of results (default: 5)" },
+          limit: { type: "number", description: "Maximum number of results (default: 15, list queries should use 30+)" },
           threshold: { type: "number", description: "Relative score threshold 0-1 (default: 0.4)" },
           tags: { type: "array", description: "Filter results by tags", items: { type: "string" } },
           docIds: { type: "array", description: "Limit search to specific document IDs", items: { type: "string" } },
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
           includeShared: { type: "boolean", description: "Include shared knowledge from other users (default: true)" },
+          collectionId: { type: "string", description: "Filter by knowledge base collection ID" },
         },
         required: ["query"],
       },
@@ -2684,9 +2936,22 @@ interface ClassifiedQuery {
         if (!query) return { success: false, error: new Error("query 参数必填") };
 
         const owner = (params.owner as string) || getCurrentUserId();
-        const limit = (params.limit as number) ?? 5;
+        const limit = (params.limit as number) ?? 15;
         const includeShared = (params.includeShared as boolean) ?? true;
+        let collectionId = (params.collectionId as string) || undefined;
         const kb = getKnowledgeBase(owner);
+
+        // 自动注入应用知识库 collectionId（嵌入场景兜底）
+        let appCollectionIds: string[] = [];
+        if (!collectionId) {
+          appCollectionIds = await getAppCollectionIds();
+          if (appCollectionIds.length === 1) {
+            collectionId = appCollectionIds[0];
+            console.log(`[kb_search] 自动注入应用知识库 collectionId: ${collectionId}`);
+          } else if (appCollectionIds.length > 1) {
+            console.log(`[kb_search] 应用包含 ${appCollectionIds.length} 个知识库，将分别搜索`);
+          }
+        }
 
         try {
           // P3: 查询分类
@@ -2695,6 +2960,30 @@ interface ClassifiedQuery {
 
           let ownResults: KBSearchResultExtra[] = [];
           let graphUsed = false;
+
+          // 辅助：支持单/多 collectionId 搜索
+          const searchWithCollections = async (searchOpts: { limit: number; docIds?: string[]; tags?: string[] }): Promise<KBSearchResultExtra[]> => {
+            const collections = collectionId ? [collectionId] : appCollectionIds;
+            if (collections.length === 0) {
+              const raw = await kb.search(query, searchOpts);
+              return raw as KBSearchResultExtra[];
+            }
+            const allResults: KBSearchResultExtra[] = [];
+            for (const cid of collections) {
+              const raw = await kb.search(query, { ...searchOpts, collectionId: cid });
+              allResults.push(...(raw as KBSearchResultExtra[]));
+            }
+            // 去重（按 docId + chunkIndex）并保留最高分的
+            const seen = new Map<string, KBSearchResultExtra>();
+            for (const r of allResults) {
+              const key = `${r.docId}_${r.chunkIndex}`;
+              const existing = seen.get(key);
+              if (!existing || r.score > existing.score) {
+                seen.set(key, r);
+              }
+            }
+            return Array.from(seen.values()).sort((a, b) => b.score - a.score);
+          };
 
           // 获取图谱管理器（如果可用）
           let graphManager: SessionWithGraphManager["graphManager"] = undefined;
@@ -2725,10 +3014,10 @@ interface ClassifiedQuery {
                 console.log(`[kb_search] 从知识图谱找到相关文档: ${docIds.length} 个`);
 
                 // 使用图谱相关的文档 ID 进行知识库检索
-                ownResults = await kb.search(query, {
+                ownResults = await searchWithCollections({
                   limit: limit * 2,
                   docIds,
-                  tags: params.tags as string[]
+                  tags: params.tags as string[],
                 });
 
                 // 为结果添加图谱上下文和增强评分
@@ -2747,27 +3036,27 @@ interface ClassifiedQuery {
                 graphUsed = true;
               } else {
                 console.log(`[kb_search] 知识图谱未找到直接相关文档，使用混合检索`);
-                ownResults = await kb.search(query, {
+                ownResults = await searchWithCollections({
                   limit: limit,
                   tags: params.tags as string[],
-                  docIds: params.docIds as string[]
+                  docIds: params.docIds as string[],
                 });
               }
             } catch (graphErr: unknown) {
               console.warn(`[kb_search] 知识图谱检索失败，降级到混合检索:`, graphErr);
-              ownResults = await kb.search(query, {
+              ownResults = await searchWithCollections({
                 limit: limit,
                 tags: params.tags as string[],
-                docIds: params.docIds as string[]
+                docIds: params.docIds as string[],
               });
             }
           } else {
             // 事实查询或混合查询 → 使用混合检索
             console.log(`[kb_search] 使用混合检索 (${classified.type})`);
-            ownResults = await kb.search(query, {
+            ownResults = await searchWithCollections({
               limit: limit,
               tags: params.tags as string[],
-              docIds: params.docIds as string[]
+              docIds: params.docIds as string[],
             });
           }
 
@@ -2870,18 +3159,47 @@ interface ClassifiedQuery {
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
           sharedOnly: { type: "boolean", description: "If true, return only shared documents" },
           limit: { type: "number", description: "Maximum number of documents to return (default: 100)" },
+          includeShared: { type: "boolean", description: "Include shared documents from other users (default: true)" },
+          collectionId: { type: "string", description: "Filter by collection ID" },
         },
       },
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
         const kb = getKnowledgeBase(owner);
-        const docs = await kb.listDocuments({
-          query: params.query as string | undefined,
-          tags: params.tags as string[] | undefined,
-          format: params.format as string | undefined,
-          sharedOnly: params.sharedOnly as boolean | undefined,
-          limit: (params.limit as number) ?? 100,
-        });
+        let collectionId = (params.collectionId as string) || undefined;
+        const appCollectionIds = !collectionId ? await getAppCollectionIds() : [];
+        if (!collectionId && appCollectionIds.length === 1) {
+          collectionId = appCollectionIds[0];
+        }
+
+        let docs: Awaited<ReturnType<typeof kb.listDocuments>> = [];
+        if (!collectionId && appCollectionIds.length > 1) {
+          for (const cid of appCollectionIds) {
+            const part = await kb.listDocuments({
+              query: params.query as string | undefined,
+              tags: params.tags as string[] | undefined,
+              format: params.format as string | undefined,
+              sharedOnly: params.sharedOnly as boolean | undefined,
+              limit: (params.limit as number) ?? 100,
+              includeShared: (params.includeShared as boolean) ?? true,
+              collectionId: cid,
+            });
+            docs.push(...part);
+          }
+          // 去重
+          const seen = new Set<string>();
+          docs = docs.filter((d) => { if (seen.has(d.docId)) return false; seen.add(d.docId); return true; });
+        } else {
+          docs = await kb.listDocuments({
+            query: params.query as string | undefined,
+            tags: params.tags as string[] | undefined,
+            format: params.format as string | undefined,
+            sharedOnly: params.sharedOnly as boolean | undefined,
+            limit: (params.limit as number) ?? 100,
+            includeShared: (params.includeShared as boolean) ?? true,
+            collectionId,
+          });
+        }
 
         return { success: true, data: { owner, documents: docs, total: docs.length } };
       },
@@ -2891,16 +3209,18 @@ interface ClassifiedQuery {
   registry.register(
     defineSystemSkill({
       name: "kb_tags",
-      description: "获取知识库中所有标签及其使用次数，按使用次数降序排列。参数: owner?(string, 默认 current)",
+      description: "获取知识库中所有标签及其使用次数，按使用次数降序排列。参数: owner?(string, 默认 current), collectionId?(string, 分类ID)",
       paramSchema: {
         properties: {
           owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+          collectionId: { type: "string", description: "分类ID (可选)" },
         },
       },
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
+        const collectionId = (params.collectionId as string) || undefined;
         const kb = getKnowledgeBase(owner);
-        const tags = await kb.getAllTags();
+        const tags = await kb.getAllTags(collectionId);
         return { success: true, data: { owner, tags, total: tags.length } };
       },
     }),
@@ -3134,11 +3454,18 @@ interface ClassifiedQuery {
   registry.register(
     defineSystemSkill({
       name: "kb_stats",
-      description: "获取知识库统计信息。参数: owner?(string, 默认 default)",
+      description: "获取知识库统计信息。参数: owner?(string, 默认 default), collectionId?(string, 分类ID)",
+      paramSchema: {
+        properties: {
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+          collectionId: { type: "string", description: "分类ID (可选)" },
+        },
+      },
       handler: async (params) => {
         const owner = (params.owner as string) || getCurrentUserId();
+        const collectionId = (params.collectionId as string) || undefined;
         const kb = getKnowledgeBase(owner);
-        return { success: true, data: await kb.stats() };
+        return { success: true, data: await kb.stats(collectionId) };
       },
     }),
   );
@@ -3164,7 +3491,85 @@ interface ClassifiedQuery {
     }),
   );
 
-  console.log("   Knowledge base skills registered (kb_ingest/kb_search/kb_list/kb_tags/kb_formats/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild)");
+  // === 知识库集合（Collection）Skills ===
+  registry.register(
+    defineSystemSkill({
+      name: "kb_collection_create",
+      description: "创建知识库集合。参数: name(string, 必填), description?(string), owner?(string, 默认当前用户)",
+      paramSchema: {
+        properties: {
+          name: { type: "string", description: "集合名称" },
+          description: { type: "string", description: "集合描述" },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+        required: ["name"],
+      },
+      handler: async (params) => {
+        const owner = (params.owner as string) || getCurrentUserId();
+        const name = params.name as string;
+        const description = (params.description as string) || "";
+        if (!name) {
+          return { success: false, error: new Error("name 参数必填") };
+        }
+        try {
+          const collection = await createKBCollection(owner, { name, description });
+          return { success: true, data: { collection } };
+        } catch (err: unknown) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    }),
+  );
+
+  registry.register(
+    defineSystemSkill({
+      name: "kb_collection_list",
+      description: "列出当前用户的所有知识库集合。参数: owner?(string, 默认当前用户)",
+      paramSchema: {
+        properties: {
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+      },
+      handler: async (params) => {
+        const owner = (params.owner as string) || getCurrentUserId();
+        try {
+          const collections = await listKBCollections(owner);
+          return { success: true, data: { collections, total: collections.length } };
+        } catch (err: unknown) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    }),
+  );
+
+  registry.register(
+    defineSystemSkill({
+      name: "kb_collection_delete",
+      description: "删除知识库集合，集合内文档自动移回默认知识库。参数: collectionId(string, 必填), owner?(string, 默认当前用户)",
+      paramSchema: {
+        properties: {
+          collectionId: { type: "string", description: "集合ID" },
+          owner: { type: "string", description: "Knowledge base owner (default: current user)" },
+        },
+        required: ["collectionId"],
+      },
+      handler: async (params) => {
+        const owner = (params.owner as string) || getCurrentUserId();
+        const collectionId = params.collectionId as string;
+        if (!collectionId) {
+          return { success: false, error: new Error("collectionId 参数必填") };
+        }
+        try {
+          await deleteKBCollection(collectionId, owner);
+          return { success: true, data: { collectionId, message: "集合已删除，文档已移回默认知识库" } };
+        } catch (err: unknown) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    }),
+  );
+
+  console.log("   Knowledge base skills registered (kb_ingest/kb_search/kb_list/kb_tags/kb_formats/kb_delete/kb_share/kb_shared/kb_stats/kb_rebuild/kb_collection_create/kb_collection_list/kb_collection_delete)");
 }
 
 

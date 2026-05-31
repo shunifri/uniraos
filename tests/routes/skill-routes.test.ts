@@ -42,13 +42,14 @@ vi.mock("../../src/permissions/index.js", () => ({
     helpers: {},
     getAccessibleSkills: (...args: any[]) => mockGetAccessibleSkills(...args),
     hasSkillPermission: (...args: any[]) => mockHasSkillPermission(...args),
+    hasPermission: vi.fn(() => Promise.resolve(true)),
   },
 }));
 
 vi.mock("../../src/db/custom-skill-repository.js", () => ({
   getCustomSkillRepository: vi.fn(() => ({
     create: vi.fn(() => Promise.resolve()),
-    deleteByName: vi.fn(() => Promise.resolve()),
+    deleteByName: vi.fn(() => Promise.resolve(true)),
   })),
 }));
 
@@ -104,7 +105,7 @@ function createMockDeps() {
 }
 
 function createMockReq(body: any = {}, params: any = {}, query: any = {}): any {
-  return { body, params, query, user: { id: "user_1" } };
+  return { body, params, query, user: { id: "user_1" }, setTimeout: vi.fn(), headers: {} };
 }
 
 function createMockRes(): any {
@@ -200,14 +201,16 @@ describe("Skill Routes", () => {
     expect(res.json.mock.calls[0][0].success).toBe(true);
   });
 
-  it("DELETE /skills/:name should unregister a skill", () => {
+  it("DELETE /skills/:name should unregister a skill", async () => {
     const deps = createMockDeps();
+    deps.registry.lookup = vi.fn(() => ({ name: "old_skill", owner: "user_1" }));
     createSkillRoutes(deps);
     const req = createMockReq({}, { name: "old_skill" });
     const res = createMockRes();
 
-    routeHandlers["DELETE /skills/:name"](req, res);
+    await routeHandlers["DELETE /skills/:name"](req, res);
 
+    expect(deps.registry.lookup).toHaveBeenCalledWith("old_skill");
     expect(deps.registry.unregister).toHaveBeenCalledWith("old_skill");
     expect(res.json.mock.calls[0][0].success).toBe(true);
   });

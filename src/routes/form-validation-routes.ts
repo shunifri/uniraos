@@ -67,7 +67,8 @@ router.post("/form/validate", requireAuth, async (req, res) => {
         return res.status(400).json({ success: false, error: `Unknown rule: ${rule}` });
     }
   } catch (error: unknown) {
-    res.status(500).json({ success: false, error: (error as Error).message });
+    console.error("[form-validation-routes] error:", error);
+      res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 

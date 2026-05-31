@@ -32,7 +32,9 @@ export const SelectInput: React.FC<FieldRendererProps> = ({
   fieldState,
   readOnly,
 }) => {
-  const options = fieldState.options || schema["x-dataSource"]?.options || [];
+  // 优先使用 x-dataSource，其次尝试 enum 数组（兼容存量数据），最后使用 fieldState.options
+  const enumValues = (schema as any).enum as string[] | undefined;
+  const options = fieldState.options || schema["x-dataSource"]?.options || (enumValues ? enumValues.map((v: string) => ({ label: v, value: v })) : []) || [];
   const isDisabled = fieldState.disabled || readOnly;
   const variant = schema["ui:props"]?.variant || "segmented";
   const { token } = theme.useToken();

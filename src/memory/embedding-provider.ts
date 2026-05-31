@@ -55,7 +55,16 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   constructor(config: { apiKey: string; baseUrl?: string; model?: string; mode?: EmbeddingApiMode }) {
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? "https://api.openai.com/v1";
+    let url = config.baseUrl ?? "https://api.openai.com/v1";
+    // 兼容用户填完整路径的情况（如 https://xxx/v1/embeddings）
+    if (url.endsWith("/embeddings")) {
+      url = url.slice(0, -"/embeddings".length);
+    }
+    // 去掉末尾斜杠
+    if (url.endsWith("/")) {
+      url = url.slice(0, -1);
+    }
+    this.baseUrl = url;
     this.model = config.model ?? "text-embedding-3-small";
     this.mode = config.mode ?? "openai";
     this.name = this.mode === "volcengine-multimodal" ? "volcengine" : "openai";
@@ -70,6 +79,15 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   /** 标准 OpenAI 格式 */
   private async embedOpenAI(texts: string[]): Promise<number[][]> {
+    // 过滤掉 null/undefined/空字符串，避免 API 400 错误
+    const validTexts = texts.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
+    if (validTexts.length === 0) {
+      console.warn("[EmbeddingProvider] No valid texts to embed, returning empty vectors");
+      return [];
+    }
+    if (validTexts.length !== texts.length) {
+      console.warn(`[EmbeddingProvider] Filtered out ${texts.length - validTexts.length} invalid texts`);
+    }
     const response = await fetchWithTimeout(`${this.baseUrl}/embeddings`, {
       method: "POST",
       headers: {
@@ -78,7 +96,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        input: texts,
+        input: validTexts,
       }),
       timeoutMs: 60_000,
     });

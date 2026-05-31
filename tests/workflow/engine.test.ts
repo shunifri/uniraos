@@ -196,13 +196,109 @@ describe("WorkflowEngine", () => {
         name: "Auto",
         nodes: [
           { id: "start", type: "start_event", next: "svc" },
-          { id: "svc", type: "service_task", name: "Notify", service: "email", next: "end" },
+          { id: "svc", type: "service_task", name: "Notify", service: "echo", next: "end" },
           { id: "end", type: "end_event" },
         ],
       });
       const result = await engine.startInstance("auto", "user1");
       expect(result.success).toBe(true);
       expect(result.instance!.status).toBe("completed");
+    });
+
+    it("service_task writes result to workflow variable", async () => {
+      await createDefinition({
+        key: "auto_result",
+        name: "Auto Result",
+        nodes: [
+          { id: "start", type: "start_event", next: "svc" },
+          { id: "svc", type: "service_task", name: "Echo", service: "echo", config: { msg: "hello" }, next: "end" },
+          { id: "end", type: "end_event" },
+        ],
+      });
+      const result = await engine.startInstance("auto_result", "user1");
+      expect(result.success).toBe(true);
+      const vars = await repo.getVariables(result.instance!.id);
+      expect(vars["__result_svc"]).toBeDefined();
+      expect((vars["__result_svc"] as any).echoed.msg).toBe("hello");
+    });
+
+    it("service_task resolves ${variable} in config", async () => {
+      await createDefinition({
+        key: "auto_resolve",
+        name: "Auto Resolve",
+        nodes: [
+          { id: "start", type: "start_event", next: "svc" },
+          { id: "svc", type: "service_task", name: "Echo", service: "echo", config: { msg: "${greeting}" }, next: "end" },
+          { id: "end", type: "end_event" },
+        ],
+      });
+      const result = await engine.startInstance("auto_resolve", "user1", { greeting: "hi" });
+      expect(result.success).toBe(true);
+      const vars = await repo.getVariables(result.instance!.id);
+      expect((vars["__result_svc"] as any).echoed.msg).toBe("hi");
+    });
+
+    it("service_task marks error when handler throws", async () => {
+      const { defaultRegistry } = await import("../../src/workflow/service-registry.js");
+      defaultRegistry.register("fail_test", async () => {
+        throw new Error("intentional failure");
+      });
+      await createDefinition({
+        key: "auto_fail",
+        name: "Auto Fail",
+        nodes: [
+          { id: "start", type: "start_event", next: "svc" },
+          { id: "svc", type: "service_task", name: "Fail", service: "fail_test", next: "end" },
+          { id: "end", type: "end_event" },
+        ],
+      });
+      const result = await engine.startInstance("auto_fail", "user1");
+      expect(result.success).toBe(false);
+      expect(result.task!.status).toBe("error");
+      expect(result.error?.message).toContain("intentional failure");
+    });
+
+    it("service_task retries on failure then succeeds", async () => {
+      const { defaultRegistry } = await import("../../src/workflow/service-registry.js");
+      let attempts = 0;
+      defaultRegistry.register("retry_test", async () => {
+        attempts++;
+        if (attempts < 3) throw new Error(`attempt ${attempts} failed`);
+        return { ok: true };
+      });
+      await createDefinition({
+        key: "auto_retry",
+        name: "Auto Retry",
+        nodes: [
+          { id: "start", type: "start_event", next: "svc" },
+          { id: "svc", type: "service_task", name: "Retry", service: "retry_test", config: { retries: 3, retryDelay: 50 }, next: "end" },
+          { id: "end", type: "end_event" },
+        ],
+      });
+      const result = await engine.startInstance("auto_retry", "user1");
+      expect(result.success).toBe(true);
+      expect(attempts).toBe(3);
+    });
+
+    it("service_task times out when handler is too slow", async () => {
+      const { defaultRegistry } = await import("../../src/workflow/service-registry.js");
+      defaultRegistry.register("slow_test", async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { ok: true };
+      });
+      await createDefinition({
+        key: "auto_slow",
+        name: "Auto Slow",
+        nodes: [
+          { id: "start", type: "start_event", next: "svc" },
+          { id: "svc", type: "service_task", name: "Slow", service: "slow_test", config: { timeout: 100 }, next: "end" },
+          { id: "end", type: "end_event" },
+        ],
+      });
+      const result = await engine.startInstance("auto_slow", "user1");
+      expect(result.success).toBe(false);
+      expect(result.task!.status).toBe("error");
+      expect(result.error?.message).toContain("超时");
     });
   });
 

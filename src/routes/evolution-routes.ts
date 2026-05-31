@@ -2,7 +2,7 @@ import { Router } from "express";
 import express from "express";
 import { requireAuth, requireAdmin, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { defineSkill } from "../types/index.js";
-import { resolveParams, createTransformSkill, createValidateSkill, createAggregateSkill } from "../skills/meta-skills.js";
+import { createSkillFromApproval, type ApprovalData } from "../skills/meta-skills.js";
 import type { RouteDependencies } from "./types.js";
 
 export function createEvolutionRoutes(deps: RouteDependencies): Router {
@@ -28,7 +28,12 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   router.post("/evolution/config", requireAuth, requireAdmin, (req, res) => {
-    evolutionController.updateConfig(req.body);
+    const allowed = ["maxGenerationDepth", "maxGenerationsPerHour", "requireHumanApproval", "forbiddenPrefixes", "forbiddenCapabilities"];
+    const updates: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    evolutionController.updateConfig(updates as any);
     res.json({ success: true, config: evolutionController.getConfig() });
   });
 
@@ -48,8 +53,8 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
 
   // 审批路由已合并至 /evolution/approvals/:id/approve（使用 runInSandbox 安全沙箱）
 
-  router.post("/evolution/reject/:id", requireAuth, requireAdmin, (req, res) => {
-    const success = evolutionController.reject(req.params.id as string, req.body.reason || "Rejected");
+  router.post("/evolution/reject/:id", requireAuth, requireAdmin, async (req, res) => {
+    const success = await evolutionController.reject(req.params.id as string, req.body.reason || "Rejected");
     if (!success) {
       res.status(404).json({ success: false, error: "Approval not found" });
       return;
@@ -232,106 +237,27 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
 
   // ===== Approval Workflow API Endpoints =====
 
-  // GET /api/evolution/approvals — List pending approvals
-  router.get("/evolution/approvals", requireAuth, requireAdmin, (req, res) => {
-    const pending = evolutionController.getPendingApprovals();
-    res.json({ approvals: pending });
+  // GET /api/evolution/approvals — List approvals by status (pending | approved | rejected)
+  router.get("/evolution/approvals", requireAuth, requireAdmin, async (req, res) => {
+    const status = (req.query.status as string) || "pending";
+    const approvals = await evolutionController.getApprovalsByStatus(status);
+    res.json({ approvals, status });
   });
 
   // POST /api/evolution/approvals/:id/approve
   // 兼容旧路径 /evolution/approve/:id
   router.post("/evolution/approve/:id", requireAuth, requireAdmin, async (req, res) => {
-    const approval = evolutionController.approve(req.params.id as string);
+    const approval = await evolutionController.approve(req.params.id as string);
     if (!approval) {
       res.status(404).json({ success: false, error: "Approval not found or already processed" });
       return;
     }
     try {
-      let skill;
-
-      if (approval.code.trim().startsWith("{")) {
-        const def = JSON.parse(approval.code);
-
-        if (def.metaType === "composed") {
-          const { steps, mode } = def;
-          skill = defineSkill({
-            name: def.name,
-            description: def.description,
-            owner: approval.generatedBy,
-            handler: async (inputParams, context) => {
-              const results: Record<string, unknown> = {};
-              results["$input"] = inputParams;
-
-              if (mode === "parallel") {
-                const promises = steps.map(async (step: any) => {
-                  const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                  const result = await engine.execute(step.skill, resolvedParams, true);
-                  return { key: step.outputKey ?? step.skill, result };
-                });
-                const parallelResults = await Promise.all(promises);
-                for (const { key, result } of parallelResults) {
-                  results[key] = result.data;
-                }
-              } else {
-                for (const step of steps) {
-                  const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                  const result = await engine.execute(step.skill, resolvedParams, true);
-                  const key = step.outputKey ?? step.skill;
-                  results[key] = result.data;
-                  if (!result.success) {
-                    return { success: false, error: new Error(`步骤 ${step.skill} 失败: ${result.error?.message}`), data: results };
-                  }
-                }
-              }
-              return { success: true, data: results };
-            },
-          });
-        } else if (def.metaType === "template") {
-          switch (def.template) {
-            case "transform":
-              skill = createTransformSkill(def.name, def.description, def.config);
-              break;
-            case "validate":
-              skill = createValidateSkill(def.name, def.description, def.config);
-              break;
-            case "aggregate":
-              skill = createAggregateSkill(def.name, def.description, def.config, engine);
-              break;
-            default:
-              throw new Error(`未知模板类型: ${def.template}`);
-          }
-          (skill as any).owner = approval.generatedBy;
-        } else {
-          throw new Error(`未知的 meta skill 类型: ${def.metaType}`);
-        }
-      } else {
-        const { runInSandbox } = await import("../engine/worker-sandbox.js");
-        const code = approval.code;
-        skill = defineSkill({
-          name: approval.name,
-          description: `[已审批] ${approval.description}`,
-          capabilities: approval.capabilities,
-          owner: approval.generatedBy,
-          handler: async (params, context) => {
-            try {
-              const sandboxCtx = {
-                callSkill: async (name: string, skillParams: Record<string, unknown>) => {
-                  const result = await engine.execute(name, skillParams);
-                  return result.data;
-                },
-                user: context.user,
-              };
-              const result = await runInSandbox(code, params, { timeout: 30000 }, sandboxCtx);
-              return { success: result.success, data: result.data };
-            } catch (err) {
-              return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
-            }
-          },
-        });
+      const skill = await createSkillFromApproval(approval as ApprovalData, engine);
+      if (!registry.lookup(approval.name)) {
+        registry.register(skill);
       }
-
-      registry.register(skill);
-      evolutionController.recordGeneration(approval.name, approval.generatedBy);
+      await evolutionController.recordGeneration(approval.name, approval.generatedBy);
       res.json({ success: true, name: approval.name });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? (err as Error).message : String(err) });
@@ -339,99 +265,17 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   router.post("/evolution/approvals/:id/approve", requireAuth, requireAdmin, async (req, res) => {
-    const approval = evolutionController.approve(req.params.id as string);
+    const approval = await evolutionController.approve(req.params.id as string);
     if (!approval) {
       res.status(404).json({ error: "Approval not found or already processed" });
       return;
     }
     try {
-      let skill;
-
-      if (approval.code.trim().startsWith("{")) {
-        // JSON 格式的 skill 定义（组合或模板 skill）
-        const def = JSON.parse(approval.code);
-
-        if (def.metaType === "composed") {
-          const { steps, mode } = def;
-          skill = defineSkill({
-            name: def.name,
-            description: def.description,
-            owner: approval.generatedBy,
-            handler: async (inputParams, context) => {
-              const results: Record<string, unknown> = {};
-              results["$input"] = inputParams;
-
-              if (mode === "parallel") {
-                const promises = steps.map(async (step: any) => {
-                  const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                  const result = await engine.execute(step.skill, resolvedParams, true);
-                  return { key: step.outputKey ?? step.skill, result };
-                });
-                const parallelResults = await Promise.all(promises);
-                for (const { key, result } of parallelResults) {
-                  results[key] = result.data;
-                }
-              } else {
-                for (const step of steps) {
-                  const resolvedParams = resolveParams(step.params ?? {}, results, inputParams);
-                  const result = await engine.execute(step.skill, resolvedParams, true);
-                  const key = step.outputKey ?? step.skill;
-                  results[key] = result.data;
-                  if (!result.success) {
-                    return { success: false, error: new Error(`步骤 ${step.skill} 失败: ${result.error?.message}`), data: results };
-                  }
-                }
-              }
-              return { success: true, data: results };
-            },
-          });
-        } else if (def.metaType === "template") {
-          switch (def.template) {
-            case "transform":
-              skill = createTransformSkill(def.name, def.description, def.config);
-              break;
-            case "validate":
-              skill = createValidateSkill(def.name, def.description, def.config);
-              break;
-            case "aggregate":
-              skill = createAggregateSkill(def.name, def.description, def.config, engine);
-              break;
-            default:
-              throw new Error(`未知模板类型: ${def.template}`);
-          }
-          (skill as any).owner = approval.generatedBy;
-        } else {
-          throw new Error(`未知的 meta skill 类型: ${def.metaType}`);
-        }
-      } else {
-        // 传统代码字符串（skill_from_description）
-        const { runInSandbox } = await import("../engine/worker-sandbox.js");
-        const code = approval.code;
-        skill = defineSkill({
-          name: approval.name,
-          description: `[已审批] ${approval.description}`,
-          capabilities: approval.capabilities,
-          owner: approval.generatedBy,
-          handler: async (params, context) => {
-            try {
-              const sandboxCtx = {
-                callSkill: async (name: string, skillParams: Record<string, unknown>) => {
-                  const result = await engine.execute(name, skillParams);
-                  return result.data;
-                },
-                user: context.user,
-              };
-              const result = await runInSandbox(code, params, { timeout: 30000 }, sandboxCtx);
-              return { success: result.success, data: result.data };
-            } catch (err) {
-              return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
-            }
-          },
-        });
+      const skill = await createSkillFromApproval(approval as ApprovalData, engine);
+      if (!registry.lookup(approval.name)) {
+        registry.register(skill);
       }
-
-      registry.register(skill);
-      evolutionController.recordGeneration(approval.name, approval.generatedBy);
+      await evolutionController.recordGeneration(approval.name, approval.generatedBy);
       res.json({ approved: true, skillName: approval.name });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? (err as Error).message : String(err) });
@@ -439,9 +283,9 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // POST /api/evolution/approvals/:id/reject
-  router.post("/evolution/approvals/:id/reject", requireAuth, requireAdmin, (req, res) => {
+  router.post("/evolution/approvals/:id/reject", requireAuth, requireAdmin, async (req, res) => {
     const reason = req.body?.reason ?? "Rejected by admin";
-    const success = evolutionController.reject(req.params.id as string, reason);
+    const success = await evolutionController.reject(req.params.id as string, reason);
     if (!success) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -450,7 +294,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/evolution/status — Get evolution engine status (alias)
-  router.get("/evolution/status", requireAuth, (req, res) => {
+  router.get("/evolution/status", requireAuth, requireAdmin, (req, res) => {
     res.json({
       running: evolutionEngine.getStatus().running ?? false,
       cycles: evolutionEngine.getStatus().cycleCount ?? 0,
@@ -472,7 +316,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/evolution/engine/status
-  router.get("/evolution/engine/status", requireAuth, (req, res) => {
+  router.get("/evolution/engine/status", requireAuth, requireAdmin, (req, res) => {
     res.json(evolutionEngine.getStatus());
   });
 
@@ -528,7 +372,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  router.get("/federation/status", requireAuth, (_req, res) => {
+  router.get("/federation/status", requireAuth, requireAdmin, (_req, res) => {
     res.json({
       instanceId,
       evolution: evolutionEngine.getStatus(),
@@ -543,7 +387,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/federation/peers — List all peers
-  router.get("/federation/peers", requireAuth, (_req, res) => {
+  router.get("/federation/peers", requireAuth, requireAdmin, (_req, res) => {
     const peers = (federationTransport as any).getPeers?.() ?? [];
     res.json(peers.map((p: any) => ({
       instanceId: p.instanceId,
@@ -574,7 +418,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/federation/recommendations — List recommendations
-  router.get("/federation/recommendations", requireAuth, (_req, res) => {
+  router.get("/federation/recommendations", requireAuth, requireAdmin, (_req, res) => {
     const recommendations = federationManager.getRecommendations();
     res.json(recommendations.map((r) => ({
       id: `${r.sourceInstance}-${r.skillName}`,
@@ -607,7 +451,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/federation/migrations — List migration history
-  router.get("/federation/migrations", requireAuth, (_req, res) => {
+  router.get("/federation/migrations", requireAuth, requireAdmin, (_req, res) => {
     const history = migrationManager.getHistory();
     res.json(history.map((h, index) => ({
       id: `${h.skillName}-${index}`,
@@ -619,7 +463,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   });
 
   // GET /api/federation/metrics — Get metrics comparison
-  router.get("/federation/metrics", requireAuth, (_req, res) => {
+  router.get("/federation/metrics", requireAuth, requireAdmin, (_req, res) => {
     const localSkills = registry.list().map((s) => {
       const m = (federationManager as any).metrics?.getMetrics(s.name);
       return {

@@ -54,14 +54,20 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
 
   // Execute Skill (with per-skill permission check)
   router.post("/execute", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_EXECUTE), async (req, res) => {
-    const { skillName, params } = req.body as {
+    req.setTimeout(300000); // 覆盖全局 30s 超时，允许长时 skill 执行
+    // 仅记录非敏感元数据，req.body 可能包含文件内容/密码等敏感数据
+    const { skillName } = req.body as { skillName: string; params?: Record<string, unknown> };
+    console.log("[skill-routes] /execute START", { skillName, userId: req.user?.id });
+    const { params } = req.body as {
       skillName: string;
       params?: Record<string, unknown>;
     };
 
     // 检查用户是否有该 skill 的执行权限（使用统一权限服务完整检查）
     const userId = req.user!.id;
+    console.log("[skill-routes] checking permission for", skillName, "user:", userId);
     const canExecute = await permissions.hasSkillPermission(userId, skillName);
+    console.log("[skill-routes] permission result:", canExecute);
     if (!canExecute) {
       res.status(403).json({ success: false, error: `无权执行技能: ${skillName}` });
       return;
@@ -76,11 +82,19 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
         departmentId: (req.user as any)?.departmentId,
         requestId: req.headers["x-request-id"] as string | undefined,
       };
+      console.log("[skill-routes] executing skill:", skillName);
       const result = await requestContext.run(ctx, () => engine.execute(skillName, params ?? {}));
+      console.log("[skill-routes] skill result:", result.success, "error?:", !!result.error);
       try {
-        res.json(result);
+        // Error 对象无法被 JSON 序列化，转换为字符串
+        const response = {
+          ...result,
+          error: result.error instanceof Error ? (result.error as Error).message : result.error,
+        };
+        res.json(response);
+        console.log("[skill-routes] res.json OK");
       } catch (jsonErr) {
-        console.error("[skill-routes] Failed to serialize result:", jsonErr, "result keys:", Object.keys(result));
+        console.error("[skill-routes] Failed to serialize result for skill:", skillName, "error:", jsonErr instanceof Error ? jsonErr.message : jsonErr);
         res.status(500).json({
           success: false,
           error: "Result serialization failed",
@@ -88,10 +102,10 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
         });
       }
     } catch (err) {
+      console.error("[skill-routes] Caught error:", err);
       res.status(400).json({
         success: false,
-        error: err instanceof Error ? (err as Error).message : String(err),
-        errorType: err instanceof Error ? err.constructor.name : "UnknownError",
+        error: "Skill execution failed",
       });
     }
   });
@@ -102,19 +116,36 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
       req.body;
 
     try {
-      // 将 handler 代码字符串恢复为可执行函数
+      // 安全：通过 Worker 沙箱执行自定义 handler，替代危险的 new Function
       let handlerFn: import("../types/index.js").SkillHandler;
       if (handler && typeof handler === "string") {
-        try {
-          const fn = new Function("return " + handler)();
-          if (typeof fn === "function") {
-            handlerFn = fn as import("../types/index.js").SkillHandler;
-          } else {
-            handlerFn = async (params) => ({ success: true, data: { echo: params } });
+        const handlerCode = handler;
+        handlerFn = async (params, context) => {
+          const { runInSandbox } = await import("../engine/worker-sandbox.js");
+          const { getGlobalExecutionEngine } = await import("../engine/execution-engine.js");
+          const sandboxCtx = {
+            callSkill: async (skillName: string, skillParams: Record<string, unknown>) => {
+              const engine = getGlobalExecutionEngine();
+              if (!engine) throw new Error("Execution engine not available");
+              const result = await engine.execute(skillName, skillParams);
+              if (!result.success) {
+                throw new Error(result.error?.message || `Skill "${skillName}" 执行失败`);
+              }
+              return result.data;
+            },
+            user: context?.user,
+          };
+          const result = await runInSandbox(
+            handlerCode,
+            params as Record<string, unknown>,
+            { timeout: timeout ?? 30000 },
+            sandboxCtx
+          );
+          if (!result.success) {
+            return { success: false, error: new Error(result.error ?? "Sandbox execution failed") };
           }
-        } catch {
-          handlerFn = async (params) => ({ success: true, data: { echo: params } });
-        }
+          return { success: true, data: result.data };
+        };
       } else {
         handlerFn = async (params) => ({ success: true, data: { echo: params } });
       }
@@ -147,9 +178,31 @@ export function createSkillRoutes(deps: RouteDependencies): Router {
   });
 
   // Delete Skill
-  router.delete("/skills/:name", pm.requireAuth, pm.requirePermission(permissions.constants.API.SKILLS_MANAGE), (req, res) => {
+  router.delete("/skills/:name", pm.requireAuth, async (req, res) => {
     try {
-      registry.unregister(req.params.name as string);
+      const name = req.params.name as string;
+      const skill = registry.lookup(name);
+      if (!skill) {
+        return res.status(404).json({ success: false, error: "Skill not found" });
+      }
+      // Allow deletion if user is admin OR user is the skill owner (system skills require admin)
+      const userId = (req as any).user?.id;
+      const isAdmin = await permissions.hasPermission(userId, permissions.constants.API.SKILLS_MANAGE);
+      if (skill.isSystem && !isAdmin) {
+        return res.status(403).json({ success: false, error: "系统 Skill 需要管理员权限才能删除" });
+      }
+      if (!isAdmin && skill.owner && skill.owner !== userId) {
+        return res.status(403).json({ success: false, error: "无权删除此 Skill" });
+      }
+      registry.unregister(name);
+
+      // 同时从数据库删除持久化记录
+      const repo = getCustomSkillRepository();
+      const effectiveOwnerId = skill.owner || userId;
+      if (effectiveOwnerId) {
+        await repo.deleteByName(name, effectiveOwnerId);
+      }
+
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({

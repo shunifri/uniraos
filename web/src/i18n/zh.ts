@@ -29,6 +29,12 @@ const zh = {
   login_phone_invalid: '请输入有效的11位手机号',
   login_phone_hint: '输入手机号即可免注册使用',
   logout: '退出登录',
+  change_password: '修改密码',
+  old_password: '原密码',
+  new_password: '新密码',
+  confirm_password: '确认密码',
+  password_mismatch: '两次输入的密码不一致',
+  reset_password: '重置密码',
 
   // Common
   save: '保存',

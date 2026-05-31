@@ -27,8 +27,13 @@ export async function authMiddleware(
     token = req.cookies.token;
   }
 
-  if (!token && req.query?.token) {
+  // 安全：query token 仅允许在 GET 请求中使用（如 <img src> 等无法设置 header 的场景）
+  // 禁止在 POST/PUT/DELETE 中使用，防止 token 泄露到日志/历史/Referer
+  if (!token && req.query?.token && req.method === "GET") {
     token = req.query.token as string;
+    if (token) {
+      console.warn("[auth] Query token used for authentication — consider migrating to cookie-based auth for this endpoint:", req.path);
+    }
   }
 
   if (token) {

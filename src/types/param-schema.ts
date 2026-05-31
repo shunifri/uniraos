@@ -1,6 +1,6 @@
 /** Single parameter property definition */
 export interface ParamProperty {
-  type: "string" | "number" | "boolean" | "object" | "array";
+  type: "string" | "number" | "boolean" | "object" | "array" | ("string" | "number" | "boolean" | "object" | "array")[];
   description?: string;
   enum?: string[];
   default?: unknown;

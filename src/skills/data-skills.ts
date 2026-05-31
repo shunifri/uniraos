@@ -474,8 +474,8 @@ async function createUploadSkills(registry: SkillRegistry): Promise<void> {
           }
           mkdirSync(userUploadDir, { recursive: true });
 
-          // 安全文件名处理
-          const safeName = filename.replace(/[^a-zA-Z0-9_\-.\u4e00-\u9fff]/g, "_");
+          // 安全文件名处理：保留字母数字、中文、日文、韩文、空格、常见标点
+          const safeName = filename.replace(/[^a-zA-Z0-9_\-.\s()\[\]{}（）【】「」《》、，。！？;:\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g, "_");
           const ext = safeName.includes(".") ? safeName.slice(safeName.lastIndexOf(".")) : "";
           const baseName = safeName.slice(0, safeName.lastIndexOf(".")) || safeName;
 
@@ -934,6 +934,86 @@ function matchCIDR(ip: string, cidr: string): boolean {
   }
 }
 
+async function executeHttpRequest(params: {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | object;
+  timeout?: number;
+}): Promise<{ success: boolean; data?: unknown; error?: Error }> {
+  const url = params.url;
+  if (!url) {
+    return { success: false, error: new Error("url 参数必填") };
+  }
+
+  // 安全检查：默认禁止内网地址，但支持白名单
+  const parsedUrl = new URL(url);
+  const host = parsedUrl.hostname;
+  if (isIntranetHost(host) && !isWhitelisted(host)) {
+    return { success: false, error: new Error(`安全限制: 禁止访问内网地址 ${host}。如需访问，请联系管理员添加到 HTTP_INTRANET_WHITELIST 白名单。`) };
+  }
+
+  const method = (params.method ?? "GET").toUpperCase();
+  const headers: Record<string, string> = params.headers ?? {};
+  const timeout = params.timeout ?? 30000;
+
+  let body: string | undefined;
+  if (params.body !== undefined) {
+    if (typeof params.body === "object") {
+      body = JSON.stringify(params.body);
+      if (!headers["Content-Type"] && !headers["content-type"]) {
+        headers["Content-Type"] = "application/json";
+      }
+    } else {
+      body = String(params.body);
+    }
+  }
+
+  try {
+    const fetchOptions: Record<string, unknown> = {
+      timeoutMs: timeout,
+      method,
+      headers,
+      skipSsrfCheck: true, // skill 层已做白名单校验
+    };
+    // GET/HEAD 请求不能有 body，否则 Node.js fetch 会抛 TypeError
+    if (body !== undefined && method !== "GET" && method !== "HEAD") {
+      fetchOptions.body = body;
+    }
+    const response = await fetchWithTimeout(url, fetchOptions);
+
+    const contentType = response.headers.get("content-type") ?? "";
+    let responseBody: unknown;
+
+    // HEAD 请求没有响应体，直接返回空
+    if (method === "HEAD") {
+      responseBody = "";
+    } else if (contentType.includes("application/json")) {
+      responseBody = await response.json();
+    } else {
+      const text = await response.text();
+      // 限制响应体大小
+      responseBody = text.length > 50000 ? text.substring(0, 50000) + "...[truncated]" : text;
+    }
+
+    return {
+      success: response.ok,
+      data: {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: responseBody,
+      },
+      error: response.ok ? undefined : new Error(`HTTP ${response.status}: ${response.statusText}`),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
 function createHttpSkills(registry: SkillRegistry): void {
   registry.register(
     defineSystemSkill({
@@ -946,92 +1026,114 @@ function createHttpSkills(registry: SkillRegistry): void {
           url: { type: "string", description: "Target URL (must be a public address)" },
           method: { type: "string", description: "HTTP method (default: GET)", enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] },
           headers: { type: "object", description: "Request headers as key-value pairs" },
-          body: { type: "string", description: "Request body (string or JSON-encoded object)" },
+          body: { type: ["string", "object"], description: "Request body (string or JSON object, auto-serialized)" },
           timeout: { type: "number", description: "Request timeout in milliseconds (default: 30000)" },
         },
         required: ["url"],
       },
-      handler: async (params) => {
-        const url = params.url as string;
-        if (!url) {
-          return { success: false, error: new Error("url 参数必填") };
-        }
-
-        // 安全检查：默认禁止内网地址，但支持白名单
-        const parsedUrl = new URL(url);
-        const host = parsedUrl.hostname;
-        if (isIntranetHost(host) && !isWhitelisted(host)) {
-          return { success: false, error: new Error(`安全限制: 禁止访问内网地址 ${host}。如需访问，请联系管理员添加到 HTTP_INTRANET_WHITELIST 白名单。`) };
-        }
-
-        const method = ((params.method as string) ?? "GET").toUpperCase();
-        const headers: Record<string, string> = (params.headers as Record<string, string>) ?? {};
-        const timeout = (params.timeout as number) ?? 30000;
-
-        let body: string | undefined;
-        if (params.body !== undefined) {
-          if (typeof params.body === "object") {
-            body = JSON.stringify(params.body);
-            if (!headers["Content-Type"] && !headers["content-type"]) {
-              headers["Content-Type"] = "application/json";
-            }
-          } else {
-            body = String(params.body);
-          }
-        }
-
-        try {
-          const response = await fetchWithTimeout(url, {
-            timeoutMs: timeout,
-            method,
-            headers,
-            body,
-            skipSsrfCheck: true, // skill 层已做白名单校验
-          });
-
-          const contentType = response.headers.get("content-type") ?? "";
-          let responseBody: unknown;
-
-          if (contentType.includes("application/json")) {
-            responseBody = await response.json();
-          } else {
-            const text = await response.text();
-            // 限制响应体大小
-            responseBody = text.length > 50000 ? text.substring(0, 50000) + "...[truncated]" : text;
-          }
-
-          return {
-            success: response.ok,
-            data: {
-              status: response.status,
-              statusText: response.statusText,
-              headers: Object.fromEntries(response.headers.entries()),
-              body: responseBody,
-            },
-            error: response.ok ? undefined : new Error(`HTTP ${response.status}: ${response.statusText}`),
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err : new Error(String(err)),
-          };
-        }
-      },
+      handler: async (params) => executeHttpRequest({
+        url: params.url as string,
+        method: params.method as string,
+        headers: params.headers as Record<string, string>,
+        body: params.body as string | object,
+        timeout: params.timeout as number,
+      }),
     }),
   );
 
   registry.register(
     defineSystemSkill({
       name: "http_get",
-      description: "发起 GET 请求（简化版）。参数: url(string), headers?(object)",
+      description: "发起 GET 请求（http_call 的快捷版）。参数: url(string), headers?(object)",
       timeout: 30000,
-      handler: async (params, context) => {
-        // 委托给 http_call
-        const { SkillRegistry } = await import("../registry/index.js");
-        return {
-          success: true,
-          data: { delegated: true, message: "请使用 http_call skill" },
-        };
+      handler: async (params) => executeHttpRequest({
+        url: params.url as string,
+        method: "GET",
+        headers: params.headers as Record<string, string>,
+        timeout: params.timeout as number,
+      }),
+    }),
+  );
+
+  // ===== IP 查询 Skills =====
+
+  registry.register(
+    defineSystemSkill({
+      name: "ip_lookup",
+      description: "查询当前设备的公网 IP 地址。无需参数，返回 { ip: string }。",
+      timeout: 15000,
+      handler: async () => {
+        const providers = [
+          { url: "https://icanhazip.com", parser: (text: string) => text.trim() },
+          { url: "https://ident.me", parser: (text: string) => text.trim() },
+        ];
+        for (const provider of providers) {
+          try {
+            const result = await executeHttpRequest({ url: provider.url, method: "GET", timeout: 8000 });
+            if (result.success && result.data && (result.data as any).body) {
+              const ip = provider.parser(String((result.data as any).body));
+              if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+                return { success: true, data: { ip, source: provider.url } };
+              }
+            }
+          } catch { /* try next provider */ }
+        }
+        return { success: false, error: new Error("无法获取公网 IP，所有提供商均不可用") };
+      },
+    }),
+  );
+
+  registry.register(
+    defineSystemSkill({
+      name: "geo_ip",
+      description: "根据 IP 地址查询地理位置信息。参数: ip(string)。返回 { country, countryCode, region, regionName, city, zip, lat, lon, timezone, isp, org, as }。",
+      timeout: 15000,
+      paramSchema: {
+        properties: {
+          ip: { type: "string", description: "要查询的 IP 地址（IPv4 或 IPv6）" },
+        },
+        required: ["ip"],
+      },
+      handler: async (params) => {
+        const ip = (params.ip as string || "").trim();
+        if (!ip) {
+          return { success: false, error: new Error("ip 参数必填") };
+        }
+        // ip-api.com 免费端点仅支持 HTTP
+        const url = `http://ip-api.com/json/${encodeURIComponent(ip)}`;
+        try {
+          const result = await executeHttpRequest({ url, method: "GET", timeout: 10000 });
+          if (!result.success) {
+            return result;
+          }
+          const body = (result.data as any)?.body;
+          if (body && body.status === "fail") {
+            return { success: false, error: new Error(body.message || "IP 定位失败") };
+          }
+          if (body && body.status === "success") {
+            return {
+              success: true,
+              data: {
+                ip: body.query,
+                country: body.country,
+                countryCode: body.countryCode,
+                region: body.region,
+                regionName: body.regionName,
+                city: body.city,
+                zip: body.zip,
+                lat: body.lat,
+                lon: body.lon,
+                timezone: body.timezone,
+                isp: body.isp,
+                org: body.org,
+                as: body.as,
+              },
+            };
+          }
+          return { success: false, error: new Error("IP 定位服务返回无效数据") };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+        }
       },
     }),
   );

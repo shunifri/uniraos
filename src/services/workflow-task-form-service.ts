@@ -159,7 +159,7 @@ export async function loadTaskForm(taskId: number): Promise<TaskFormPayload> {
   let initialData: Record<string, any> = {};
   let mappingApplied = false;
 
-  const mapping = safeParseRecord(binding.mapping_json);
+  const mapping = safeParseRecord(binding?.mapping_json);
   if (mapping && typeof mapping === 'object') {
     if (mapping.variableName && variables[mapping.variableName] !== undefined) {
       const varValue = variables[mapping.variableName];
@@ -179,7 +179,17 @@ export async function loadTaskForm(taskId: number): Promise<TaskFormPayload> {
     }
   }
 
-  // 8. 如果 task 本身有 form_data，合并（优先级高于流程变量）
+  // 8. 从流程变量中按表单字段名匹配回填初始数据
+  //    无论是否有 binding，只要表单字段名与流程变量名匹配，就自动回填
+  if (formSchema?.properties && typeof formSchema.properties === 'object') {
+    for (const fieldName of Object.keys(formSchema.properties)) {
+      if (variables[fieldName] !== undefined) {
+        initialData[fieldName] = variables[fieldName];
+      }
+    }
+  }
+
+  // 9. 如果 task 本身有 form_data，合并（优先级高于流程变量）
   const taskFormData = safeParseRecord(task.formData);
   if (taskFormData) {
     initialData = { ...initialData, ...taskFormData };

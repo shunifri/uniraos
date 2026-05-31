@@ -6,7 +6,7 @@
 import type { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { createFileSink } from "../utils/file-log-sink.js";
 import { httpRequestDuration, httpRequestsTotal } from "../metrics/http-metrics.js";
 import path from "path";
@@ -22,10 +22,13 @@ export const securityHeaders = helmet({
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
-      frameAncestors: ["'none'"],
+      // 安全：默认只允许同域 iframe 嵌入，防止点击劫持
+      frameAncestors: ["'self'"],
       upgradeInsecureRequests: [],
     },
   },
+  // 恢复 X-Frame-Options 作为兜底防护（旧浏览器兼容）
+  xFrameOptions: "SAMEORIGIN",
   crossOriginEmbedderPolicy: false, // 允许内嵌资源（SPA 需要）
   hsts: {
     maxAge: 31536000,
@@ -35,6 +38,34 @@ export const securityHeaders = helmet({
   referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   crossOriginOpenerPolicy: { policy: "same-origin" },
   // P2: Permissions-Policy 限制浏览器功能暴露
+  permittedCrossDomainPolicies: { permittedPolicies: "none" },
+});
+
+/** 用于 /embed 路由的宽松安全头 — 允许任意父域 iframe 嵌入 */
+export const embedSecurityHeaders = helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      // /embed 允许任意父域嵌入（实际安全由 token/visitor 认证保障）
+      frameAncestors: ["*"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  xFrameOptions: false,
+  crossOriginEmbedderPolicy: false,
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin" },
   permittedCrossDomainPolicies: { permittedPolicies: "none" },
 });
 
@@ -69,10 +100,10 @@ const createLimiter = (windowMs: number, max: number, message: string) =>
     legacyHeaders: false,
     message: { error: message },
     keyGenerator: (req: Request) => {
-      // 优先使用已认证用户 ID，否则使用 IP
+      // 优先使用已认证用户 ID，否则使用 IP（通过 ipKeyGenerator 避免 IPv6 验证错误）
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const userId = (req as any).user?.id;
-      return userId ? `user:${userId}` : `ip:${req.ip}`;
+      return userId ? `user:${userId}` : ipKeyGenerator(req.ip ?? "unknown");
     },
   });
 
@@ -85,8 +116,8 @@ export const authRateLimit = createLimiter(60_000, 60, "登录请求过于频繁
 /** LLM / Agent 调用限流: 10 次 / 分钟 */
 export const llmRateLimit = createLimiter(60_000, 10, "AI 调用过于频繁，请稍后再试");
 
-/** 文件上传限流: 5 次 / 分钟 */
-export const uploadRateLimit = createLimiter(60_000, 5, "文件上传过于频繁，请稍后再试");
+/** 文件上传限流: 30 次 / 分钟 */
+export const uploadRateLimit = createLimiter(60_000, 30, "文件上传过于频繁，请稍后再试");
 
 /** ─── Request Audit Logger ─── */
 const auditSink = createFileSink({

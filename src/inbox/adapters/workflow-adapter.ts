@@ -3,6 +3,7 @@
  */
 
 import type { InboxItem, CreateInboxItemInput } from "../inbox-types.js";
+import { getFormDefinition, getFormDefinitionByKey } from "../../services/form-service.js";
 
 export interface WorkflowAdapter {
   toInboxItem(task: any, node: any, instance: any): Promise<CreateInboxItemInput>;
@@ -11,6 +12,18 @@ export interface WorkflowAdapter {
 export function createWorkflowAdapter(): WorkflowAdapter {
   return {
     async toInboxItem(task: any, node: any, instance: any): Promise<CreateInboxItemInput> {
+      // 优先从 formDefinitionId 加载表单定义，fallback 到内嵌 form
+      let schema = node.form;
+      if (!schema && node.formDefinitionId) {
+        let formDef = await getFormDefinition(node.formDefinitionId);
+        if (!formDef) {
+          formDef = await getFormDefinitionByKey(node.formDefinitionId);
+        }
+        if (formDef && formDef.schema_json) {
+          schema = typeof formDef.schema_json === "string" ? JSON.parse(formDef.schema_json) : formDef.schema_json;
+        }
+      }
+
       return {
         userId: task.assignee || task.candidateUsers?.[0] || "system",
         type: "approval",
@@ -21,7 +34,7 @@ export function createWorkflowAdapter(): WorkflowAdapter {
         description: instance.name || "",
         priority: node.dueDuration ? "high" : "normal",
         payload: {
-          schema: node.form,
+          schema,
           actions: node.actions || [
             { action: "approve", label: "通过", primary: true },
             { action: "reject", label: "驳回", danger: true },

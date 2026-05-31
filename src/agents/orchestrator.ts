@@ -350,7 +350,7 @@ export class Orchestrator {
       if (hasKbSearch) {
         promises.push(
           Promise.race([
-            this.deps.engine.execute("kb_search", { query: userMessage, limit: 5, threshold: 0.35 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
+            this.deps.engine.execute("kb_search", { query: userMessage, limit: 10, threshold: 0.35 }).then((r) => r.success ? { type: "kb", data: r.data } : null),
             new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
           ]).catch(() => null)
         );
@@ -463,6 +463,8 @@ export class Orchestrator {
     } catch {
       // 静默失败
     }
+    // 禁止 LLM 在回答末尾自动生成推荐问题列表
+    context += "\n\n⚠️ 回答规则：直接给出完整回答即可，不要在末尾添加推荐问题、建议问题、相关问题或继续探索的列表。如果用户需要更多信息，他们会主动询问。";
     return context;
   }
 
@@ -478,7 +480,14 @@ export class Orchestrator {
     const memoryContext = await this.recallMemories(input.message);
 
     // 获取对话历史（按 conversationId 隔离）
-    const history = this.getConversationHistory(userId, conversationId);
+    let history = this.getConversationHistory(userId, conversationId);
+
+    // 后端重启后内存历史为空，若调用方传入了 history（从 DB 恢复），则使用并回填到内存
+    if (history.length === 0 && input.history && input.history.length > 0 && conversationId) {
+      history = input.history;
+      const conv = this.getOrCreateConversation(userId, conversationId);
+      conv.history = input.history.map((m) => ({ role: m.role, content: m.content }));
+    }
 
     // 记录用户消息（按 conversationId 隔离）
     this.appendHistory(userId, conversationId, "user", input.message);
@@ -602,6 +611,13 @@ export class Orchestrator {
 
     if (!this.config.autoStrategy) {
       const enrichedInput = await this.buildEnrichedInput(input);
+      // recallMemories 内部调用 kb_search，不产生 tool_result 事件，需手动发送 kb_references
+      if (conversationId) {
+        const refs = this.getConversationReferences(userId, conversationId);
+        if (refs.kbReferences.length > 0) {
+          yield { event: "kb_references", data: { references: refs.kbReferences } };
+        }
+      }
       for await (const event of this.runReactStream(enrichedInput)) {
         if (event.event === "agent_done") {
           finalResponse = (event.data as any)?.response ?? "";
@@ -625,6 +641,13 @@ export class Orchestrator {
     }
 
     const enrichedInput = await this.buildEnrichedInput(input);
+    // recallMemories 内部调用 kb_search，不产生 tool_result 事件，需手动发送 kb_references
+    if (conversationId) {
+      const refs = this.getConversationReferences(userId, conversationId);
+      if (refs.kbReferences.length > 0) {
+        yield { event: "kb_references", data: { references: refs.kbReferences } };
+      }
+    }
 
     yield {
       event: "strategy_selected",
@@ -692,6 +715,10 @@ ${skillListText || "（无）"}
 - react：需要工具的任务（搜索、查询、图表等）——绝大多数任务
 - plan：需要多步规划的复杂任务
 - team：需要多智能体协作的任务
+
+## user_confirm 工具
+当任务需要用户做出选择、填写信息或确认操作时，LLM 应该调用 user_confirm 工具生成交互卡片，而不是在回答文本中列出问题让用户回复。
+适用场景：选项选择、表单填写、操作确认、审批决策等任何需要人机交互确认的场景。
 
 ## Team 协议（level=team 时选择）
 - HIERARCHICAL：层次结构任务
@@ -851,17 +878,7 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
         /^你好$|^您好$|^早上好$|^晚上好$|^下午好$|^再见$|^拜拜$/, // 简单问候
       ],
 
-      // 需要用户确认的场景（选择 react 策略以确保 user_confirm 可用）
-      needsConfirm: [
-        /^我想学习.*$|^学习.*建议$|^如何学习.*$|^学习.*方法$/, // 学习建议类问题（需要确认学习方向/时间）
-        /^帮我制定.*$|^制定.*计划$|^帮我规划.*$|^规划.*方案$/, // 制定计划类（需要确认需求/时间安排）
-        /^我想.*推荐$|^.*推荐.*$|^给我推荐.*$/, // 推荐类问题（需要确认偏好）
-        /^帮我选择.*$|^选择.*方案$|^哪个.*好$|^.*哪个.*$/, // 选择类问题（需要确认选项）
-        /^帮我设置.*$|^设置.*参数$|^配置.*$|^.*配置.*$/, // 配置类问题（需要确认参数）
-        /^我想.*减肥$|^减肥.*计划$|^健身.*方案$|^运动.*安排$/, // 健康类计划（需要确认身体状态/时间）
-        /^我想.*旅行$|^旅行.*计划$|^行程.*安排$|^旅游.*建议$/, // 旅行类（需要确认时间/预算/目的地）
-        /^帮我.*安排.*时间$|^时间.*安排$|^日程.*规划$/, // 时间安排类（需要确认时间表）
-      ],
+      // （已移除）需要用户确认的场景不再通过正则写死匹配，改由 LLM 在 system prompt 中自行判断是否调用 user_confirm
 
       // plan 模式识别
       plan: [
@@ -898,19 +915,7 @@ ${historySummary ? `近期上下文: ${historySummary}` : ""}
       }
     }
 
-    // 检查是否需要用户确认的场景（优先于 plan 模式）
-    for (const pattern of patterns.needsConfirm) {
-      if (pattern.test(lowerMsg)) {
-        return {
-          level: "react", // 使用 react 策略以支持 tool use（user_confirm）
-          reasoning: "需要用户确认或数据回填的任务，使用 react 策略以支持交互",
-          topicChange: false,
-          taskType: 'confirmation',
-          complexity: 0.5,
-          confidence: 0.85,
-        };
-      }
-    }
+    // （已移除）needsConfirm 正则匹配已删除，由 LLM 自行判断是否调用 user_confirm
 
     // 检查是否匹配 plan 模式
     for (const pattern of patterns.plan) {

@@ -47,7 +47,13 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
   router.put("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
       const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      await userRepo.updateUser(userId, req.body);
+      // 白名单过滤：只允许修改指定字段
+      const allowed = ["displayName", "avatar", "status", "departmentId", "phone", "email", "roleIds"];
+      const updates: Record<string, unknown> = {};
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) updates[key] = req.body[key];
+      }
+      await userRepo.updateUser(userId, updates);
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
@@ -72,7 +78,12 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
 
   router.post("/admin/departments", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const dept = await deptRepo.createDepartment(req.body);
+      const allowed = ["name", "parentId", "description"];
+      const input: Record<string, unknown> = {};
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) input[key] = req.body[key];
+      }
+      const dept = await deptRepo.createDepartment(input as any);
       res.json({ success: true, department: dept });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });
@@ -97,7 +108,12 @@ export function createAdminCompatRoutes(deps: RouteDependencies): Router {
 
   router.post("/admin/roles", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const role = await userRepo.createRole(req.body);
+      const allowed = ["name", "description"];
+      const input: Record<string, unknown> = {};
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) input[key] = req.body[key];
+      }
+      const role = await userRepo.createRole(input as any);
       res.json({ success: true, role });
     } catch (err) {
       res.status(400).json({ success: false, error: err instanceof Error ? (err as Error).message : String(err) });

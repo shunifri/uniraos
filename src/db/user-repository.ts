@@ -645,12 +645,12 @@ export async function ensureAdminExists(): Promise<User> {
     db.prepare("INSERT INTO user_roles (user_id, role_id) VALUES (?, 'role_admin')").run(id);
   }
 
+  // 安全：密码不打印到控制台/日志，仅提示管理员通过系统设置重置
   console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
   console.warn("║  SECURITY WARNING: Default admin account created with a random password    ║");
   console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
   console.warn("║  Username: admin                                                           ║");
-  console.warn(`║  Password: ${randomPassword.padEnd(64)}║`);
-  console.warn("║  Please change this password immediately after first login.                ║");
+  console.warn("║  Password: [hidden — please reset via system settings after first login]   ║");
   console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
   return (await getUserById(id))!;
 }

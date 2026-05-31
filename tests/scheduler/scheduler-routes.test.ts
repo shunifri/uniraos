@@ -110,6 +110,7 @@ describe("scheduler-routes (P1)", () => {
     it("should return event details", async () => {
       mockService.getEvent.mockResolvedValue({
         id: "sched_abc",
+        userId: "user_test",
         type: "reminder",
         status: "pending",
       });
@@ -133,6 +134,7 @@ describe("scheduler-routes (P1)", () => {
 
   describe("DELETE /schedule/:id", () => {
     it("should cancel an event", async () => {
+      mockService.getEvent.mockResolvedValue({ id: "sched_abc", userId: "user_test" });
       mockService.cancelEvent.mockResolvedValue(true);
 
       const res = await request(app).delete("/schedule/sched_abc");
@@ -144,6 +146,7 @@ describe("scheduler-routes (P1)", () => {
 
   describe("POST /schedule/:id/trigger", () => {
     it("should trigger an event manually", async () => {
+      mockService.getEvent.mockResolvedValue({ id: "sched_abc", userId: "user_test" });
       mockService.triggerNow.mockResolvedValue(undefined);
 
       const res = await request(app).post("/schedule/sched_abc/trigger");

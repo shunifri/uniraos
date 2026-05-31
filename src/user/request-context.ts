@@ -10,6 +10,7 @@ export interface RequestContext {
   departmentId?: string;
   requestId?: string;
   conversationId?: string;
+  appId?: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();

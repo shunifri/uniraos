@@ -169,7 +169,7 @@ describe("auth-routes", () => {
       expect(createCall.roleIds).toContain("role_viewer");
     });
 
-    it("returns 500 on unexpected error", async () => {
+    it("returns 500 on unexpected error without leaking internal details", async () => {
       vi.mocked(userRepo.getUserByPhone).mockRejectedValue(new Error("DB down"));
 
       const app = createApp();
@@ -177,7 +177,7 @@ describe("auth-routes", () => {
 
       expect(res.status).toBe(500);
       expect(res.body.success).toBe(false);
-      expect(res.body.error).toBe("DB down");
+      expect(res.body.error).toBe("Internal server error");
     });
   });
 
@@ -390,6 +390,52 @@ describe("auth-routes", () => {
     it("returns 400 when password missing", async () => {
       const app = createApp();
       const res = await request(app).post("/users/u1/password").send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+  });
+
+  describe("POST /user/password", () => {
+    it("changes own password with correct old password", async () => {
+      vi.mocked(userRepo.authenticate).mockResolvedValue({ id: "user_1", username: "admin" } as any);
+      vi.mocked(userRepo.changePassword).mockResolvedValue(true);
+
+      const app = createApp();
+      const res = await request(app).post("/user/password").send({ oldPassword: "oldpass", newPassword: "newpass123" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(userRepo.authenticate).toHaveBeenCalledWith("admin", "oldpass");
+      expect(userRepo.changePassword).toHaveBeenCalledWith("user_1", "newpass123");
+    });
+
+    it("returns 401 when old password is incorrect", async () => {
+      vi.mocked(userRepo.authenticate).mockResolvedValue(null);
+
+      const app = createApp();
+      const res = await request(app).post("/user/password").send({ oldPassword: "wrong", newPassword: "newpass123" });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(userRepo.changePassword).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when parameters missing", async () => {
+      const app = createApp();
+      const res1 = await request(app).post("/user/password").send({});
+      expect(res1.status).toBe(400);
+
+      const res2 = await request(app).post("/user/password").send({ oldPassword: "old" });
+      expect(res2.status).toBe(400);
+
+      const res3 = await request(app).post("/user/password").send({ newPassword: "new" });
+      expect(res3.status).toBe(400);
+    });
+
+    it("returns 400 when new password too short", async () => {
+      const app = createApp();
+      const res = await request(app).post("/user/password").send({ oldPassword: "oldpass", newPassword: "123" });
 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
