@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { join } from "path";
+import { randomUUID } from "crypto";
+import { getStreamBuffer } from "../websocket/stream-buffer.js";
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { getRoleAgentConfig, getUserRoles } from "../db/user-repository.js";
@@ -162,16 +164,13 @@ ${message}`;
     }
   }
 
-  async function resolveRoleAgentConfig(req: any): Promise<RoleAgentConfig | undefined> {
-    const explicitRole = req.body?.role;
-    if (explicitRole) {
-      return await getRoleAgentConfig(explicitRole) ?? undefined;
+  async function resolveRoleAgentConfig(userId: string, role?: string): Promise<RoleAgentConfig | undefined> {
+    if (role) {
+      return await getRoleAgentConfig(role) ?? undefined;
     }
-    if (req.user?.id) {
-      const roles = await getUserRoles(req.user.id);
-      if (roles.length > 0) {
-        return await getRoleAgentConfig(roles[0].id) ?? undefined;
-      }
+    const roles = await getUserRoles(userId);
+    if (roles.length > 0) {
+      return await getRoleAgentConfig(roles[0].id) ?? undefined;
     }
     return undefined;
   }
@@ -221,7 +220,7 @@ ${message}`;
       }
 
       try {
-        const roleAgentConfig = await resolveRoleAgentConfig(req);
+        const roleAgentConfig = await resolveRoleAgentConfig(userId, req.body?.role);
         const appSystemPrompt = await loadAppSystemPrompt(appId);
         const mergedRoleConfig = appSystemPrompt
           ? { ...roleAgentConfig, systemPrompt: appSystemPrompt }
@@ -274,7 +273,7 @@ ${message}`;
 
     res.write(`event: connected\ndata: {}\n\n`);
 
-    // 检查当前对话是否有进行中的计划，如果有立即推送进度摘要
+    // 检查当前对话是否有进行中的计划
     if (convId) {
       try {
         const { findPlanByConversationId } = await import("../plan/plan-state.js");
@@ -301,20 +300,15 @@ ${message}`;
     }
 
     let closed = false;
-    // SSE keepalive: 长执行期间（如 app_designer）可能数十秒无数据，
-    // 浏览器/代理会断开空闲连接。每 15 秒发注释行保活。
     const keepaliveTimer = setInterval(() => {
       if (!closed) {
-        res.write(':keepalive\n\n');
+        res.write(":keepalive\n\n");
       }
     }, 15000);
 
     res.on("close", () => {
       closed = true;
       clearInterval(keepaliveTimer);
-      // NOTE: user_confirm entries no longer have a timeout safety net.
-      // Abandoned confirmQueue entries will persist in memory until backend restart.
-      // To clean them up per-session, we would need to track confirmIds associated with this SSE connection.
     });
 
     const write = (eventName: string, data: unknown) => {
@@ -322,311 +316,77 @@ ${message}`;
       res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
-    // ===== Backend message persistence =====
-    async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
-      if (!convId) return;
-      try {
-        const extraJson = opts?.extra ? JSON.stringify(opts.extra) : null;
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          await adapter.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-            [convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson]
-          );
-        } else {
-          const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
-          insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
-        }
-      } catch (err) {
-        console.warn(`[saveMsg] failed: role=${role}, convId=${convId}, error=${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    async function updateConvTitle(title: string) {
-      if (!convId) return;
-      try {
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          const rows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
-          const msgCount = rows[0]?.c || 0;
-          if (msgCount <= 2) {
-            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
-          } else {
-            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
-          }
-        } else {
-          const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
-          if (msgCount <= 2) {
-            getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
-          } else {
-            getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
-          }
-        }
-      } catch {}
-    }
-
-    // Extract attachment metadata from message for persistence
-    // Frontend already parses file contents before sending; we only need to persist attachment pills here.
-    const attachments: Array<{ name: string; path: string }> = [];
-    // Match both parsed format `--- 文件: name (路径: path) ---` and unparsed format `[附件: name (路径: path)]`
-    const attachmentRegex = /(?:--- 文件: |\[附件: )(.+?)\s*\(路径:\s*(.+?)\)\s*(?:---|\])/g;
-    let m: RegExpExecArray | null;
-    while ((m = attachmentRegex.exec(message)) !== null) {
-      attachments.push({ name: m[1], path: m[2] });
-    }
-
-    // Save user message (with attachment metadata in extra)
-    await saveMsg("user", message, attachments.length > 0 ? { extra: { attachments } } : undefined);
-    await updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
-
-    // Frontend already handles file parsing and injects content into the message text,
-    // so backend does not need to re-parse attachments here.
-    let enrichedMessage = message;
-
-    // 注入 defaultSkill/defaultSkills 上下文
-    enrichedMessage = enrichWithDefaultSkills(enrichedMessage, defaultSkill, defaultSkills);
-
-    // Track streaming text and chart data
-    let currentAssistantText = "";
-    let pendingToolName = "";
-    let kbRefsSent = false;
-    let kbRefsForSave: unknown[] = [];
-    let webRefsForSave: unknown[] = [];
-
-    try {
-      const processEvent = async (eventName: string, eventData: any) => {
-        // DEBUG: log all tool_result events
-        if (eventName === "tool_result") {
-          console.warn("[DEBUG tool_result] skillName=", eventData?.skillName, "result.data?.__userConfirm=", eventData?.result?.data?.__userConfirm, "result.data keys=", eventData?.result?.data ? Object.keys(eventData.result.data) : "undefined", "result.success=", eventData?.result?.success);
-        }
-        // 拦截 user_confirm：当 tool_result 包含 __userConfirm 时，改为发送 user_confirm 事件
-        if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
-          write("user_confirm", eventData.result.data);
-          // Save tool completion message
-          await saveMsg("tool", "等待用户确认...", {
-            skillName: eventData.skillName ?? pendingToolName,
-            status: "done",
-            isError: false,
-          });
-          // Save user_confirm data for restoration on reload
-          await saveMsg("user_confirm", JSON.stringify(eventData.result.data), {
-            skillName: eventData.skillName ?? pendingToolName,
-          });
-          return;
-        }
-        // user_confirm 事件直接透传，同时保存到数据库以便刷新后恢复
-        if (eventName === "user_confirm") {
-          write("user_confirm", eventData);
-          await saveMsg("user_confirm", JSON.stringify(eventData), {
-            skillName: pendingToolName || eventData.skillName || "user_confirm",
-          });
-          return;
-        }
-
-        write(eventName, eventData);
-
-        if (eventName === "strategy_selected") {
-          const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
-          const label = levelMap[eventData.level] || eventData.level;
-          // reasoning 是 LLM 内部思考过程，仅用于日志，不暴露给用户
-          await saveMsg("strategy", `策略: ${label}`);
-        } else if (eventName === "thinking") {
-          const thinkContent = eventData.content || `正在思考 (第 ${eventData.iteration ?? ""} 轮)...`;
-          await saveMsg("thinking", thinkContent);
-        } else if (eventName === "text_delta") {
-          currentAssistantText += eventData.text ?? "";
-        } else if (eventName === "tool_call") {
-          if (currentAssistantText) {
-            await saveMsg("assistant", currentAssistantText);
-            currentAssistantText = "";
-          }
-        } else if (eventName === "tool_start") {
-          pendingToolName = eventData.skillName ?? "";
-        } else if (eventName === "tool_result") {
-          const r = eventData.result;
-          let summary = "";
-          let extra: Record<string, unknown> | undefined;
-
-          if (r?.success) {
-            if (r.data?.__type === "file_download" && r.data?.files) {
-              summary = `已准备 ${r.data.files.length} 个文件`;
-              extra = { fileDownload: r.data };
-            } else if (r.data?.option && r.data?.chartType) {
-              summary = `已生成${r.data.chartType}图表`;
-              extra = { chartOptions: [r.data.option] };
-            } else if (r.data?.charts && Array.isArray(r.data.charts)) {
-              summary = `已生成 ${r.data.charts.length} 个图表`;
-              extra = { chartOptions: r.data.charts.map((c: any) => c.option).filter(Boolean) };
-            } else if (r.data?.message) {
-              summary = r.data.message;
-            } else if (r.data?.results && Array.isArray(r.data.results)) {
-              summary = `获取到 ${r.data.results.length} 条结果`;
-            } else if (typeof r.data === "string") {
-              summary = r.data.slice(0, 300);
-            } else if (r.data && typeof r.data === "object") {
-              // 发送精简的结果数据给前端
-              const dataStr = JSON.stringify(r.data);
-              summary = r.data.message || r.data.text || r.data.content ||
-                        (dataStr.length <= 500 ? dataStr : dataStr.slice(0, 300) + "...");
-              // 传递完整数据供展开查看
-              extra = { ...(extra ?? {}), resultData: r.data };
-            } else {
-              summary = "完成";
-            }
-          } else {
-            summary = r?.error?.message || r?.error || "失败";
-          }
-          await saveMsg("tool", summary, {
-            skillName: eventData.skillName ?? pendingToolName,
-            status: r?.success ? "done" : "error",
-            isError: !r?.success,
-            extra: { ...(extra ?? {}), result: r },
-          });
-
-          // kb_search 结果 → 提取为知识库引用卡片
-          const toolName = eventData.skillName ?? pendingToolName;
-          if (toolName === "kb_search" && r?.success && r.data && Array.isArray(r.data) && r.data.length > 0) {
-            const refs = r.data.map((item: any, i: number) => ({
-              index: i + 1,
-              docId: item.docId,
-              docName: item.docName,
-              chunkIndex: item.chunkIndex,
-              content: item.content,
-              score: item.score,
-              pageNumber: item.pageNumber ?? null,
-              bboxes: item.bboxes ?? null,
-              docMindTaskId: item.docMindTaskId ?? null,
-            }));
-            write("kb_references", { references: refs });
-            kbRefsSent = true;
-            kbRefsForSave = refs;
-          }
-        } else if (eventName === "agent_done" || eventName === "done") {
-          if (currentAssistantText) {
-            const extraObj: Record<string, unknown> = {};
-            if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
-            if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
-            const kbExtra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
-            await saveMsg("assistant", currentAssistantText, { extra: kbExtra });
-            currentAssistantText = "";
-            kbRefsForSave = [];
-            webRefsForSave = [];
-          }
-          if (eventData.hitMax) {
-            await saveMsg("system", "已达最大迭代次数");
-          }
-        } else if (eventName === "error") {
-          await saveMsg("assistant", eventData.error || "未知错误", { isError: true });
-        }
-      };
-
-      // Helper: load chat history from DB for recovery after restart
-      const DB_HISTORY_LIMIT = 40; // Match MAX_HISTORY_TURNS * 2 to avoid exceeding LLM context
-      async function loadHistoryFromDb(conversationId: string): Promise<Array<{ role: string; content: string }>> {
-        try {
-          let rows: Array<{ role: string; content: string }> = [];
-          if (isMySQL()) {
-            const adapter = await getMySQLAdapter();
-            rows = await adapter.query(
-              "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-              [conversationId, DB_HISTORY_LIMIT]
-            );
-            rows.reverse();
-          } else {
-            rows = getDb().prepare(
-              "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
-            ).all(conversationId, DB_HISTORY_LIMIT) as Array<{ role: string; content: string }>;
-            rows.reverse();
-          }
-          // Convert DB rows to LLM history messages.
-          // "user_confirm" is filtered out (frontend-only role).
-          // "tool" messages are converted to "user" with a prefix because
-          // chat_messages does not store tool_call_id, and LLM APIs require
-          // every role="tool" message to have a matching tool_call_id.
-          // Messages tagged with [表单已提交] are converted to "system" so the
-          // AI treats them as instructions that the form has already been submitted.
-          const validRoles = new Set(["user", "assistant", "tool", "system"]);
-          const history = rows
-            .filter((r) => validRoles.has(r.role))
-            .map((r) => {
-              if (r.role === "tool") {
-                return { role: "user", content: `[工具执行结果] ${r.content}` };
-              }
-              if (r.role === "user" && r.content?.startsWith("[表单已提交]")) {
-                return { role: "system", content: r.content };
-              }
-              return { role: r.role, content: r.content ?? "" };
-            });
-          // Exclude the last user message: it was just saved to DB before calling
-          // orchestrator.runStream, and react-agent.buildMessages will append the
-          // current message again. Removing it prevents duplication.
-          const lastIdx = history.length - 1;
-          if (lastIdx >= 0 && history[lastIdx].role === "user") {
-            history.pop();
-          }
-          return history;
-        } catch (err) {
-          console.warn("[loadHistoryFromDb] failed:", err);
-          return [];
-        }
-      }
-
-      if (mode === "legacy" || mode === "react") {
-        // 直接 AgentLoop 模式
-        const loop = getAgentLoop(userId);
-        if (!loop) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        const appSystemPrompt = await loadAppSystemPrompt(appId);
-        for await (const event of loop.runStream(enrichedMessage, { conversationId: convId, systemPrompt: appSystemPrompt })) {
-          if (closed) break;
-          await processEvent(event.event, event.data);
-        }
-      } else {
-        // 默认 Orchestrator 模式（始终使用 react 策略，不走 simple）
-        const orchestrator = getOrchestrator();
-        if (!orchestrator) { write("error", { error: "LLM not configured" }); res.end(); return; }
-        // 构建带 conversationId 和 roleAgentConfig 的 input
-        const roleAgentConfig = await resolveRoleAgentConfig(req);
-        const appSystemPrompt = await loadAppSystemPrompt(appId);
-        const mergedRoleConfig = appSystemPrompt
-          ? { ...roleAgentConfig, systemPrompt: appSystemPrompt }
-          : roleAgentConfig;
-        const runStreamInput: any = { message: enrichedMessage, userId, roleAgentConfig: mergedRoleConfig };
-        if (convId) {
-          runStreamInput.conversationId = convId;
-          // 后端重启后内存历史为空，从数据库恢复历史上下文
-          const memoryHistory = (orchestrator as any).getConversationHistory?.(userId, convId);
-          if (!memoryHistory || memoryHistory.length === 0) {
-            const dbHistory = await loadHistoryFromDb(convId);
-            if (dbHistory.length > 0) {
-              runStreamInput.history = dbHistory;
-            }
-          }
-        }
-
-        for await (const event of orchestrator.runStream(runStreamInput)) {
-          if (closed) break;
-          await processEvent(event.event, event.data);
-        }
-      }
-
-      // Save any remaining text after stream ends
-      if (currentAssistantText) {
-        const extraObj: Record<string, unknown> = {};
-        if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
-        if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
-        const extra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
-        await saveMsg("assistant", currentAssistantText, { extra });
-        currentAssistantText = "";
-      }
-    } catch (err) {
-      write("error", { error: err instanceof Error ? err.message : String(err) });
-      await saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
-    }
+    await runAgentChatStream({
+      userId,
+      message,
+      mode,
+      conversationId: convId,
+      defaultSkill,
+      defaultSkills,
+      appId,
+      role: (req as any).body?.role,
+    }, async (eventName, data) => {
+      write(eventName, data);
+    });
 
     if (!closed) {
       res.end();
     }
     });
+  });
+
+  router.post("/agent/chat/start", requireAuth, requirePermission("chat.stream"), async (req, res) => {
+    const userId = req.user!.id;
+    const { message, mode, conversationId, defaultSkill, defaultSkills, appId } = req.body as {
+      message: string;
+      mode?: "auto" | "simple" | "react" | "legacy";
+      conversationId?: string;
+      defaultSkill?: string;
+      defaultSkills?: string[];
+      appId?: string;
+    };
+
+    if (!message) {
+      res.status(400).json({ success: false, error: "message is required" });
+      return;
+    }
+
+    const streamId = randomUUID();
+    const convId = conversationId || undefined;
+
+    const existing = requestContext.getStore();
+    const ctx: import("../user/request-context.js").RequestContext = {
+      userId: existing?.userId || req.user?.id || "default",
+      userName: existing?.userName,
+      userDisplayName: existing?.userDisplayName,
+      departmentId: existing?.departmentId ?? undefined,
+      requestId: existing?.requestId,
+      conversationId: convId || existing?.conversationId,
+      appId: appId || existing?.appId,
+    };
+
+    // Start async stream generation (do not await)
+    requestContext.run(ctx, async () => {
+      await runAgentChatStream({
+        userId,
+        message,
+        mode,
+        conversationId: convId,
+        defaultSkill,
+        defaultSkills,
+        appId,
+        role: (req as any).body?.role,
+        streamId,
+      }, (eventName, data) => {
+        getStreamBuffer().append(streamId, { eventName, data, timestamp: Date.now() });
+      });
+      // Allow late subscribers to receive final events, then clear buffer
+      setTimeout(() => {
+        getStreamBuffer().clear(streamId);
+      }, 5000);
+    });
+
+    res.json({ success: true, streamId });
   });
 
   // 判断是否为匿名/访客用户的临时 ID
@@ -1122,6 +882,289 @@ ${message}`;
       res.status(500).json({ success: false, error: "Internal server error" });
     }
   });
+
+  interface RunAgentChatStreamParams {
+    userId: string;
+    message: string;
+    mode?: "auto" | "simple" | "react" | "legacy";
+    conversationId?: string;
+    defaultSkill?: string;
+    defaultSkills?: string[];
+    appId?: string;
+    role?: string;
+    streamId?: string;
+  }
+
+  async function runAgentChatStream(
+    params: RunAgentChatStreamParams,
+    onEvent: (eventName: string, data: unknown) => void | Promise<void>
+  ): Promise<void> {
+    const { userId, message, mode, conversationId: convId, defaultSkill, defaultSkills, appId, role } = params;
+
+    async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
+      if (!convId) return;
+      try {
+        const extraJson = opts?.extra ? JSON.stringify(opts.extra) : null;
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          await adapter.execute(
+            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
+            [convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson]
+          );
+        } else {
+          const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
+          insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
+        }
+      } catch (err) {
+        console.warn(`[saveMsg] failed: role=${role}, convId=${convId}, error=${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    async function updateConvTitle(title: string) {
+      if (!convId) return;
+      try {
+        if (isMySQL()) {
+          const adapter = await getMySQLAdapter();
+          const rows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
+          const msgCount = rows[0]?.c || 0;
+          if (msgCount <= 2) {
+            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
+          } else {
+            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
+          }
+        } else {
+          const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
+          if (msgCount <= 2) {
+            getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
+          } else {
+            getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
+          }
+        }
+      } catch {}
+    }
+
+    const attachments: Array<{ name: string; path: string }> = [];
+    const attachmentRegex = /(?:--- 文件: |\[附件: )(.+?)\s*\(路径:\s*(.+?)\)\s*(?:---|\])/g;
+    let m: RegExpExecArray | null;
+    while ((m = attachmentRegex.exec(message)) !== null) {
+      attachments.push({ name: m[1], path: m[2] });
+    }
+
+    await saveMsg("user", message, attachments.length > 0 ? { extra: { attachments } } : undefined);
+    await updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
+
+    let enrichedMessage = message;
+    enrichedMessage = enrichWithDefaultSkills(enrichedMessage, defaultSkill, defaultSkills);
+
+    let currentAssistantText = "";
+    let pendingToolName = "";
+    let kbRefsSent = false;
+    let kbRefsForSave: unknown[] = [];
+    let webRefsForSave: unknown[] = [];
+
+    try {
+      const processEvent = async (eventName: string, eventData: any) => {
+        if (eventName === "tool_result") {
+          console.warn("[DEBUG tool_result] skillName=", eventData?.skillName, "result.data?.__userConfirm=", eventData?.result?.data?.__userConfirm, "result.data keys=", eventData?.result?.data ? Object.keys(eventData.result.data) : "undefined", "result.success=", eventData?.result?.success);
+        }
+        if (eventName === "tool_result" && eventData?.result?.data?.__userConfirm) {
+          onEvent("user_confirm", eventData.result.data);
+          await saveMsg("tool", "等待用户确认...", {
+            skillName: eventData.skillName ?? pendingToolName,
+            status: "done",
+            isError: false,
+          });
+          await saveMsg("user_confirm", JSON.stringify(eventData.result.data), {
+            skillName: eventData.skillName ?? pendingToolName,
+          });
+          return;
+        }
+        if (eventName === "user_confirm") {
+          onEvent("user_confirm", eventData);
+          await saveMsg("user_confirm", JSON.stringify(eventData), {
+            skillName: pendingToolName || eventData.skillName || "user_confirm",
+          });
+          return;
+        }
+
+        onEvent(eventName, eventData);
+
+        if (eventName === "strategy_selected") {
+          const levelMap: Record<string, string> = { simple: "直接回答", react: "逐步推理" };
+          const label = levelMap[eventData.level] || eventData.level;
+          await saveMsg("strategy", `策略: ${label}`);
+        } else if (eventName === "thinking") {
+          const thinkContent = eventData.content || `正在思考 (第 ${eventData.iteration ?? ""} 轮)...`;
+          await saveMsg("thinking", thinkContent);
+        } else if (eventName === "text_delta") {
+          currentAssistantText += eventData.text ?? "";
+        } else if (eventName === "tool_call") {
+          if (currentAssistantText) {
+            await saveMsg("assistant", currentAssistantText);
+            currentAssistantText = "";
+          }
+        } else if (eventName === "tool_start") {
+          pendingToolName = eventData.skillName ?? "";
+        } else if (eventName === "tool_result") {
+          const r = eventData.result;
+          let summary = "";
+          let extra: Record<string, unknown> | undefined;
+
+          if (r?.success) {
+            if (r.data?.__type === "file_download" && r.data?.files) {
+              summary = `已准备 ${r.data.files.length} 个文件`;
+              extra = { fileDownload: r.data };
+            } else if (r.data?.option && r.data?.chartType) {
+              summary = `已生成${r.data.chartType}图表`;
+              extra = { chartOptions: [r.data.option] };
+            } else if (r.data?.charts && Array.isArray(r.data.charts)) {
+              summary = `已生成 ${r.data.charts.length} 个图表`;
+              extra = { chartOptions: r.data.charts.map((c: any) => c.option).filter(Boolean) };
+            } else if (r.data?.message) {
+              summary = r.data.message;
+            } else if (r.data?.results && Array.isArray(r.data.results)) {
+              summary = `获取到 ${r.data.results.length} 条结果`;
+            } else if (typeof r.data === "string") {
+              summary = r.data.slice(0, 300);
+            } else if (r.data && typeof r.data === "object") {
+              const dataStr = JSON.stringify(r.data);
+              summary = r.data.message || r.data.text || r.data.content ||
+                        (dataStr.length <= 500 ? dataStr : dataStr.slice(0, 300) + "...");
+              extra = { ...(extra ?? {}), resultData: r.data };
+            } else {
+              summary = "完成";
+            }
+          } else {
+            summary = r?.error?.message || r?.error || "失败";
+          }
+          await saveMsg("tool", summary, {
+            skillName: eventData.skillName ?? pendingToolName,
+            status: r?.success ? "done" : "error",
+            isError: !r?.success,
+            extra: { ...(extra ?? {}), result: r },
+          });
+
+          const toolName = eventData.skillName ?? pendingToolName;
+          if (toolName === "kb_search" && r?.success && r.data && Array.isArray(r.data) && r.data.length > 0) {
+            const refs = r.data.map((item: any, i: number) => ({
+              index: i + 1,
+              docId: item.docId,
+              docName: item.docName,
+              chunkIndex: item.chunkIndex,
+              content: item.content,
+              score: item.score,
+              pageNumber: item.pageNumber ?? null,
+              bboxes: item.bboxes ?? null,
+              docMindTaskId: item.docMindTaskId ?? null,
+            }));
+            onEvent("kb_references", { references: refs });
+            kbRefsSent = true;
+            kbRefsForSave = refs;
+          }
+        } else if (eventName === "agent_done" || eventName === "done") {
+          if (currentAssistantText) {
+            const extraObj: Record<string, unknown> = {};
+            if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
+            if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
+            const kbExtra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
+            await saveMsg("assistant", currentAssistantText, { extra: kbExtra });
+            currentAssistantText = "";
+            kbRefsForSave = [];
+            webRefsForSave = [];
+          }
+          if (eventData.hitMax) {
+            await saveMsg("system", "已达最大迭代次数");
+          }
+        } else if (eventName === "error") {
+          await saveMsg("assistant", eventData.error || "未知错误", { isError: true });
+        }
+      };
+
+      const DB_HISTORY_LIMIT = 40;
+      async function loadHistoryFromDb(conversationId: string): Promise<Array<{ role: string; content: string }>> {
+        try {
+          let rows: Array<{ role: string; content: string }> = [];
+          if (isMySQL()) {
+            const adapter = await getMySQLAdapter();
+            rows = await adapter.query(
+              "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+              [conversationId, DB_HISTORY_LIMIT]
+            );
+            rows.reverse();
+          } else {
+            rows = getDb().prepare(
+              "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
+            ).all(conversationId, DB_HISTORY_LIMIT) as Array<{ role: string; content: string }>;
+            rows.reverse();
+          }
+          const validRoles = new Set(["user", "assistant", "tool", "system"]);
+          const history = rows
+            .filter((r) => validRoles.has(r.role))
+            .map((r) => {
+              if (r.role === "tool") {
+                return { role: "user", content: `[工具执行结果] ${r.content}` };
+              }
+              if (r.role === "user" && r.content?.startsWith("[表单已提交]")) {
+                return { role: "system", content: r.content };
+              }
+              return { role: r.role, content: r.content ?? "" };
+            });
+          const lastIdx = history.length - 1;
+          if (lastIdx >= 0 && history[lastIdx].role === "user") {
+            history.pop();
+          }
+          return history;
+        } catch (err) {
+          console.warn("[loadHistoryFromDb] failed:", err);
+          return [];
+        }
+      }
+
+      if (mode === "legacy" || mode === "react") {
+        const loop = getAgentLoop(userId);
+        if (!loop) { onEvent("error", { error: "LLM not configured" }); return; }
+        const appSystemPrompt = await loadAppSystemPrompt(appId);
+        for await (const event of loop.runStream(enrichedMessage, { conversationId: convId, systemPrompt: appSystemPrompt })) {
+          await processEvent(event.event, event.data);
+        }
+      } else {
+        const orchestrator = getOrchestrator();
+        if (!orchestrator) { onEvent("error", { error: "LLM not configured" }); return; }
+        const roleAgentConfig = await resolveRoleAgentConfig(userId, role);
+        const appSystemPrompt = await loadAppSystemPrompt(appId);
+        const mergedRoleConfig = appSystemPrompt
+          ? { ...roleAgentConfig, systemPrompt: appSystemPrompt }
+          : roleAgentConfig;
+        const runStreamInput: any = { message: enrichedMessage, userId, roleAgentConfig: mergedRoleConfig };
+        if (convId) {
+          runStreamInput.conversationId = convId;
+          const memoryHistory = (orchestrator as any).getConversationHistory?.(userId, convId);
+          if (!memoryHistory || memoryHistory.length === 0) {
+            const dbHistory = await loadHistoryFromDb(convId);
+            if (dbHistory.length > 0) {
+              runStreamInput.history = dbHistory;
+            }
+          }
+        }
+
+        for await (const event of orchestrator.runStream(runStreamInput)) {
+          await processEvent(event.event, event.data);
+        }
+      }
+
+      if (currentAssistantText) {
+        const extraObj: Record<string, unknown> = {};
+        if (kbRefsForSave.length > 0) extraObj.kbReferences = kbRefsForSave;
+        if (webRefsForSave.length > 0) extraObj.webReferences = webRefsForSave;
+        const extra = Object.keys(extraObj).length > 0 ? extraObj : undefined;
+        await saveMsg("assistant", currentAssistantText, { extra });
+        currentAssistantText = "";
+      }
+    } catch (err) {
+      onEvent("error", { error: err instanceof Error ? err.message : String(err) });
+      await saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
+    }
+  }
 
   return router;
 }
