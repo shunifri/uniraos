@@ -34,6 +34,7 @@ import {
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
+import { WebSocketClient } from "../utils/websocket-client";
 import { useInboxStore } from "@/store/inbox-store";
 import InboxPanel from "@/components/inbox/InboxPanel";
 import { apiFetch, pageImageUrl, apiCreateConversation } from "@/api";
@@ -327,6 +328,127 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
 
   useEffect(() => { loadConversations(); }, []);
 
+  // Refresh recovery: reconnect to ongoing stream via URL streamId
+  useEffect(() => {
+    if (!activeConvId) return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const streamId = urlParams.get("stream");
+    if (!streamId) return;
+
+    const currentState = convStates.get(activeConvId);
+    if (currentState?.loading) return; // Already connected
+
+    const token = useAuthStore.getState().token;
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsHost = window.location.host;
+    const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+
+    let currentText = "";
+    let needNewBubble = true;
+
+    const wsClient = new WebSocketClient({
+      url: wsUrl,
+      token: token || undefined,
+      onEvent: (eventName, rawData) => {
+        const data: any = rawData;
+        if (eventName === "text_delta") {
+          if (needNewBubble) {
+            needNewBubble = false;
+            currentText = data.text;
+            setConvStates(prev => {
+              const state = prev.get(activeConvId)!;
+              return new Map(prev).set(activeConvId, {
+                ...state,
+                messages: [...removeTyping(state.messages), { role: "assistant", content: data.text, status: "streaming" }],
+              });
+            });
+          } else {
+            currentText += data.text;
+            setConvStates(prev => {
+              const state = prev.get(activeConvId)!;
+              return new Map(prev).set(activeConvId, {
+                ...state,
+                messages: state.messages.map(msg =>
+                  msg.status === "streaming" ? { ...msg, content: currentText } : msg
+                ),
+              });
+            });
+          }
+        } else if (eventName === "agent_done" || eventName === "done") {
+          setConvStates(prev => {
+            const state = prev.get(activeConvId)!;
+            return new Map(prev).set(activeConvId, {
+              ...state,
+              loading: false,
+              abortController: null,
+              messages: removeTyping(state.messages).map(msg =>
+                msg.status === "streaming" ? { ...msg, status: undefined } : msg
+              ),
+            });
+          });
+          const url = new URL(window.location.href);
+          url.searchParams.delete("stream");
+          window.history.replaceState({}, "", url.toString());
+        } else if (eventName === "error") {
+          setConvStates(prev => {
+            const state = prev.get(activeConvId)!;
+            return new Map(prev).set(activeConvId, {
+              ...state,
+              loading: false,
+              abortController: null,
+              messages: [...state.messages, { role: "assistant", content: data.error || "未知错误", isError: true }],
+            });
+          });
+          const url = new URL(window.location.href);
+          url.searchParams.delete("stream");
+          window.history.replaceState({}, "", url.toString());
+        }
+      },
+      onReplayComplete: () => {
+        // Historical events replayed, now receiving live events
+      },
+      onError: (error) => {
+        setConvStates(prev => {
+          const state = prev.get(activeConvId)!;
+          return new Map(prev).set(activeConvId, {
+            ...state,
+            loading: false,
+            abortController: null,
+            messages: [...state.messages, { role: "assistant", content: error, isError: true }],
+          });
+        });
+      },
+      onClose: () => {
+        setConvStates(prev => {
+          const state = prev.get(activeConvId)!;
+          return new Map(prev).set(activeConvId, { ...state, loading: false, abortController: null });
+        });
+      },
+    });
+
+    const abortController = new AbortController();
+    (abortController as any)._wsClient = wsClient;
+    abortController.signal.addEventListener("abort", () => {
+      wsClient.disconnect();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stream");
+      window.history.replaceState({}, "", url.toString());
+    });
+
+    setConvStates(prev => {
+      const state = prev.get(activeConvId)!;
+      return new Map(prev).set(activeConvId, {
+        ...state,
+        loading: true,
+        abortController,
+        messages: [...state.messages, { role: "thinking", content: "__typing__" }],
+      });
+    });
+
+    wsClient.connect();
+    wsClient.subscribe(streamId);
+  }, [activeConvId]);
+
   useEffect(() => {
     if (pptxThemesFetched.current) return;
     pptxThemesFetched.current = true;
@@ -496,7 +618,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
       const res = await apiFetch(url);
       const data = await res.json();
       if (data.success) {
-        const newMessages = (data.messages || []).map((m: any) => parseMsg(m)).filter((m: ChatMsg) => m.status !== "streaming");
+        const newMessages = (data.messages || []).map((m: any) => parseMsg(m));
         const oldestId = newMessages.length > 0 ? newMessages[0].id ?? null : null;
 
         setConvStates(prev => {
@@ -754,59 +876,56 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
         messages: [...state.messages, userMsg, { role: "thinking", content: "__typing__" }],
       });
 
+      let currentText = "";
+      let needNewBubble = true;
+      let hasThinking = true;
+
       try {
-        const res = await apiFetch("/api/agent/chat/stream", {
+        const startRes = await apiFetch("/api/agent/chat/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-          message: fullText,
-          conversationId: convId,
-          ...(embeddedRole ? { role: embeddedRole } : {}),
-          ...(propDefaultSkill ? { defaultSkill: propDefaultSkill } : {}),
-          ...(propDefaultSkills && propDefaultSkills.length > 0 ? { defaultSkills: propDefaultSkills } : {}),
-          ...(appId ? { appId } : {}),
-        }),
-          signal: abortController.signal,
+            message: fullText,
+            conversationId: convId,
+            ...(embeddedRole ? { role: embeddedRole } : {}),
+            ...(propDefaultSkill ? { defaultSkill: propDefaultSkill } : {}),
+            ...(propDefaultSkills && propDefaultSkills.length > 0 ? { defaultSkills: propDefaultSkills } : {}),
+            ...(appId ? { appId } : {}),
+          }),
         });
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: res.statusText }));
+        if (!startRes.ok) {
+          const err = await startRes.json().catch(() => ({ error: startRes.statusText }));
           const currentState = convStates.get(convId)!;
           updateConvState(convId, {
             loading: false,
             abortController: null,
-            messages: [...currentState.messages, { role: "assistant", content: err.error || res.statusText, isError: true }],
+            messages: [...currentState.messages, { role: "assistant", content: err.error || startRes.statusText, isError: true }],
           });
           loadConversations();
           return;
         }
 
-        const reader = res.body!.getReader();
-        const decoder = new TextDecoder();
-        let sseBuffer = "";
-        let currentText = "";
-        let needNewBubble = true;
-        let hasThinking = true;
+        const { streamId } = await startRes.json();
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          sseBuffer += decoder.decode(value, { stream: true });
-          const parts = sseBuffer.split("\n\n");
-          sseBuffer = parts.pop()!;
+        // Persist streamId in URL for refresh recovery
+        const url = new URL(window.location.href);
+        url.searchParams.set("stream", streamId);
+        window.history.replaceState({}, "", url.toString());
 
-          for (const part of parts) {
-            let eventType = "";
-            let eventData = "";
-            for (const line of part.split("\n")) {
-              if (line.startsWith("event: ")) eventType = line.slice(7);
-              else if (line.startsWith("data: ")) eventData = line.slice(6);
-            }
-            if (!eventType || !eventData) continue;
-            let data: any;
-            try { data = JSON.parse(eventData); } catch { continue; }
+        // Connect WebSocket and subscribe
+        const token = useAuthStore.getState().token;
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsHost = window.location.host;
+        const wsUrl = `${wsProtocol}//${wsHost}/ws`;
+
+        const wsClient = new WebSocketClient({
+          url: wsUrl,
+          token: token || undefined,
+          onEvent: (eventName, rawData) => {
+            const data: any = rawData;
             // 使用状态更新函数的回调形式，确保获取最新状态
-            if (eventType === "text_delta") {
+            if (eventName === "text_delta") {
               if (needNewBubble) {
                 needNewBubble = false;
                 hasThinking = false;
@@ -833,7 +952,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                   });
                 });
               }
-            } else if (eventType === "tool_call") {
+            } else if (eventName === "tool_call") {
               // tool_call 只表示 LLM 决定调用工具，实际展示在 tool_start 时处理
               setConvStates(prev => {
                 const currentState = prev.get(convId)!;
@@ -847,7 +966,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               });
               needNewBubble = true;
               currentText = "";
-            } else if (eventType === "tool_start") {
+            } else if (eventName === "tool_start") {
               // 工具开始执行：添加一个 running 状态的工具消息
               setConvStates(prev => {
                 const currentState = prev.get(convId)!;
@@ -864,7 +983,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               });
               needNewBubble = true;
               currentText = "";
-            } else if (eventType === "tool_result") {
+            } else if (eventName === "tool_result") {
               // 工具执行完成：更新最后一个 running 状态的工具消息
               const r = data.result;
               let summary = "";
@@ -942,7 +1061,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                   messages: [...removeTyping(currentState.messages), newToolMsg],
                 });
               });
-            } else if (eventType === "kb_references") {
+            } else if (eventName === "kb_references") {
               // 更新 pendingKbRefs
               setConvStates(prev => {
                 const currentState = prev.get(convId)!;
@@ -956,7 +1075,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                 }
                 return new Map(prev).set(convId, updatedState);
               });
-            } else if (eventType === "web_references") {
+            } else if (eventName === "web_references") {
               // 更新 pendingWebRefs
               setConvStates(prev => {
                 const currentState = prev.get(convId)!;
@@ -970,7 +1089,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                 }
                 return new Map(prev).set(convId, updatedState);
               });
-            } else if (eventType === "strategy_selected") {
+            } else if (eventName === "strategy_selected") {
               const levelMap: Record<string, string> = {
                 simple: "💬 直接为你解答",
                 react: "🔍 正在分析，将逐步为你处理",
@@ -992,7 +1111,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                 });
               });
               hasThinking = false;
-            } else if (eventType === "user_confirm") {
+            } else if (eventName === "user_confirm") {
               setConvStates(prev => {
                 const currentState = prev.get(convId)!;
                 
@@ -1005,7 +1124,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               });
               needNewBubble = true;
               currentText = "";
-            } else if (eventType === "plan_progress") {
+            } else if (eventName === "plan_progress") {
               // 计划进度推送：在聊天中显示进度摘要
               const progressText = data.message || `📋 计划「${data.title}」执行中... (${data.progress}%完成)`;
               setConvStates(prev => {
@@ -1025,37 +1144,39 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                 });
               });
             }
-          }
-        }
-
-        if (abortController.signal.aborted) {
-          setConvStates(prev => {
-            const currentState = prev.get(convId)!;
-            return new Map(prev).set(convId, {
-              ...currentState,
+          },
+          onReplayComplete: () => {
+            // Replay done — now receiving live events
+          },
+          onError: (error) => {
+            const currentState = convStates.get(convId)!;
+            updateConvState(convId, {
               loading: false,
               abortController: null,
-              messages: currentState.messages.filter(m => !(m.role === "thinking" && m.content === "__typing__") && m.status !== "streaming"),
+              messages: [...currentState.messages, { role: "assistant", content: error, isError: true }],
             });
-          });
-          return;
-        }
-
-        setConvStates(prev => {
-          const currentState = prev.get(convId)!;
-          
-          return new Map(prev).set(convId, {
-            ...currentState,
-            loading: false,
-            abortController: null,
-            pendingKbRefs: [],
-            pendingWebRefs: [],
-            messages: removeTyping(currentState.messages).map(msg =>
-              msg.status === "streaming" ? { ...msg, status: undefined } : msg
-            ),
-          });
+          },
+          onClose: () => {
+            if (abortController.signal.aborted) return;
+            const currentState = convStates.get(convId)!;
+            if (!currentState.loading) {
+              loadConversations();
+            }
+          },
         });
-        loadConversations();
+
+        // Store wsClient in abortController for cleanup
+        (abortController as any)._wsClient = wsClient;
+        abortController.signal.addEventListener("abort", () => {
+          wsClient.disconnect();
+          const url = new URL(window.location.href);
+          url.searchParams.delete("stream");
+          window.history.replaceState({}, "", url.toString());
+        });
+
+        wsClient.connect();
+        wsClient.subscribe(streamId);
+
       } catch (err: any) {
         if (err.name !== "AbortError") {
           setConvStates(prev => {
@@ -1065,7 +1186,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               loading: false,
               abortController: null,
               messages: [
-                ...currentState.messages.filter(m => !(m.role === "thinking" && m.content === "__typing__") && m.status !== "streaming"),
+                ...currentState.messages.filter(m => !(m.role === "thinking" && m.content === "__typing__")),
                 { role: "assistant", content: err.message || "网络错误", isError: true },
               ],
             });
@@ -1095,7 +1216,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
       loading: false,
       abortController: null,
       showThinking: false,
-      messages: state.messages.filter(m => !(m.role === "thinking" && m.content === "__typing__") && m.status !== "streaming"),
+      messages: state.messages.filter(m => !(m.role === "thinking" && m.content === "__typing__")),
     });
   };
 
