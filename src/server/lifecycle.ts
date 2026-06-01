@@ -10,6 +10,7 @@ import { getInboxService, setAiReviewProviderGetter } from "../inbox/inbox-servi
 import { runInboxSchedulerMigration } from "./migration-runner.js";
 import type { BootstrapResult } from "./bootstrap.js";
 import { shutdownTracing } from "../tracing.js";
+import { closeWebSocketServer } from "../websocket/websocket-server.js";
 
 /** 优雅关闭：等待连接排空的最大时间（ms） */
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 30_000;
@@ -110,7 +111,10 @@ function setupGracefulShutdown(server: Server, evolutionController: BootstrapRes
     shuttingDown = true;
     console.log(`\n[${signal}] received, starting graceful shutdown...`);
 
-    // 1. 停止接受新连接
+    // 1. 关闭 WebSocket 连接
+    closeWebSocketServer().catch(() => {});
+
+    // 2. 停止接受新连接
     server.close(() => {
       console.log("   HTTP server closed (no new connections accepted)");
     });

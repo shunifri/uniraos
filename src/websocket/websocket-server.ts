@@ -122,6 +122,6 @@ export async function closeWebSocketServer(): Promise<void> {
   for (const client of clients) {
     cleanupClient(client);
   }
-  await new Promise<void>((resolve) => wss!.close(resolve));
+  await new Promise<void>((resolve, reject) => wss!.close((err) => (err ? reject(err) : resolve())));
   wss = null;
 }

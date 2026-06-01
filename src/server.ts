@@ -15,6 +15,7 @@ import { cleanExpiredSessions } from "./db/auth.js";
 import { requestContext } from "./user/request-context.js";
 import { bootstrap } from "./server/bootstrap.js";
 import { startServer } from "./server/lifecycle.js";
+import { createWebSocketServer } from "./websocket/websocket-server.js";
 import { generalRateLimit, authRateLimit, llmRateLimit, uploadRateLimit, securityHeaders, corsMiddleware, auditMiddleware, requestTimeoutMiddleware } from "./routes/security-middleware.js";
 import { globalErrorHandler } from "./routes/middleware.js";
 import { idempotencyMiddleware } from "./middleware/idempotency.js";
@@ -143,7 +144,8 @@ app.use("/api/chat", llmRateLimit);
 app.use("/api/upload", uploadRateLimit);
 
 // 启动服务器生命周期（挂载路由、WAL 恢复、Inbox/Scheduler、监听端口）
-startServer(app, deps);
+const server = startServer(app, deps);
+createWebSocketServer(server, { path: "/ws" });
 
 // 全局错误处理（必须放在所有路由之后）
 app.use(globalErrorHandler);
