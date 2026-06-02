@@ -126,11 +126,11 @@ export const apiContract: ContractEntry[] = [
 
   // ===================== Chat =====================
   {
-    frontendFn: "streamChat",
-    frontendMethod: "POST", frontendPath: "/api/chat",
-    backendFile: "agent-routes.ts", backendMethod: "POST", backendPath: "/api/agent/chat/stream",
+    frontendFn: "startChatStream",
+    frontendMethod: "POST", frontendPath: "/api/agent/chat/start",
+    backendFile: "agent-routes.ts", backendMethod: "POST", backendPath: "/api/agent/chat/start",
     status: "ok",
-    note: "✅ 已修复：前端改为 /api/agent/chat/stream，与后端一致。",
+    note: "WebSocket streaming",
   },
 
   // ===================== Memory =====================

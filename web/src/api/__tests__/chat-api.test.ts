@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { apiCreateConversation, streamChat } from "../index";
+import { apiCreateConversation, startChatStream } from "../index";
 import { installFetchMock, uninstallFetchMock, makeJsonResponse } from "../../test-utils/api-test-utils";
 
 const mockAuthState = {
@@ -47,7 +47,7 @@ describe("Chat API — apiCreateConversation", () => {
   });
 });
 
-describe("Chat API — streamChat", () => {
+describe("Chat API — startChatStream", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -58,36 +58,20 @@ describe("Chat API — streamChat", () => {
     uninstallFetchMock();
   });
 
-  it("should return ReadableStream on success", async () => {
-    const fakeStream = new ReadableStream();
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: fakeStream,
-      json: async () => ({}),
-    } as unknown as Response);
+  it("should return streamId on success", async () => {
+    mockFetch.mockResolvedValueOnce(makeJsonResponse({ success: true, streamId: "stream-123" }));
 
     const body = { message: "hello", conversationId: "c1" };
-    const stream = await streamChat(body);
-    expect(mockFetch).toHaveBeenCalledWith("/api/agent/chat/stream", expect.objectContaining({
+    const result = await startChatStream(body);
+    expect(mockFetch).toHaveBeenCalledWith("/api/agent/chat/start", expect.objectContaining({
       method: "POST",
       body: JSON.stringify(body),
     }));
-    expect(stream).toBe(fakeStream);
+    expect(result).toEqual({ success: true, streamId: "stream-123" });
   });
 
   it("should throw on non-ok response", async () => {
     mockFetch.mockResolvedValueOnce(makeJsonResponse({ message: "Bad request" }, 400));
-    await expect(streamChat({ message: "" })).rejects.toThrow("Bad request");
-  });
-
-  it("should throw when response body is empty", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: null,
-      json: async () => ({}),
-    } as unknown as Response);
-    await expect(streamChat({ message: "hi" })).rejects.toThrow("Response body is empty");
+    await expect(startChatStream({ message: "" })).rejects.toThrow("Bad request");
   });
 });

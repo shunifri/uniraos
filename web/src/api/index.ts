@@ -136,8 +136,8 @@ export const executeSkill = (skillId: string, params: unknown) =>
 // Chat (streaming)
 // ---------------------------------------------------------------------------
 
-export async function streamChat(body: unknown): Promise<ReadableStream> {
-  const res = await apiFetch('/api/agent/chat/stream', {
+export async function startChatStream(body: unknown): Promise<{ streamId: string }> {
+  const res = await apiFetch('/api/agent/chat/start', {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -145,10 +145,7 @@ export async function streamChat(body: unknown): Promise<ReadableStream> {
     const err = await res.json().catch(() => ({ message: res.statusText }));
     throw new Error(err.message ?? res.statusText);
   }
-  if (!res.body) {
-    throw new Error('Response body is empty');
-  }
-  return res.body;
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
