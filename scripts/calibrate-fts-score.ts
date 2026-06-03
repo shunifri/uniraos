@@ -28,7 +28,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-interface GroundTruthPoint {
+export interface GroundTruthPoint {
   raw: number;
   relevance: number; // 0-1
 }
@@ -65,7 +65,7 @@ const DEFAULT_SYNTHETIC_GROUND_TRUTH: GroundTruthPoint[] = [
 /**
  * 给定 raw score 和 k，预测归一化分数
  */
-function predict(raw: number, k: number): number {
+export function predict(raw: number, k: number): number {
   if (raw <= 0) return 0;
   return Math.tanh(raw / k);
 }
@@ -73,7 +73,7 @@ function predict(raw: number, k: number): number {
 /**
  * 算 RMSE
  */
-function rmse(points: GroundTruthPoint[], k: number): number {
+export function rmse(points: GroundTruthPoint[], k: number): number {
   if (points.length === 0) return Infinity;
   const sumSqErr = points.reduce((acc, p) => {
     const pred = predict(p.raw, k);
@@ -86,7 +86,7 @@ function rmse(points: GroundTruthPoint[], k: number): number {
 /**
  * 找最优 k
  */
-function findBestK(points: GroundTruthPoint[], kMin: number, kMax: number, step: number = 0.05): { k: number; rmse: number } {
+export function findBestK(points: GroundTruthPoint[], kMin: number, kMax: number, step: number = 0.05): { k: number; rmse: number } {
   let bestK = kMin;
   let bestRmse = rmse(points, kMin);
   for (let k = kMin; k <= kMax; k += step) {
