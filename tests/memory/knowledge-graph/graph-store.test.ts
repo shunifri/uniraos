@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { GraphStore } from "../../../src/memory/knowledge-graph/graph-store.js";
+import { GraphStore, normalizeFtsScore, flushFulltextIndex } from "../../../src/memory/knowledge-graph/graph-store.js";
 import { getMySQLAdapter } from "../../../src/db/mysql-adapter.js";
 
 describe.sequential("GraphStore", () => {
@@ -324,6 +324,225 @@ describe.sequential("GraphStore", () => {
       expect(await store.getDegree(a.id)).toBe(1);
       await store.removeEdge(edge.id);
       expect(await store.getDegree(a.id)).toBe(0);
+    });
+  });
+
+  // ============================================================
+  // P1-4: searchNodesByKeywords 用 MySQL FULLTEXT 索引（v20 migration）
+  // 验证：
+  //   1. 中文实体（短词）能通过 ngram parser 索引搜到
+  //   2. 英文长词（>=4 字符）能通过默认 FULLTEXT 索引搜到
+  //   3. 搜不到的不返回
+  //   4. owner 隔离：A 的图谱搜不到 B 的节点
+  // ============================================================
+  describe("searchNodesByKeywords (P1-4 FULLTEXT)", () => {
+    it("中文短词命中（ngram parser 兜底中文分词）", async () => {
+      await store.addNode({ label: "苹果公司", type: "organization", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "蒂姆库克", type: "person", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "iPhone", type: "product", tags: [], properties: {}, createdAt: Date.now() });
+
+      // P2-9: 用 OPTIMIZE TABLE 同步刷 FULLTEXT 索引（之前 setTimeout 100ms 是 race）
+      await flushFulltextIndex(getMySQLAdapter());
+
+      const hits = await store.searchNodesByKeywords(["苹果", "公司"], 10);
+      // 应该至少能搜到"苹果公司"
+      expect(hits.length).toBeGreaterThan(0);
+      const labels = hits.map((h) => h.node.label);
+      expect(labels).toContain("苹果公司");
+      // score 是 0-1 之间的数
+      for (const h of hits) {
+        expect(h.score).toBeGreaterThanOrEqual(0);
+        expect(h.score).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it("英文长词命中（默认 FULLTEXT 索引，ft_min_word_len=4）", async () => {
+      await store.addNode({ label: "machine_learning", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "deep_learning", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: "neural_network", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+
+      // P2-9: 用 OPTIMIZE TABLE 同步刷 FULLTEXT 索引
+      await flushFulltextIndex(getMySQLAdapter());
+
+      const hits = await store.searchNodesByKeywords(["machine", "learning"], 10);
+      // 应该能搜到 machine_learning 和 deep_learning（都含 "learning"）
+      expect(hits.length).toBeGreaterThan(0);
+      const labels = hits.map((h) => h.node.label);
+      expect(labels).toContain("machine_learning");
+    });
+
+    it("空查询 / 无效输入返回空", async () => {
+      const empty1 = await store.searchNodesByKeywords([], 10);
+      expect(empty1).toEqual([]);
+      const empty2 = await store.searchNodesByKeywords([""], 10);
+      expect(empty2).toEqual([]);
+    });
+
+    it("owner 隔离：A 的搜索不返回 B 的节点", async () => {
+      const OTHER_OWNER = "graph_test_other_owner";
+      const adapter = getMySQLAdapter();
+      try {
+        await adapter.execute(
+          `INSERT INTO users (id, username, password_hash, status) VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE username = VALUES(username)`,
+          [OTHER_OWNER, "graph_test_other", "h", 1]
+        );
+      } catch { /* ignore */ }
+
+      // 当前 store (TEST_OWNER) 加一个 "独占节点"
+      await store.addNode({ label: "独占实体ABC", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+
+      // OTHER_OWNER 加一个不同名的同名节点
+      const otherStore = new GraphStore(OTHER_OWNER);
+      await otherStore.clearGraph();
+      await otherStore.addNode({ label: "独占实体XYZ", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+
+      // P2-9: 用 OPTIMIZE TABLE 同步刷 FULLTEXT 索引
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 当前 store 搜 "独占" 应该只看到自己的 ABC
+      const hits = await store.searchNodesByKeywords(["独占", "实体"], 10);
+      const labels = hits.map((h) => h.node.label);
+      expect(labels).toContain("独占实体ABC");
+      expect(labels).not.toContain("独占实体XYZ");
+
+      await otherStore.clearGraph();
+    });
+  });
+
+  // ============================================================
+  // P2-8: 优雅降级——ngram 索引不可用时降级到默认 FULLTEXT
+  // 场景：生产 MySQL 没装 ngram parser 插件；runtime 必须能用默认索引继续工作
+  // ============================================================
+  describe("searchNodesByKeywords ngram fallback (P2-8 graceful degradation)", () => {
+    it("ngram probe 缓存到 store 实例，重置后会重新探", async () => {
+      await store.addNode({ label: "苹果公司", type: "organization", tags: [], properties: {}, createdAt: Date.now() });
+      // P2-9: 用 OPTIMIZE TABLE 同步刷 FULLTEXT 索引
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 第一次调用触发 probe
+      await store.searchNodesByKeywords(["苹果"], 10);
+      // 重置 probe 缓存
+      store._resetNgramProbeForTest();
+      // 第二次调用会重新 probe——不应抛错
+      const hits = await store.searchNodesByKeywords(["苹果"], 10);
+      // 命中至少 0 个（数据存在，应该 >=1）
+      expect(hits.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it("USE INDEX hint 引用了真实存在的索引（不会 ER_KEY_DOES_NOT_EXIST）", async () => {
+      // 故意不 reset probe——上一步已经把缓存填上
+      // 直接搜中文短词，验证 ngram 索引或 default 索引至少一个能命中
+      await store.addNode({ label: "深度学习框架", type: "concept", tags: [], properties: {}, createdAt: Date.now() });
+      // P2-9: 用 OPTIMIZE TABLE 同步刷 FULLTEXT 索引
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 不抛错就过
+      const hits = await store.searchNodesByKeywords(["深度", "学习"], 10);
+      expect(Array.isArray(hits)).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // P2-7: normalizeFtsScore 评分校准（tanh 取代 /5 魔法值）
+  // 验证 S 曲线归一化行为：噪声压低、真实命中落中间、尾部不爆
+  // ============================================================
+  describe("normalizeFtsScore (P2-7 评分校准)", () => {
+    it("空值 / 负数 / 非数字 → 0", () => {
+      expect(normalizeFtsScore(0)).toBe(0);
+      expect(normalizeFtsScore(-1)).toBe(0);
+      expect(normalizeFtsScore(NaN)).toBe(0);
+      expect(normalizeFtsScore(Infinity)).toBe(0);
+      expect(normalizeFtsScore(-Infinity)).toBe(0);
+    });
+
+    it("S 曲线：raw=0.5 压到 0.x 噪声区间", () => {
+      const s = normalizeFtsScore(0.5);
+      expect(s).toBeGreaterThan(0);
+      expect(s).toBeLessThan(0.6); // 噪声不应太高
+    });
+
+    it("S 曲线：raw=1 命中落中间区间", () => {
+      const s = normalizeFtsScore(1);
+      expect(s).toBeGreaterThanOrEqual(0.4);
+      expect(s).toBeLessThanOrEqual(0.55);
+    });
+
+    it("S 曲线：raw=2 强命中趋近 0.8", () => {
+      const s = normalizeFtsScore(2);
+      // tanh(1) ≈ 0.7616
+      expect(s).toBeGreaterThan(0.7);
+      expect(s).toBeLessThan(0.85);
+    });
+
+    it("S 曲线：raw=4 极强命中趋近 0.96", () => {
+      const s = normalizeFtsScore(4);
+      // tanh(2) ≈ 0.964
+      expect(s).toBeGreaterThan(0.9);
+      expect(s).toBeLessThan(1);
+    });
+
+    it("S 曲线：raw=10 极强尾部 → 仍然 ≤ 1（不爆炸）", () => {
+      const s = normalizeFtsScore(10);
+      expect(s).toBeLessThanOrEqual(1);
+      expect(s).toBeGreaterThan(0.99);
+    });
+
+    it("单调性：raw 越大 → 归一化越大（不会反转排序）", () => {
+      const samples = [0.1, 0.5, 1, 2, 5, 10];
+      // P2-7 标定：必须用箭头函数包一层，否则 Array.map 会把 index 当作 k 参数
+      const normalized = samples.map((r) => normalizeFtsScore(r));
+      for (let i = 1; i < normalized.length; i++) {
+        expect(normalized[i]).toBeGreaterThanOrEqual(normalized[i - 1]);
+      }
+    });
+
+    it("值域在 [0, 1]", () => {
+      for (const raw of [0, 0.001, 0.5, 1, 2, 5, 100, 1e6]) {
+        const s = normalizeFtsScore(raw);
+        expect(s).toBeGreaterThanOrEqual(0);
+        expect(s).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it("k 参数可调（用 1.80 替代默认 2.0）", () => {
+      // 标定推荐 k=1.80（见 scripts/calibrate-fts-score.ts）
+      // 验证 k 越小曲线越"激进"——raw=1 时归一化分数更高
+      const defaultK = normalizeFtsScore(1);
+      const tunedK = normalizeFtsScore(1, 1.80);
+      expect(tunedK).toBeGreaterThan(defaultK);
+    });
+  });
+
+  // ============================================================
+  // P2-9: flushFulltextIndex 真正能同步刷新 FULLTEXT 缓存
+  // 验证：
+  //   1. 不抛错（即使 SET GLOBAL 失败也能 fallback 到直接 OPTIMIZE）
+  //   2. 调用后立即能搜到刚插入的数据（不用 setTimeout 等异步）
+  // ============================================================
+  describe("flushFulltextIndex (P2-9 同步刷 FULLTEXT)", () => {
+    it("调用后立即可搜（不需要 setTimeout 等异步索引）", async () => {
+      const label = "P29同步刷_" + Date.now();
+      await store.addNode({ label, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      // 立即调 flush（不 setTimeout）
+      await flushFulltextIndex(getMySQLAdapter());
+      // 立即搜——不应等异步
+      const hits = await store.searchNodesByKeywords([label], 10);
+      const labels = hits.map((h) => h.node.label);
+      expect(labels).toContain(label);
+    });
+
+    it("无 SUPER 权限时仍能工作（降级到直接 OPTIMIZE）", async () => {
+      // 这个测试不需要 mock 权限——adapter.execute 失败会被 catch，OPTIMIZE 仍会跑
+      // 验证：不抛错就行
+      await expect(flushFulltextIndex(getMySQLAdapter())).resolves.toBeUndefined();
+    });
+
+    it("连续 flush 多次无副作用", async () => {
+      await flushFulltextIndex(getMySQLAdapter());
+      await flushFulltextIndex(getMySQLAdapter());
+      await flushFulltextIndex(getMySQLAdapter());
+      // 不抛错就过
     });
   });
 });

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { extractRelationships, extractTagRelationships } from "../../../src/memory/knowledge-graph/relationship-extractor.js";
+import {
+  extractRelationships,
+  extractTagRelationships,
+  extractEntitiesAndRelationships,
+} from "../../../src/memory/knowledge-graph/relationship-extractor.js";
 
 describe.sequential("RelationshipExtractor", () => {
   describe("extractRelationships (LLM)", () => {
@@ -71,6 +75,102 @@ describe.sequential("RelationshipExtractor", () => {
     it("should return empty when no overlap", () => {
       const result = extractTagRelationships(["x"], [{ id: "1", label: "f", tags: ["y"] }]);
       expect(result).toHaveLength(0);
+    });
+  });
+
+  // ============================================================
+  // P1-6: extractEntitiesAndRelationships 合并为单次 LLM 调用
+  // 验证：
+  //   1. 单次 chat 调用同时返回 entities + relations
+  //   2. schema 校验（过滤掉不合规的 entity/relation）
+  //   3. markdown-wrapped JSON 也能解析
+  //   4. LLM 异常时静默返回空
+  // ============================================================
+  describe("extractEntitiesAndRelationships (P1-6 merged LLM call)", () => {
+    it("单次调用同时返回 entities + relations", async () => {
+      const mockLlm = {
+        chat: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            entities: [
+              { label: "苹果公司", type: "organization", importance: 0.9 },
+              { label: "蒂姆·库克", type: "person", importance: 0.85 },
+            ],
+            relations: [
+              { sourceLabel: "苹果公司", targetLabel: "蒂姆·库克", relation: "created_by", confidence: 0.9 },
+            ],
+          }),
+        }),
+      };
+      const r = await extractEntitiesAndRelationships("苹果公司 CEO 是蒂姆·库克", mockLlm as any);
+      // 关键：chat 应当只被调用 1 次
+      expect(mockLlm.chat).toHaveBeenCalledTimes(1);
+      expect(r.entities).toHaveLength(2);
+      expect(r.relations).toHaveLength(1);
+      expect(r.relations[0].sourceLabel).toBe("苹果公司");
+    });
+
+    it("过滤不合规的 entity 和 relation", async () => {
+      const mockLlm = {
+        chat: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            entities: [
+              { label: "好实体", type: "concept", importance: 0.5 },       // 保留
+              { label: "", type: "concept", importance: 0.5 },              // 空 label → 过滤
+              { label: "low_imp", type: "concept", importance: 0.05 },      // importance < 0.1 → 过滤
+            ],
+            relations: [
+              { sourceLabel: "好实体", targetLabel: "A", relation: "x", confidence: 0.8 }, // 保留
+              { sourceLabel: "", targetLabel: "A", relation: "x", confidence: 0.8 },      // 空 source → 过滤
+            ],
+          }),
+        }),
+      };
+      const r = await extractEntitiesAndRelationships("test", mockLlm as any);
+      expect(r.entities).toHaveLength(1);
+      expect(r.relations).toHaveLength(1);
+    });
+
+    it("markdown-wrapped JSON 也能解析", async () => {
+      const mockLlm = {
+        chat: vi.fn().mockResolvedValue({
+          content: '```json\n{"entities":[{"label":"X","type":"concept","importance":0.5}],"relations":[]}\n```',
+        }),
+      };
+      const r = await extractEntitiesAndRelationships("test", mockLlm as any);
+      expect(r.entities).toHaveLength(1);
+      expect(r.entities[0].label).toBe("X");
+    });
+
+    it("LLM 抛错时静默返回空（不向上抛）", async () => {
+      const mockLlm = { chat: vi.fn().mockRejectedValue(new Error("API down")) };
+      const r = await extractEntitiesAndRelationships("test", mockLlm as any);
+      expect(r).toEqual({ entities: [], relations: [] });
+    });
+
+    it("无 LLM provider 时返回空", async () => {
+      const r = await extractEntitiesAndRelationships("test", null);
+      expect(r).toEqual({ entities: [], relations: [] });
+    });
+
+    // ============================================================
+    // P2-10: 鲁棒性——LLM 不听话返回 array 而非 object 时，也能用
+    //   当 entities 处理（relations 留空），不丢覆盖率
+    // ============================================================
+    it("P2-10: LLM 返回 array 时降级为 entities-only（容错）", async () => {
+      const mockLlm = {
+        chat: vi.fn().mockResolvedValue({
+          // LLM 偷懒只返回 entity array，忽略 relations 字段
+          content: JSON.stringify([
+            { label: "苹果公司", type: "organization", importance: 0.9 },
+            { label: "蒂姆·库克", type: "person", importance: 0.85 },
+          ]),
+        }),
+      };
+      const r = await extractEntitiesAndRelationships("test", mockLlm as any);
+      // entities 应被解析，relations 留空（不让 LLM 的偷懒扩散成整次失败）
+      expect(r.entities.length).toBe(2);
+      expect(r.entities.map((e) => e.label)).toContain("苹果公司");
+      expect(r.relations).toEqual([]);
     });
   });
 });

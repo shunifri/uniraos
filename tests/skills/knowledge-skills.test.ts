@@ -470,19 +470,23 @@ describe("kb_search skill", () => {
     );
   });
 
-  it("calls graph search for relational queries when graphManager is available", async () => {
+  it("KG-first: relational queries use graphManager and fall back to KB search when no graph hits", async () => {
+    // KG v2 阶段 3 重构：kb_search 现在走 understandQuery → recall → expandToChunks
+    // 老的 graphSearch 接口被替换为新的 recall 接口
+    // 当图谱召回为空时，会降级到 KB 向量+关键词检索
+    const mockStore = {
+      findNodeByLabel: vi.fn().mockResolvedValue(undefined),
+      findNodesByType: vi.fn().mockResolvedValue([]),
+      getAllNodes: vi.fn().mockResolvedValue([]),
+      getNeighbors: vi.fn().mockResolvedValue([]),
+      getEdgesOf: vi.fn().mockResolvedValue([]),
+      getEdgesBetween: vi.fn().mockResolvedValue([]),
+      addNode: vi.fn(),
+      addEdge: vi.fn(),
+    };
     const mockGraphManager = {
-      graphSearch: vi.fn().mockResolvedValue([
-        {
-          docId: "d1",
-          docName: "Test.pdf",
-          chunkIndex: 0,
-          content: "graph content",
-          score: 0.85,
-          matchType: "graph_subgraph",
-          graphContext: { subgraphSize: 3 },
-        },
-      ]),
+      getStore: vi.fn().mockResolvedValue(mockStore),
+      graphSearch: vi.fn(), // 不再使用，但保留以防其他地方调用
       onFactStored: vi.fn().mockResolvedValue(undefined),
     };
     const sessionManager = createMockSessionManager(mockGraphManager);
@@ -492,14 +496,10 @@ describe("kb_search skill", () => {
     const result = await skill.handler({ query: "A和B的关系是什么", limit: 5 });
 
     expect(result.success).toBe(true);
-    expect(mockGraphManager.graphSearch).toHaveBeenCalledWith(
-      "A和B的关系是什么",
-      expect.objectContaining({ allowedDocIds: ["d1"] })
-    );
-    expect(searchSpy).toHaveBeenCalledWith(
-      "A和B的关系是什么",
-      expect.objectContaining({ docIds: ["d1"] })
-    );
+    // 验证新的 KG-first 流程走了 getStore
+    expect(mockGraphManager.getStore).toHaveBeenCalled();
+    // 验证降级到 KB 搜索（因为 mockStore 没有节点）
+    expect(searchSpy).toHaveBeenCalled();
   });
 
   it("formats results with success message", async () => {

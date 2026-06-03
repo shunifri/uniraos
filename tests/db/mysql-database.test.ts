@@ -34,11 +34,16 @@ describeIfMySQL("MySQL Database Migrations", () => {
   });
 
   it("should have migrations defined", () => {
-    expect(MIGRATIONS).toHaveLength(9);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(11); // 阶段1-6 + kg_v2 + feedback + fulltext + ngram
     expect(MIGRATIONS[0].version).toBe(1);
     expect(MIGRATIONS[0].name).toBe("init_complete_schema");
     expect(MIGRATIONS[1].version).toBe(2);
     expect(MIGRATIONS[1].name).toBe("add_custom_skills_table");
+    // P2-8: 验证 v21 是 optional（ngram 插件缺失时不应 halt 整个 runner）
+    const v21 = MIGRATIONS.find((m) => m.version === 21);
+    expect(v21).toBeDefined();
+    expect(v21?.optional).toBe(true);
+    expect(v21?.name).toContain("ngram");
   });
 
   it("should initialize database with all migrations", async () => {
