@@ -19,6 +19,7 @@ import {
   Col,
   Menu,
   Alert,
+  Tooltip,
 } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -41,6 +42,8 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   LoadingOutlined,
+  InfoCircleOutlined,
+  QuestionCircleOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
@@ -299,6 +302,25 @@ function CalibrationPanel() {
           >
             {isRunning ? "标定中..." : "开始标定"}
           </Button>
+          {/* 操作说明: 解释按钮的目的 — 让 ops 一眼知道什么场景下要按 */}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            <QuestionCircleOutlined style={{ marginRight: 4 }} />
+            <strong>何时按:</strong>
+            ① acceptance rate 跌到 50% 以下 ② LLM/embedding 升级 ③ 索引重建后 ④ 接入新数据源
+            <Tooltip
+              title={
+                <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                  <div><strong>目的:</strong> 用真实 (query, node, relevance) 三元组拟合最佳的 FTS_SCORE_K,</div>
+                  <div style={{ marginTop: 4 }}>让 recall top-K 排序更准 (而不是固定 k=2 的魔法值)。</div>
+                  <div style={{ marginTop: 4 }}><strong>耗时:</strong> 30 秒-2 分钟 (取决于数据量), 期间不影响线上检索。</div>
+                  <div style={{ marginTop: 4 }}><strong>输出:</strong> bestK / RMSE 写到 .raos/calibration/, 不直接改线上 k。</div>
+                  <div style={{ marginTop: 4 }}><strong>采纳:</strong> 看 success run 的 bestK, ops 决定是否更新 FTS_SCORE_K env。</div>
+                </div>
+              }
+            >
+              <InfoCircleOutlined style={{ marginLeft: 6, color: "#1677ff", cursor: "help" }} />
+            </Tooltip>
+          </Text>
           <Button icon={<ReloadOutlined />} onClick={refresh}>
             刷新
           </Button>
