@@ -1,11 +1,14 @@
 import type { GraphNode, GraphEdge, SubgraphResult } from "./types.js";
 import type { GraphStore } from "./graph-store.js";
+import type { GraphStoreLike } from "./extraction-pipeline.js";
 
 export interface BFSOptions {
   maxSeeds?: number;   // default 3
   maxDepth?: number;   // default 3
   maxNodes?: number;   // default 50
   allowedDocIds?: string[]; // 允许访问的知识库文档 ID 列表
+  /** KG v2 阶段 3: 显式指定 seed 节点 ID，绕过 query 字符串匹配 */
+  seedNodeIds?: string[];
 }
 
 /** 中文→英文 tag 映射，用于跨语言检索 */
@@ -20,10 +23,11 @@ const ZH_TAG_MAP: Record<string, string[]> = {
   "个人": ["personal", "identity", "personal_info"],
 };
 
-/** Match query terms against node labels, tags, and value content */
-async function scoreNodes(store: GraphStore, queryTerms: string[]): Promise<Array<{ node: GraphNode; score: number }>> {
-  const scored: Array<{ node: GraphNode; score: number }> = [];
-
+/** Match query terms against node labels, tags, and value content
+ * KG v2 阶段 5: 优先用 backend 原生 searchNodesByKeywords（如 Neo4j fulltext index），
+ * 没有该方法时降级到 getAllNodes + 内存字符串匹配
+ */
+async function scoreNodes(store: GraphStoreLike, queryTerms: string[]): Promise<Array<{ node: GraphNode; score: number }>> {
   // 展开中文查询词为英文 tag
   const expandedTerms = [...queryTerms];
   for (const term of queryTerms) {
@@ -34,6 +38,42 @@ async function scoreNodes(store: GraphStore, queryTerms: string[]): Promise<Arra
     }
   }
 
+  // KG v2 阶段 5: 优先用 backend 原生检索（如 Neo4j fulltext index）
+  // P2-12：用类型守卫代替 as any（searchNodesByKeywords 在 GraphStoreLike 是可选方法）
+  if (store.searchNodesByKeywords) {
+    try {
+      const rawHits = await store.searchNodesByKeywords(expandedTerms, 50);
+      // 兼容两种返回格式：
+      //   - { node, score }[]（Neo4j fulltext 风格）
+      //   - GraphNode[]（简化 mock 风格）
+      const hits: Array<{ node: GraphNode; score: number }> = [];
+      for (const item of rawHits ?? []) {
+        if (item && typeof item === "object" && "node" in item) {
+          hits.push({ node: item.node, score: item.score ?? 0 });
+        } else if (item && typeof item === "object" && "id" in item) {
+          // 简化格式：直接是 GraphNode
+          hits.push({ node: item as GraphNode, score: 0 });
+        }
+      }
+      if (hits.length > 0) {
+        // 命中：直接返回原生索引结果（按 score 降序）
+        return hits.sort((a, b) => b.score - a.score);
+      }
+      // rawHits 为空（FULLTEXT 索引 lag / min word length / tag-only match 等情况），
+      // 降级到内存匹配。注：之前是"rawHits 为空就返回空"，导致纯 tag 匹配场景全部丢失。
+      // 现在显式 fall through 到下面的内存匹配逻辑。
+    } catch (err) {
+      // 索引未建/查询语法问题等，降级到内存匹配
+      console.warn("[scoreNodes] backend search failed, falling back:", err);
+    }
+  }
+
+  // Fallback: 内存字符串匹配
+  const scored: Array<{ node: GraphNode; score: number }> = [];
+  // P2-12：getAllNodes 在 GraphStoreLike 是可选方法（Neo4j 没实现），用类型守卫
+  if (!store.getAllNodes) {
+    return scored; // 真没结果：返回空
+  }
   const allNodes = await store.getAllNodes();
   for (const node of allNodes) {
     let score = 0;
@@ -74,29 +114,40 @@ function isAllowedKbNode(node: GraphNode, allowedDocIds?: string[]): boolean {
   }
 
   // 检查节点是否匹配某个有权限的文档 ID
+  // P2-11 安全修复：用 === 精确等值（之前 startsWith + includes 有"doc_abc" 误中
+  //   "kb_doc_doc_abc_v2" 的边角问题）
   const nodeId = node.id;
-  return allowedDocIds.some(docId =>
-    nodeId.startsWith(`kb_doc_${docId}`) ||
-    (nodeId.startsWith(`kb_layout_`) && nodeId.includes(docId)) ||
-    nodeId.startsWith(`kb_seg_${docId}`) ||
-    nodeId.startsWith(`kb_content_${docId}`) ||
-    nodeId.includes(`kb_shared_${docId}`)
-  );
+  return allowedDocIds.some((docId) => {
+    if (nodeId === `kb_doc_${docId}`) return true;             // doc anchor：精确等值
+    if (nodeId.startsWith("kb_layout_") && nodeId.includes(docId)) return true;
+    if (nodeId.startsWith(`kb_seg_${docId}_`)) return true;     // seg/chunk 节点：用 _ 分隔避免误中
+    if (nodeId.startsWith(`kb_content_${docId}_`)) return true;
+    if (nodeId.includes(`kb_shared_${docId}`)) return true;
+    return false;
+  });
 }
 
 /** BFS subgraph extraction from seed nodes */
-export async function extractSubgraph(store: GraphStore, query: string, options?: BFSOptions): Promise<SubgraphResult> {
+export async function extractSubgraph(store: GraphStoreLike, query: string, options?: BFSOptions): Promise<SubgraphResult> {
   const maxSeeds = options?.maxSeeds ?? 3;
   const maxDepth = options?.maxDepth ?? 3;
   const maxNodes = options?.maxNodes ?? 50;
   const allowedDocIds = options?.allowedDocIds;
+  const seedNodeIds = options?.seedNodeIds;
 
-  // 1. Tokenize query and match to nodes
-  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
-  if (terms.length === 0) return { nodes: [], edges: [], seedNodes: [] };
-
-  const scored = await scoreNodes(store, terms);
-  const seeds = scored.slice(0, maxSeeds).map(s => s.node);
+  // 1. Tokenize query and match to nodes (KG v2 阶段 3: 如果提供了 seedNodeIds 则跳过)
+  let seeds: GraphNode[] = [];
+  if (seedNodeIds && seedNodeIds.length > 0) {
+    for (const id of seedNodeIds.slice(0, maxSeeds)) {
+      const n = await store.getNode(id);
+      if (n) seeds.push(n);
+    }
+  } else {
+    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+    if (terms.length === 0) return { nodes: [], edges: [], seedNodes: [] };
+    const scored = await scoreNodes(store, terms);
+    seeds = scored.slice(0, maxSeeds).map(s => s.node);
+  }
   if (seeds.length === 0) return { nodes: [], edges: [], seedNodes: [] };
 
   // 2. BFS from seeds
@@ -148,7 +199,7 @@ export async function extractSubgraph(store: GraphStore, query: string, options?
 
 /** BFS shortest path between two nodes */
 export async function findShortestPath(
-  store: GraphStore, sourceId: string, targetId: string, maxDepth = 10,
+  store: GraphStoreLike, sourceId: string, targetId: string, maxDepth = 10,
 ): Promise<{ path: GraphNode[]; edges: GraphEdge[] } | null> {
   const [sourceNode, targetNode] = await Promise.all([
     store.getNode(sourceId),
