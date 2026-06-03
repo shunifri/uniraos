@@ -13,6 +13,8 @@ import * as fs from "fs";
 
 interface Point {
   raw: number;
+  productionScore: number;
+  stage: number;
   relevance: number;
   query?: string;
   nodeLabel?: string;

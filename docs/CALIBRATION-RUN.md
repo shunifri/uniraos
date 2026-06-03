@@ -83,6 +83,49 @@ raw=0.00  truth=1.00  pred=0.00  | kb:上海应用技术大学...docx:paragraph:
 | **4. AI 重新评估 ground truth** | 🟡 中 | 1 天 | "kb:...docx:paragraph:0" 这种 label 算不算"完全相关"？可能应该 relevance=0.7 而非 1.0 |
 | **5. 调 k=1.10** | 🔴 低 | 0 | 0.78% 改善基本无感，不值得动 |
 
+## ✅ 修复后重跑（commit eb66da1 + follow-up）
+
+### 第二轮：commit eb66da1 (multi-stage search fallback) 之后
+
+```
+stage distribution:
+  stage  0 (no match       ): 11
+  stage  1 (FULLTEXT       ): 13
+  stage  2 (exact/canonical): 111
+  stage  4 (substring      ): 48
+rescued by fallback: 159 / 183 (86.9%)
+production RMSE: 0.2612
+```
+
+**86.9% 召回被 multi-stage fallback 救回**——之前 100% raw=0 的样本现在 86.9% 拿到 0.65-0.99 的 production score。
+
+### 第三轮（这次）：修复触发条件 + 加 production score 到 calibration
+
+**发现**：FULLTEXT 对短 query（"kb:" 之类）会召回 20 个**噪声**命中（raw=0.02, score 0.01），数量上看 ≥ 50% limit，**但 top score 极低**——根本不是真匹配。
+**修复**：把触发 fallback 的条件从"只看数量"改成"数量 OR top score 极低（< 0.5）"。
+
+```
+stage distribution:
+  stage  0 (no match       ): 9     ← 少了 2
+  stage  1 (FULLTEXT       ): 4     ← 少了 9（噪声被排除）
+  stage  2 (exact/canonical): 120   ← 多了 9（噪声让位给真匹配）
+  stage  4 (substring      ): 50    ← +2
+rescued by fallback: 170 / 183 (92.9%)  ← 86.9% → 92.9%
+production RMSE: 0.2372                ← 0.2612 → 0.2372
+```
+
+**生产 score RMSE 改善 9%**（0.2612 → 0.2372），这才是用户实际看到的提升。
+
+### 三轮对比
+
+| 版本 | raw=0 比例 | rescued % | production RMSE | 备注 |
+|------|-----------|-----------|----------------|------|
+| 修复前 | 60% (109/183) | 0% | n/a | raw→0, pred→0 |
+| v1: multi-stage fallback (eb66da1) | 60% (109/183) | 86.9% | 0.2612 | score 不一样了 |
+| **v2: + 低质量 trigger（当前）** | 60% (109/183) | **92.9%** | **0.2372** | best |
+
+**结论**：multi-stage fallback 不只是补救——是**降低** raw=0 噪声对召回排序影响的关键。后续调 k 才有意义（不然 k 调优是在 noise 上调）。
+
 ## 实际改动建议
 
 **短期（这次不动）**：

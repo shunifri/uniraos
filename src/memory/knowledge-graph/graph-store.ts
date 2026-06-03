@@ -729,10 +729,16 @@ export class GraphStore {
     // Stage 1: FULLTEXT
     const fulltextHits = await this.stage1FulltextSearch(cleaned, limit, useNgram);
 
-    // P2-CRITICAL-FIX: 如果 FULLTEXT 召回不足 50% limit，触发 fallback
-    // 原因：raw=0 命中 60% 的情况下，单 FULLTEXT 会错过最有意义的 label-exact 节点
+    // P2-CRITICAL-FIX: 触发 fallback 的两个条件（任一满足）
+    //   1. FULLTEXT 召回数量不足 limit/2（之前逻辑）
+    //   2. **NEW**: 召回数量足够但 top score 极低（< 0.5）—— FULLTEXT 召回的命中
+    //      实际上不是真匹配（比如 query="kb:" 命中 raw=0.02 的全是噪声）
+    //      这种情况下 fallback 能找到真正的 label-exact 命中
     const minResultsToTriggerFallback = Math.max(1, Math.floor(limit / 2));
-    if (fulltextHits.length >= minResultsToTriggerFallback) {
+    const topFulltextScore = fulltextHits[0]?.score ?? 0;
+    const isLowQuantity = fulltextHits.length < minResultsToTriggerFallback;
+    const isLowQuality = fulltextHits.length > 0 && topFulltextScore < 0.5;
+    if (!isLowQuantity && !isLowQuality) {
       return fulltextHits.map(({ node, score }) => ({ node, score }));
     }
 

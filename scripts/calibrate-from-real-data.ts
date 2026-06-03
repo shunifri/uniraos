@@ -33,8 +33,10 @@ import { surfaceToCanonical } from "../src/memory/knowledge-graph/entity-linker.
 import { findBestK, rmse, predict } from "./calibrate-fts-score.js";
 
 interface CalibrationPoint {
-  raw: number;
-  relevance: number;
+  raw: number; // FULLTEXT raw score
+  productionScore: number; // multi-stage fallback 后的 production searchNodesByKeywords score
+  stage: number; // 1=FULLTEXT, 2=exact/canonical, 4=substring
+  relevance: number; // 0-1
   query?: string;
   nodeId?: string;
   nodeLabel?: string;
@@ -128,7 +130,11 @@ async function llmScore(
 }
 
 /**
- * 调 MySQL MATCH AGAINST 拿 raw_score
+ * 调 MySQL MATCH AGAINST 拿 raw_score（**直接走 FULLTEXT，绕过 multi-stage fallback**）
+ *
+ * 用途：calibration pipeline 测 FULLTEXT 原始分数 vs 相关性——**这是 calibration 的目标**。
+ *  生产路径（searchNodesByKeywords）会加 multi-stage fallback，**这测的是 underlying FULLTEXT 召回质量**。
+ *  两者分开看：FULLTEXT 召回质量是 signal 1，multi-stage fallback 是补救——分别标定。
  */
 async function getRawFtsScore(
   adapter: MySQLAdapter,
@@ -146,6 +152,47 @@ async function getRawFtsScore(
     [boolQuery, owner, boolQuery]
   );
   return rows;
+}
+
+/**
+ * 调 production searchNodesByKeywords（multi-stage fallback 后）拿 **production score**
+ *
+ * 用途：calibration 测**生产实际召回**的 score vs 相关性——这是用户真正看到的。
+ *  对比 getRawFtsScore 看出 multi-stage fallback 救了多少 raw=0 的召回。
+ */
+async function getProductionScore(
+  owner: string,
+  query: string,
+  groundTruthNodeId: string
+): Promise<{ productionScore: number; rawFulltextScore: number; stage: number }> {
+  const { GraphStore } = await import("../src/memory/knowledge-graph/graph-store.js");
+  const store = new GraphStore(owner);
+  // 调 production 多 stage search
+  const hits = await store.searchNodesByKeywords([query], 50);
+
+  // 找这个 tuple 对应的 node 命中
+  const hit = hits.find((h) => h.node.id === groundTruthNodeId);
+  if (!hit) {
+    return { productionScore: 0, rawFulltextScore: 0, stage: 0 };
+  }
+
+  // 拿到 fulltext raw score 用于对比
+  const adapter = getMySQLAdapter();
+  const boolQuery = `+${query.replace(/[+\-><()~*"@]/g, " ")}*`;
+  const rows = await adapter.query<{ raw: number }>(
+    `SELECT MATCH(label) AGAINST (? IN BOOLEAN MODE) AS raw
+     FROM kb_graph_nodes USE INDEX (ft_kb_graph_nodes_label)
+     WHERE owner_id = ? AND id = ? AND MATCH(label) AGAINST (? IN BOOLEAN MODE)`,
+    [boolQuery, owner, groundTruthNodeId, boolQuery]
+  );
+  const raw = Number(rows[0]?.raw ?? 0);
+
+  // 简单 heuristic 判断 stage：hit.score > 0.9 → exact/canonical, > 0.6 → substring, 其它 → FULLTEXT
+  let stage = 1;
+  if (hit.score >= 0.9) stage = 2;
+  else if (hit.score >= 0.6) stage = 4;
+
+  return { productionScore: hit.score, rawFulltextScore: raw, stage };
 }
 
 /**
@@ -230,18 +277,31 @@ async function enrichWithRawScore(
     byQuery.get(t.query)!.push(t);
   }
 
-  const enriched: Array<RealTuple & { raw: number; type: string }> = [];
+  const enriched: Array<RealTuple & { raw: number; type: string; productionScore: number; stage: number }> = [];
   for (const [query, group] of byQuery.entries()) {
     const hits = await getRawFtsScore(adapter, owner, query);
     const hitById = new Map(hits.map((h) => [h.id, h]));
     for (const t of group) {
+      // raw FULLTEXT score（underlying signal 1）
       const hit = hitById.get(t.nodeId);
-      if (hit) {
-        enriched.push({ ...t, raw: hit.raw, type: hit.type });
-      } else {
-        // 该 query 召回没这个 node（raw=0 视为"没召回"——标 0 relevance）
-        enriched.push({ ...t, raw: 0, type: "entity" });
+      const raw = hit ? hit.raw : 0;
+      const type = hit ? hit.type : "entity";
+
+      // production searchNodesByKeywords score（multi-stage fallback 后的真用户看到值）
+      // —— 这是 calibration 应该测的"用户实际看到"的东西
+      let productionScore = 0;
+      let stage = 0;
+      try {
+        const prod = await getProductionScore(owner, query, t.nodeId);
+        productionScore = prod.productionScore;
+        stage = prod.stage;
+      } catch {
+        // getProductionScore 失败——用 raw 计算近似
+        productionScore = Math.tanh(raw / 2);
+        stage = 1;
       }
+
+      enriched.push({ ...t, raw, type, productionScore, stage });
     }
   }
   return enriched;
@@ -251,7 +311,7 @@ async function enrichWithRawScore(
  * 步骤 4: 评分（LLM 或 heuristic）
  */
 async function scoreTuples(
-  tuples: Array<RealTuple & { raw: number; type: string }>,
+  tuples: Array<RealTuple & { raw: number; type: string; productionScore: number; stage: number }>,
   useLlmFlag: boolean
 ): Promise<CalibrationPoint[]> {
   console.log(`[calibrate-real] scoring ${tuples.length} tuples (mode: ${useLlmFlag ? "llm" : "heuristic"})...`);
@@ -283,6 +343,8 @@ async function scoreTuples(
       : heuristicScore(t.query, t.nodeLabel, t.type);
     points.push({
       raw: t.raw,
+      productionScore: t.productionScore,
+      stage: t.stage,
       relevance,
       query: t.query,
       nodeId: t.nodeId,
@@ -347,34 +409,76 @@ async function main() {
   console.log(`[calibrate-real] wrote ${points.length} points to ${outFile}`);
 
   // 步骤 6: 跑 calibration
+  // 现在每个 point 都有 (raw, productionScore, stage, relevance)
+  // - raw: MySQL FULLTEXT 原始分（underlying signal）
+  // - productionScore: searchNodesByKeywords 返回的 score（multi-stage fallback 后——用户实际看到）
+  // - stage: 1=FULLTEXT, 2=exact/canonical, 4=substring
   console.log(`\n[calibrate-real] running calibration on ${points.length} points...`);
-  const { k: bestK, rmse: bestRmse } = findBestK(points, 0.5, 5);
-  const currentK = 2;
-  const currentRmse = rmse(points, currentK);
-  const improvement = ((currentRmse - bestRmse) / currentRmse) * 100;
 
-  console.log(`\n[calibrate-real] ===== RESULTS =====`);
+  // 对比 1: production score vs relevance（这才是真用户看到的）
+  //  对每个点算 |productionScore - relevance| 的 RMSE
+  const prodRmse = (() => {
+    if (points.length === 0) return 0;
+    const sumSqErr = points.reduce((acc, p) => {
+      const err = p.productionScore - p.relevance;
+      return acc + err * err;
+    }, 0);
+    return Math.sqrt(sumSqErr / points.length);
+  })();
+
+  // 对比 2: 只对 stage=1 的点跑 k 网格搜索（FULLTEXT 那段的归一化）
+  const fulltextPoints = points.filter((p) => p.stage === 1 && p.raw > 0);
+  if (fulltextPoints.length > 0) {
+    const ftPointsForCalib = fulltextPoints.map((p) => ({ raw: p.raw, relevance: p.relevance }));
+    const { k: bestK, rmse: bestRmse } = findBestK(ftPointsForCalib, 0.5, 5);
+    const currentK = 2;
+    const currentFtRmse = rmse(ftPointsForCalib, currentK);
+    const improvement = ((currentFtRmse - bestRmse) / currentFtRmse) * 100;
+    console.log(`\n[calibrate-real] ===== FULLTEXT STAGE CALIBRATION (stage=1, raw>0) =====`);
+    console.log(`  fulltext points: ${fulltextPoints.length} (out of ${points.length} total)`);
+    console.log(`  current k=2: RMSE=${currentFtRmse.toFixed(4)}`);
+    console.log(`  best k=${bestK.toFixed(2)}:  RMSE=${bestRmse.toFixed(4)}`);
+    console.log(`  improvement:  ${improvement.toFixed(1)}%`);
+    if (Math.abs(bestK - currentK) < 0.1) {
+      console.log(`  → current k=2 is near optimal, no change needed`);
+    } else {
+      console.log(`  → set FTS_SCORE_K=${bestK.toFixed(2)} in .env.local to apply`);
+    }
+  }
+
+  // 阶段分布：multi-stage fallback 救了多少 raw=0
+  const stageCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 0: 0 };
+  let rescuedCount = 0;
+  for (const p of points) {
+    const s = (p.stage ?? 0) as 0 | 1 | 2 | 3 | 4;
+    stageCounts[s] = (stageCounts[s] ?? 0) + 1;
+    if (s >= 2 && p.productionScore > 0) rescuedCount++;
+  }
+
+  console.log(`\n[calibrate-real] ===== MULTI-STAGE FALLBACK IMPACT =====`);
   console.log(`  data points: ${points.length}`);
   console.log(`  score mode:  ${useLlm && points.length > 0 && points[0].source === "real" ? "llm" : "heuristic"}`);
-  console.log(`  current k=2: RMSE=${currentRmse.toFixed(4)}`);
-  console.log(`  best k=${bestK.toFixed(2)}:  RMSE=${bestRmse.toFixed(4)}`);
-  console.log(`  improvement:  ${improvement.toFixed(1)}%`);
-
-  if (Math.abs(bestK - currentK) < 0.1) {
-    console.log(`  → current k=2 is near optimal, no change needed`);
-  } else {
-    console.log(`  → set FTS_SCORE_K=${bestK.toFixed(2)} in .env.local to apply`);
+  console.log(`  stage distribution:`);
+  for (const [stage, count] of Object.entries(stageCounts)) {
+    if (count === 0) continue;
+    const label = stage === "0" ? "no match" : stage === "1" ? "FULLTEXT" : stage === "2" ? "exact/canonical" : stage === "3" ? "canonical" : "substring";
+    console.log(`    stage ${stage.padStart(2)} (${label.padEnd(15)}): ${count}`);
   }
+  console.log(`  rescued by fallback: ${rescuedCount} / ${points.length} (${(rescuedCount / points.length * 100).toFixed(1)}%)`);
+  console.log(`  production RMSE (vs relevance): ${prodRmse.toFixed(4)}`);
 
   // 抽 10 个样本展示
   console.log(`\n[calibrate-real] sample (first 10):`);
-  console.log(`  raw    | relevance | query → label`);
-  console.log(`  -------|-----------|----------------`);
+  console.log(`  raw    | prod   | stage | relevance | query → label`);
+  console.log(`  -------|--------|-------|-----------|----------------`);
   const sample = points.slice(0, 10);
   for (const p of sample) {
-    const q = (p.query ?? "").slice(0, 20);
+    const q = (p.query ?? "").slice(0, 16);
     const l = (p.nodeLabel ?? "").slice(0, 20);
-    console.log(`  ${p.raw.toFixed(2).padStart(5)} | ${p.relevance.toFixed(2).padStart(9)} | ${q} → ${l}`);
+    const stageLabel = p.stage === 1 ? "FT" : p.stage === 2 ? "EX" : p.stage === 4 ? "SUB" : "NO";
+    console.log(
+      `  ${p.raw.toFixed(2).padStart(5)} | ${p.productionScore.toFixed(2).padStart(6)} | ${stageLabel.padStart(5)} | ${p.relevance.toFixed(2).padStart(9)} | ${q} → ${l}`
+    );
   }
 
   await adapter.close?.();

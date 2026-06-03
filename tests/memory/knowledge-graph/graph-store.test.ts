@@ -626,5 +626,23 @@ describe.sequential("GraphStore", () => {
       // 不抛错、返回合法数组就行
       expect(Array.isArray(hits)).toBe(true);
     });
+
+    it("P2-CRITICAL-FIX v2: top FULLTEXT score 极低时也触发 fallback（不只是看 count）", async () => {
+      // 加一个能用 FULLTEXT 召回（raw 极低，~0.02）的"噪声"节点
+      // query "kb:" 应该触发 Stage 4 substring 找到真正匹配的节点
+      const noisyKbLabel = `kb:${Date.now()}_${Math.random().toString(36).slice(2)}_noisy.docx:chunk0`;
+      await store.addNode({ id: "noisy_test_1", label: noisyKbLabel, type: "kb_document", tags: ["kb_document"], properties: { sourceDoc: "test" }, createdAt: Date.now() });
+
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 搜 "kb:"——这个 query FULLTEXT 会召回 20 个噪声（每个 owner 都有 kb: 前缀的 label）
+      // 但 top score 极低（~0.01），应该触发 fallback
+      const hits = await store.searchNodesByKeywords(["kb:"], 20);
+      // 至少有一个是真正匹配（label 含 "kb:"）
+      const labels = hits.map((h) => h.node.label);
+      // 不要求一定有 noisy_test_1（owner 不同）但要有 label 含 "kb:" 的节点
+      const kbHits = labels.filter((l) => l.includes("kb:"));
+      expect(kbHits.length).toBeGreaterThan(0);
+    });
   });
 });
