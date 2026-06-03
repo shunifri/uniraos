@@ -455,7 +455,7 @@ async function main() {
     if (s >= 2 && p.productionScore > 0) rescuedCount++;
   }
 
-  console.log(`\n[calibrate-real] ===== MULTI-STAGE FALLBACK IMPACT =====`);
+  console.log(`\n[calibrate-real] ===== RESULTS =====`);
   console.log(`  data points: ${points.length}`);
   console.log(`  score mode:  ${useLlm && points.length > 0 && points[0].source === "real" ? "llm" : "heuristic"}`);
   console.log(`  stage distribution:`);

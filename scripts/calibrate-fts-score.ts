@@ -179,7 +179,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("[calibrate] failed:", err);
-  process.exit(1);
-});
+// 只在直接调用时跑 main()（被 import 时不跑）
+// ESM 模式：import.meta.url === pathToFileURL(process.argv[1]).href
+import { pathToFileURL } from "url";
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[calibrate] failed:", err);
+    process.exit(1);
+  });
+}
