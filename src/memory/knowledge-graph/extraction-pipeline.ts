@@ -46,6 +46,18 @@ export interface GraphStoreLike {
   /** P2-12：getNeighbors 改为必选，BFS 扩展邻居依赖 */
   getNeighbors(nodeId: string): Promise<GraphNode[]>;
   getDegree?(nodeId: string): Promise<number>;
+  /**
+   * P2-CRITICAL-FIX：MySQL recursive CTE 一次查询拉完 BFS 子图（替代 N+1 模式）
+   * 可选——MySQL 8.0+ 必有；Neo4j 暂未实现
+   */
+  extractSubgraphCTE?(
+    seedNodeIds: string[],
+    maxDepth: number,
+    maxNodes: number
+  ): Promise<{
+    nodeIds: string[];
+    edges: Array<{ id: string; source: string; target: string; type: string; label: string }>;
+  }>;
   updateEdge?(id: string, updates: {
     weightDelta?: number;
     feedbackScoreDelta?: number;

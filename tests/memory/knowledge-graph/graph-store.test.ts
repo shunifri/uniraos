@@ -444,6 +444,115 @@ describe.sequential("GraphStore", () => {
   });
 
   // ============================================================
+  // P2-12: extractSubgraphCTE 用 MySQL recursive CTE 一次拉 BFS
+  // 替代 N+1，验证返回值与 N+1 legacy 路径一致
+  // ============================================================
+  describe.sequential("extractSubgraphCTE (P2-12 MySQL recursive CTE)", () => {
+    const CTE_OWNER = "user_cte_test";
+
+    beforeAll(async () => {
+      const adapter = getMySQLAdapter();
+      try {
+        await adapter.execute(
+          `INSERT INTO users (id, username, password_hash, status) VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE username = VALUES(username)`,
+          [CTE_OWNER, "user_cte_test", "test_hash", 1]
+        );
+      } catch (err: any) {
+        if (err.code !== "ER_NO_SUCH_TABLE") throw err;
+      }
+    });
+
+    beforeEach(async () => {
+      const store = new GraphStore(CTE_OWNER);
+      await store.clearGraph();
+    });
+
+    it("空 seed 返回空 subgraph", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const result = await store.extractSubgraphCTE([], 2, 50);
+      expect(result.nodeIds).toEqual([]);
+      expect(result.edges).toEqual([]);
+    });
+
+    it("单 seed 无边：只返回 seed 自身", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const seed = await store.addNode({ label: "seed", type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      const result = await store.extractSubgraphCTE([seed.id], 2, 50);
+      expect(result.nodeIds.length).toBe(1);
+      expect(result.nodeIds[0]).toBe(seed.id);
+    });
+
+    it("链 A→B→C: 从 A seed, depth=2 应返回 [A,B,C]", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const a = (await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const b = (await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const c = (await store.addNode({ label: "C", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      await store.addEdge(a, b, "REL", "to");
+      await store.addEdge(b, c, "REL", "to");
+
+      const result = await store.extractSubgraphCTE([a], 2, 50);
+      const ids = [...result.nodeIds].sort();
+      expect(ids).toEqual([a, b, c].sort());
+    });
+
+    it("maxDepth=1 不应穿透 2 层", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const a = (await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const b = (await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const c = (await store.addNode({ label: "C", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      await store.addEdge(a, b, "REL", "to");
+      await store.addEdge(b, c, "REL", "to");
+
+      const result = await store.extractSubgraphCTE([a], 1, 50);
+      const ids = [...result.nodeIds].sort();
+      expect(ids).toEqual([a, b].sort()); // C 不可达
+    });
+
+    it("maxNodes 截断：链 10 节点 + maxNodes=3 只返回 3 个", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const ids: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const node = await store.addNode({ label: `N${i}`, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+        ids.push(node.id);
+      }
+      for (let i = 0; i < 9; i++) {
+        await store.addEdge(ids[i], ids[i + 1], "REL", "to");
+      }
+      const result = await store.extractSubgraphCTE([ids[0]], 10, 3);
+      expect(result.nodeIds.length).toBe(3);
+    });
+
+    it("多 seed：返回所有 seed 及其连通节点（去重）", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const a = (await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const b = (await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const c = (await store.addNode({ label: "C", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      await store.addEdge(a, c, "REL", "to");
+      await store.addEdge(b, c, "REL", "to");
+
+      const result = await store.extractSubgraphCTE([a, b], 2, 50);
+      const idSet = new Set(result.nodeIds);
+      expect(idSet.has(a)).toBe(true);
+      expect(idSet.has(b)).toBe(true);
+      expect(idSet.has(c)).toBe(true);
+      expect(result.nodeIds.length).toBe(3); // 不重复
+    });
+
+    it("返回的 edges 包含子图内的边", async () => {
+      const store = new GraphStore(CTE_OWNER);
+      const a = (await store.addNode({ label: "A", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      const b = (await store.addNode({ label: "B", type: "entity", tags: [], properties: {}, createdAt: Date.now() })).id;
+      await store.addEdge(a, b, "REL", "to");
+
+      const result = await store.extractSubgraphCTE([a], 2, 50);
+      expect(result.edges.length).toBe(1);
+      expect(result.edges[0].source).toBe(a);
+      expect(result.edges[0].target).toBe(b);
+    });
+  });
+
+  // ============================================================
   // P2-7: normalizeFtsScore 评分校准（tanh 取代 /5 魔法值）
   // 验证 S 曲线归一化行为：噪声压低、真实命中落中间、尾部不爆
   // ============================================================

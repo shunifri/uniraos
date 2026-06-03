@@ -127,7 +127,12 @@ function isAllowedKbNode(node: GraphNode, allowedDocIds?: string[]): boolean {
   });
 }
 
-/** BFS subgraph extraction from seed nodes */
+/** BFS subgraph extraction from seed nodes
+ *
+ * P2-CRITICAL-FIX（v1 P0-2 部分修）：
+ *   优先用 `extractSubgraphCTE` 一次 SQL 拉完（MySQL 8.0+ WITH RECURSIVE）
+ *   fallback 旧 N+1 模式（Neo4j / 旧 MySQL 没 CTE 的场景）
+ */
 export async function extractSubgraph(store: GraphStoreLike, query: string, options?: BFSOptions): Promise<SubgraphResult> {
   const maxSeeds = options?.maxSeeds ?? 3;
   const maxDepth = options?.maxDepth ?? 3;
@@ -150,7 +155,54 @@ export async function extractSubgraph(store: GraphStoreLike, query: string, opti
   }
   if (seeds.length === 0) return { nodes: [], edges: [], seedNodes: [] };
 
-  // 2. BFS from seeds
+  // 2. 优先用 MySQL recursive CTE 一次拉完（P2-CRITICAL-FIX）
+  if (store.extractSubgraphCTE) {
+    try {
+      const cteResult = await store.extractSubgraphCTE(
+        seeds.map((s) => s.id),
+        maxDepth,
+        maxNodes
+      );
+      // 拉这些节点的对象（CTE 只返回 id + edges，需要 getNode 拿完整对象）
+      const nodeMap = new Map<string, GraphNode>();
+      for (const id of cteResult.nodeIds) {
+        const n = await store.getNode(id);
+        if (n) nodeMap.set(id, n);
+      }
+
+      // 应用 ACL 过滤
+      const resultNodes: GraphNode[] = [];
+      for (const id of cteResult.nodeIds) {
+        const n = nodeMap.get(id);
+        if (!n) continue;
+        if (!isAllowedKbNode(n, allowedDocIds)) continue;
+        resultNodes.push(n);
+      }
+
+      // 边：CTE 给了 id + source + target + type + label，但需要完整 GraphEdge
+      //   简化：返回只有 {id, source, target, type, label} 字段——caller (recall.ts) 只用这些
+      const resultEdges: GraphEdge[] = cteResult.edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: e.type as GraphEdge["type"],
+        label: e.label,
+        weight: 1.0,
+        createdAt: Date.now(),
+      }));
+
+      return {
+        nodes: resultNodes,
+        edges: resultEdges,
+        seedNodes: seeds.map((s) => s.id),
+      };
+    } catch (err) {
+      console.warn("[extractSubgraph] CTE path failed, falling back to N+1:", err);
+      // fall through to legacy
+    }
+  }
+
+  // 3. Legacy: N+1 BFS（fallback 给 Neo4j / 旧 MySQL）
   const visited = new Set<string>();
   const queue: Array<{ nodeId: string; depth: number }> = [];
   for (const seed of seeds) {
@@ -181,7 +233,7 @@ export async function extractSubgraph(store: GraphStoreLike, query: string, opti
     }
   }
 
-  // 3. Collect edges between visited nodes
+  // 4. Collect edges between visited nodes
   const visitedSet = new Set(resultNodes.map(n => n.id));
   const resultEdges: GraphEdge[] = [];
   const seenEdges = new Set<string>();

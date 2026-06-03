@@ -1030,6 +1030,89 @@ export class GraphStore {
     return result[0]?.count ?? 0;
   }
 
+  /**
+   * P2-CRITICAL-FIX（v1 P0-2 部分修）：MySQL recursive CTE 一次查询拉完 BFS 子图
+   *
+   * 之前 `bfs-extractor.ts:extractSubgraph` 是 N+1 模式——每个 visited 节点单独
+   *   `getNode` + `getNeighbors` SQL。50 节点 BFS ≈ 100 SQL × 5ms = 500ms 延迟。
+   *
+   * 此方法用 MySQL 8.0 `WITH RECURSIVE` 一次 SQL 拉完所有 visited 节点 + 中间边：
+   *   - seedNodeIds: 起点节点（必需）
+   *   - maxDepth: BFS 深度限制
+   *   - maxNodes: 返回节点数上限
+   *   - 包含节点 + 它们之间 + 节点到 seed 的边
+   *
+   * MySQL 8.0+ required（v1 review 的前提——dev/prod 都是 8.0+）。
+   *
+   * 备选（Neo4j）：用 apoc.path.subgraphAll() — Neo4j 路径，commit 还没做
+   */
+  async extractSubgraphCTE(
+    seedNodeIds: string[],
+    maxDepth: number = 3,
+    maxNodes: number = 50
+  ): Promise<{ nodeIds: string[]; edges: Array<{ id: string; source: string; target: string; type: string; label: string }> }> {
+    if (seedNodeIds.length === 0) return { nodeIds: [], edges: [] };
+    // 防止 IN 空集（虽然理论上不可能，但保险起见）
+    const placeholders = seedNodeIds.map(() => "?").join(",");
+    const seedParams = seedNodeIds;
+
+    // MySQL recursive CTE
+    // 注意：MySQL 8.0 限制——recursive 部分不能用 SELECT DISTINCT / ORDER BY / LIMIT
+    // 所以纯 BFS 在 CTE 内部跑，distinct + limit 在外层 SELECT
+    // 关键：BFS 是**无向的**——既从 source→target 也从 target→source（对应 legacy getNeighbors 行为）
+    const cteQuery = `
+      WITH RECURSIVE bfs (node_id, depth) AS (
+        SELECT id, 0 FROM kb_graph_nodes
+        WHERE owner_id = ? AND id IN (${placeholders})
+        UNION ALL
+        SELECT CASE WHEN e.source_id = b.node_id THEN e.target_id ELSE e.source_id END,
+               b.depth + 1
+        FROM bfs b
+        JOIN kb_graph_edges e ON (e.source_id = b.node_id OR e.target_id = b.node_id)
+        WHERE b.depth < ? AND e.owner_id = ?
+      )
+      SELECT node_id, MIN(depth) AS min_depth
+      FROM bfs
+      GROUP BY node_id
+      ORDER BY min_depth
+      LIMIT ${maxNodes}
+    `;
+    // 边界：单次 query 总参数数 = 1 + seedParams.length + 2
+    const nodeRows = await this.adapter.query<{ node_id: string }>(
+      cteQuery,
+      [this.owner, ...seedParams, maxDepth, this.owner]
+    );
+    const nodeIds = Array.from(new Set(nodeRows.map((r) => r.node_id)));
+
+    // 拉这些节点之间的边
+    let edges: Array<{ id: string; source: string; target: string; type: string; label: string }> = [];
+    if (nodeIds.length > 0) {
+      const edgePlaceholders = nodeIds.map(() => "?").join(",");
+      const edgeRows = await this.adapter.query<{
+        id: string;
+        source_id: string;
+        target_id: string;
+        type: string;
+        label: string;
+      }>(
+        `SELECT id, source_id, target_id, type, label
+         FROM kb_graph_edges
+         WHERE owner_id = ? AND source_id IN (${edgePlaceholders}) AND target_id IN (${edgePlaceholders})
+         LIMIT ${maxNodes * 2}`,
+        [this.owner, ...nodeIds, ...nodeIds]
+      );
+      edges = edgeRows.map((r) => ({
+        id: r.id,
+        source: r.source_id,
+        target: r.target_id,
+        type: r.type,
+        label: r.label,
+      }));
+    }
+
+    return { nodeIds, edges };
+  }
+
   // Getter versions for backward compatibility (returns Promise)
   get nodeCount(): Promise<number> {
     return this.countNodes();
