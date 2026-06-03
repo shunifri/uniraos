@@ -1174,6 +1174,36 @@ function runMigrations(db: Database.Database): void {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_tasks_node ON workflow_tasks(instance_id, node_id, status)`);
       db.exec(`CREATE INDEX IF NOT EXISTS idx_form_instances_def ON form_instances(definition_id)`);
     },
+    // v23: KG v2 字段扩展 — 节点 version/importance，边 properties JSON
+    () => {
+      try { db.exec(`ALTER TABLE kb_graph_nodes ADD COLUMN version INTEGER NOT NULL DEFAULT 1`); } catch (_) { }
+      try { db.exec(`ALTER TABLE kb_graph_nodes ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch (_) { }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_kb_graph_nodes_importance ON kb_graph_nodes(owner_id, importance)`);
+      try { db.exec(`ALTER TABLE kb_graph_edges ADD COLUMN properties TEXT DEFAULT NULL`); } catch (_) { }
+    },
+    // v24: KG v2 阶段 4 — 反馈事件表
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS kg_feedback_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          query_id TEXT NOT NULL,
+          query TEXT NOT NULL,
+          query_type TEXT,
+          accepted INTEGER NOT NULL DEFAULT 0,
+          rating INTEGER,
+          rejected_entity_ids TEXT,
+          accepted_chunk_keys TEXT,
+          dwell_time_ms INTEGER,
+          follow_up_query TEXT,
+          recall_snapshot TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_feedback_user_created ON kg_feedback_events(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_kg_feedback_query_type ON kg_feedback_events(query_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_kg_feedback_query_id ON kg_feedback_events(query_id);
+      `);
+    },
   ];
 
   // 执行未应用的迁移

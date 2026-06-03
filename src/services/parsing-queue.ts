@@ -143,11 +143,6 @@ interface StoredSegment {
   searchableText?: string;
 }
 
-/** 知识图谱边可能携带 relation 字段（与 label 同义） */
-interface EdgeWithRelation {
-  relation?: string;
-}
-
 /** 带 _skipQueue 的 ingest 选项 */
 interface IngestWithSkipQueue {
   source: string;
@@ -593,46 +588,25 @@ export class ParsingQueue extends EventEmitter {
             }
           }
 
-          // 4. LLM 关系抽取（使用数据库中的 parsed_content）
+          // 4. LLM 关系抽取 — KG v2 阶段 2：入队异步执行
           const docContent = await kb.getDocumentContent(task.docId);
-          if (llmProvider && docContent && docContent.length > 100) {
-            const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
-            const relations = await extractRelationships(docContent.slice(0, 2000), llmProvider);
-            console.log(`[ParsingQueue] LLM extracted ${relations.length} relations`);
-            const store = await graphManager.getStore();
-            let createdCount = 0;
-            for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
-              let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
-              if (!sourceNode) {
-                sourceNode = await store.addNode({
-                  id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                  label: rel.sourceLabel,
-                  type: "entity",
-                  tags: task.tags,
-                  properties: { sourceDoc: task.docName },
-                  createdAt: Date.now(),
-                });
-                createdCount++;
-              }
-              let targetNode = await store.findNodeByLabel(rel.targetLabel);
-              if (!targetNode) {
-                targetNode = await store.addNode({
-                  id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                  label: rel.targetLabel,
-                  type: "entity",
-                  tags: task.tags,
-                  properties: { sourceDoc: task.docName },
-                  createdAt: Date.now(),
-                });
-                createdCount++;
-              }
-              // 避免重复边
-              const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-              if (existingEdges.every((e: EdgeWithRelation) => e.relation !== rel.relation)) {
-                await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
-              }
-            }
-            console.log(`[ParsingQueue] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes from "${task.docName}"`);
+          if (llmProvider && docContent && docContent.length > 100 && this.sessionManager) {
+            const { kgExtractionQueue } = await import("../services/kg-extraction-queue.js");
+            const taskId = kgExtractionQueue.enqueue(
+              {
+                docId: task.docId,
+                docName: task.docName,
+                userId: task.owner,
+                content: docContent,
+                chunkSize: 3000,
+                overlap: 500,
+                maxRelationsPerChunk: 30,
+                createDocAnchor: false, // ParsingQueue Document Mind 路径不创建 doc anchor
+                callerTag: "ParsingQueue",
+              },
+              this.sessionManager
+            );
+            console.log(`[ParsingQueue] KG 抽取任务已入队: ${taskId}`);
           }
           console.log(`[ParsingQueue] Knowledge graph sync completed for ${task.docId}`);
         }
@@ -1260,46 +1234,25 @@ export class ParsingQueue extends EventEmitter {
               type: "kb_document",
             });
 
-            // 2. LLM 关系抽取（使用数据库中的 parsed_content）
+            // 2. LLM 关系抽取 — KG v2 阶段 2：入队异步执行
             const savedContent = await kb.getDocumentContent(task.docId);
-            if (llmProvider && savedContent && savedContent.length > 100) {
-              const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
-              const relations = await extractRelationships(savedContent.slice(0, 2000), llmProvider);
-              console.log(`[ParsingQueue] LLM extracted ${relations.length} relations`);
-              const store = await graphManager.getStore();
-              let createdCount = 0;
-              for (const rel of relations.slice(0, 30)) {  // 最多 30 个关系
-                let sourceNode = await store.findNodeByLabel(rel.sourceLabel);
-                if (!sourceNode) {
-                  sourceNode = await store.addNode({
-                    id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                    label: rel.sourceLabel,
-                    type: "entity",
-                    tags: task.tags,
-                    properties: { sourceDoc: task.docName },
-                    createdAt: Date.now(),
-                  });
-                  createdCount++;
-                }
-                let targetNode = await store.findNodeByLabel(rel.targetLabel);
-                if (!targetNode) {
-                  targetNode = await store.addNode({
-                    id: `extracted_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                    label: rel.targetLabel,
-                    type: "entity",
-                    tags: task.tags,
-                    properties: { sourceDoc: task.docName },
-                    createdAt: Date.now(),
-                  });
-                  createdCount++;
-                }
-                // 避免重复边
-                const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-                if (existingEdges.every((e: EdgeWithRelation) => e.relation !== rel.relation)) {
-                  await store.addEdge(sourceNode.id, targetNode.id, "LLM_EXTRACTED", rel.relation);
-                }
-              }
-              console.log(`[ParsingQueue] LLM relation extraction done: extracted ${relations.length} relations, created ${createdCount} nodes from "${task.docName}"`);
+            if (llmProvider && savedContent && savedContent.length > 100 && this.sessionManager) {
+              const { kgExtractionQueue } = await import("../services/kg-extraction-queue.js");
+              const taskId = kgExtractionQueue.enqueue(
+                {
+                  docId: task.docId,
+                  docName: task.docName,
+                  userId: task.owner,
+                  content: savedContent,
+                  chunkSize: 3000,
+                  overlap: 500,
+                  maxRelationsPerChunk: 30,
+                  createDocAnchor: false, // ParsingQueue 本地解析路径不创建 doc anchor
+                  callerTag: "ParsingQueueLocal",
+                },
+                this.sessionManager
+              );
+              console.log(`[ParsingQueue] KG 抽取任务已入队: ${taskId}`);
             }
             console.log(`[ParsingQueue] Knowledge graph sync completed for ${task.docId} (local parsing)`);
           }

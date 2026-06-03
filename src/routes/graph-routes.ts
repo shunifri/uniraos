@@ -2,6 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "./middleware.js";
 import { permissions } from "../permissions/index.js";
 import { identifyGodNodes } from "../memory/knowledge-graph/scoring.js";
+import { applyFeedback } from "../memory/knowledge-graph/feedback-pipeline.js";
 import type { RouteDependencies } from "./types.js";
 
 export function createGraphRoutes(deps: RouteDependencies): Router {
@@ -98,6 +99,52 @@ export function createGraphRoutes(deps: RouteDependencies): Router {
       id, size: nodes.length, nodes: nodes.slice(0, 20),
     }));
     res.json({ communities: commList, stats: result.stats });
+  }));
+
+  // GET /api/graph/health — KG v2 阶段 4 健康度指标
+  router.get("/graph/health", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_READ), asyncHandler(async (req, res) => {
+    const userId = (req as any).user?.id || "default";
+    const { getGraphHealth, checkAcceptanceAlerts } = await import(
+      "../memory/knowledge-graph/health-metrics.js"
+    );
+    const health = await getGraphHealth(userId);
+    const alerts = await checkAcceptanceAlerts(userId);
+    res.json({ health, alerts });
+  }));
+
+  // ===== 阶段 4：反馈环路 =====
+  // POST /api/graph/feedback — 上报用户对召回结果的反馈
+  router.post("/graph/feedback", pm.requireAuth, pm.requirePermission(permissions.constants.API.MEMORY_WRITE), asyncHandler(async (req, res) => {
+    const gm = getGraphManager(req);
+    if (!gm) { res.status(400).json({ error: "Graph not available" }); return; }
+
+    const { queryId, query, queryType, accepted, rating, rejectedEntityIds, acceptedChunkKeys, dwellTimeMs, followUpQuery, recallSnapshot } = req.body ?? {};
+
+    if (!queryId || !query) {
+      res.status(400).json({ error: "queryId and query are required" });
+      return;
+    }
+
+    const userId = (req as any).user?.id || "default";
+    const result = await applyFeedback(
+      {
+        userId,
+        queryId,
+        query,
+        queryType,
+        accepted: !!accepted,
+        rating,
+        rejectedEntityIds,
+        acceptedChunkKeys,
+        dwellTimeMs,
+        followUpQuery,
+        recallSnapshot: recallSnapshot ? JSON.stringify(recallSnapshot) : undefined,
+        timestamp: Date.now(),
+      },
+      (await gm.getStore()) as any
+    );
+
+    res.json({ success: true, ...result });
   }));
 
   return router;

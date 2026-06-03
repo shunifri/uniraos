@@ -169,7 +169,7 @@ export function createGraphSkills(sessionManager: UserSessionManager): SkillDefi
          const gm = getGraphManager(owner);
          if (!gm) return { success: false, error: new Error("知识图谱未初始化") };
          const store = await gm.getStore();
-         const result = store.deduplicateNodes();
+         const result = await store.deduplicateNodes();
          return {
            success: true,
            data: {

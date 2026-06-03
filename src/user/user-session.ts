@@ -55,6 +55,11 @@ export class UserSessionManager {
     this.llmProvider = provider;
   }
 
+  /** 获取当前 LLM provider（KG v2 阶段 2：kg 抽取队列需要） */
+  getLLMProvider(): LLMProvider | null {
+    return this.llmProvider;
+  }
+
   /** 获取当前记忆后端类型 */
   getMemoryBackend(): string {
     return "enhanced";
@@ -75,7 +80,8 @@ export class UserSessionManager {
       agentLoop: null,
       lastActiveAt: Date.now(),
       // 根据环境变量配置创建对应的知识图谱后端
-      graphManager: new KnowledgeGraphManager(userId, this.llmProvider ?? undefined, process.env.GRAPH_STORE_BACKEND || "neo4j"),
+      // 默认 mysql：与 KnowledgeGraphManager 构造函数默认值一致，避免启动时不必要的 Neo4j 连接探测
+      graphManager: new KnowledgeGraphManager(userId, this.llmProvider ?? undefined, process.env.GRAPH_STORE_BACKEND || "mysql"),
     };
 
     this.sessions.set(userId, session);

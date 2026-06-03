@@ -12,6 +12,12 @@ interface Migration {
   name: string;
   up: string;
   down: string;
+  /**
+   * P2-8 修复（v3 review）：可选 migration。
+   * 当 true 时，迁移内部单条语句失败不会 halt 整个 runner——只 log warning 然后继续。
+   * 用于依赖外部 MySQL 特性（ngram parser 插件等）的可选优化。
+   */
+  optional?: boolean;
 }
 
 export const MIGRATIONS: Migration[] = [
@@ -1058,6 +1064,86 @@ export const MIGRATIONS: Migration[] = [
       DROP INDEX idx_workflow_tasks_node ON workflow_tasks;
       DROP INDEX idx_form_instances_def ON form_instances;
     `
+  },
+  {
+    version: 18,
+    name: 'kg_v2_field_extensions',
+    up: `
+      -- 节点：新增 version / importance 列（高频查询/排序字段）
+      -- 其他扩展字段（sourceChunkIds / canonicalForm / supersedes / firstSeen / lastUpdated）走 properties JSON
+      ALTER TABLE kb_graph_nodes
+        ADD COLUMN version INT NOT NULL DEFAULT 1 COMMENT '节点版本号，每次 update 自增' AFTER community_id,
+        ADD COLUMN importance DECIMAL(3,2) NOT NULL DEFAULT 0.50 COMMENT '节点重要性评分（0-1），反馈环路调整' AFTER version,
+        ADD INDEX idx_kb_graph_nodes_importance (owner_id, importance) COMMENT '重要性排序索引';
+
+      -- 边：新增 properties JSON 列，承载 sourceChunkId / evidence / feedbackScore / version / validFrom / validTo
+      ALTER TABLE kb_graph_edges
+        ADD COLUMN properties JSON DEFAULT NULL COMMENT '边扩展属性（来源 chunk、证据、反馈评分等）' AFTER weight;
+    `,
+    down: `
+      ALTER TABLE kb_graph_nodes DROP INDEX idx_kb_graph_nodes_importance;
+      ALTER TABLE kb_graph_nodes DROP COLUMN importance;
+      ALTER TABLE kb_graph_nodes DROP COLUMN version;
+      ALTER TABLE kb_graph_edges DROP COLUMN properties;
+    `
+  },
+  {
+    version: 19,
+    name: 'kg_feedback_events',
+    up: `
+      CREATE TABLE IF NOT EXISTS kg_feedback_events (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '反馈ID',
+        user_id VARCHAR(64) NOT NULL COMMENT '用户ID',
+        query_id VARCHAR(64) NOT NULL COMMENT '查询会话ID（同一 queryId 关联同一次召回）',
+        query TEXT NOT NULL COMMENT '原始 query',
+        query_type VARCHAR(20) DEFAULT NULL COMMENT '查询类型：factual/relational/discovery/hybrid',
+        accepted TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否采纳',
+        rating TINYINT DEFAULT NULL COMMENT '1-5 评分',
+        rejected_entity_ids JSON DEFAULT NULL COMMENT '点踩的图谱节点 ID 列表',
+        accepted_chunk_keys JSON DEFAULT NULL COMMENT '采纳的 chunk 列表（docId:chunkIndex）',
+        dwell_time_ms BIGINT DEFAULT NULL COMMENT '停留时长（毫秒）',
+        follow_up_query TEXT DEFAULT NULL COMMENT '追问',
+        recall_snapshot JSON DEFAULT NULL COMMENT '检索快照（用于反哺）',
+        created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
+        INDEX idx_kg_feedback_user_created (user_id, created_at) COMMENT '用户+时间索引',
+        INDEX idx_kg_feedback_query_type (query_type, created_at) COMMENT '类型索引',
+        INDEX idx_kg_feedback_query_id (query_id) COMMENT '查询会话索引',
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='KG 反馈事件表';
+    `,
+    down: `
+      DROP TABLE IF EXISTS kg_feedback_events;
+    `
+  },
+  {
+    // P1-4 修复（v3 review）：给 kb_graph_nodes.label 加 FULLTEXT 索引，
+    // 让 MySQL GraphStore 能实现 searchNodesByKeywords，和 Neo4j fulltext 路径对齐。
+    // 默认 FULLTEXT（ft_min_word_len=4）始终可用；ngram parser 在 v21 单独处理。
+    version: 20,
+    name: 'kg_graph_nodes_fulltext_label',
+    up: `
+      ALTER TABLE kb_graph_nodes
+        ADD FULLTEXT INDEX ft_kb_graph_nodes_label (label);
+    `,
+    down: `
+      ALTER TABLE kb_graph_nodes DROP INDEX ft_kb_graph_nodes_label;
+    `
+  },
+  {
+    // P2-8 修复（v3 review）：ngram parser FULLTEXT 索引——optional。
+    // ngram 插件（中文 2-gram 切分）不是所有 MySQL 镜像都自带；缺失时跳过这步也能用。
+    // runtime 代码（graph-store.searchNodesByKeywords）会先探一下 ngram 索引是否存在，
+    // 存在就用 ngram 索引查、否则降级到 v20 的默认 FULLTEXT 索引。
+    version: 21,
+    name: 'kg_graph_nodes_fulltext_label_ngram',
+    optional: true,
+    up: `
+      ALTER TABLE kb_graph_nodes
+        ADD FULLTEXT INDEX ft_kb_graph_nodes_label_ngram (label) WITH PARSER ngram;
+    `,
+    down: `
+      ALTER TABLE kb_graph_nodes DROP INDEX ft_kb_graph_nodes_label_ngram;
+    `
   }
 ];
 
@@ -1148,6 +1234,21 @@ export async function migrateToVersion(targetVersion: number): Promise<void> {
             [migration.version, migration.name]
           );
         } catch (error) {
+          // P2-8 修复：optional migration 失败时降级——log warning 但不 halt
+          if (migration.optional === true) {
+            log('warn', 'mysql_migration_optional_failed', {
+              version: migration.version,
+              name: migration.name,
+              error: error instanceof Error ? (error as Error).message : String(error),
+            });
+            try {
+              await adapter.execute(
+                'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+                [migration.version, migration.name]
+              );
+            } catch { /* ignore */ }
+            continue;
+          }
           log('error', 'mysql_database_migration_failed', {
             version: migration.version,
             name: migration.name,
@@ -1184,9 +1285,10 @@ export async function initMySQLDatabase(): Promise<void> {
     for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
       try {
-        log('info', 'mysql_database_migration_start', { 
-          version: migration.version, 
-          name: migration.name 
+        log('info', 'mysql_database_migration_start', {
+          version: migration.version,
+          name: migration.name,
+          optional: migration.optional === true,
         });
 
         // Execute migration inside a transaction for atomic rollback on DML.
@@ -1221,7 +1323,7 @@ export async function initMySQLDatabase(): Promise<void> {
                 continue;
               }
               // Log the actual error for debugging
-              log('error', 'mysql_migration_statement_failed', { 
+              log('error', 'mysql_migration_statement_failed', {
                 statement: statement.substring(0, 200),
                 error: err.code || String(error)
               });
@@ -1236,13 +1338,34 @@ export async function initMySQLDatabase(): Promise<void> {
           [migration.version, migration.name]
         );
 
-        log('info', 'mysql_database_migration_complete', { 
-          version: migration.version, 
-          name: migration.name 
+        log('info', 'mysql_database_migration_complete', {
+          version: migration.version,
+          name: migration.name
         });
       } catch (error) {
-        log('error', 'mysql_database_migration_failed', { 
-          version: migration.version, 
+        // P2-8 修复：optional migration 失败时降级——log warning 但不 halt 整个 runner
+        // （依赖外部 MySQL 特性如 ngram parser 插件——缺失时跳过这步也能用）
+        if (migration.optional === true) {
+          const errMsg = error instanceof Error ? (error as Error).message : String(error);
+          log('warn', 'mysql_migration_optional_failed', {
+            version: migration.version,
+            name: migration.name,
+            error: errMsg,
+          });
+          // 仍然把 version 标记为 applied（migration 已被"尝试"过）
+          // 之后 schema_version 看到 v21 存在，就不会再重试
+          try {
+            await adapter.execute(
+              'INSERT INTO schema_version (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), applied_at = CURRENT_TIMESTAMP',
+              [migration.version, migration.name]
+            );
+          } catch {
+            // 写 schema_version 失败也无所谓——不是阻塞性的
+          }
+          continue;
+        }
+        log('error', 'mysql_database_migration_failed', {
+          version: migration.version,
           name: migration.name,
           error: error instanceof Error ? (error as Error).message : String(error)
         });

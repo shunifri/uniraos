@@ -2504,129 +2504,25 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
                   }
                 }
 
-                // 5. LLM 关系抽取集成 - 从文档内容抽取实体关系并添加到知识图谱（优化版）
-                if (llmProvider && contentForExtraction && contentForExtraction.length > 100) {
-                  console.log(`[kb_ingest] 开始 LLM 关系抽取，内容长度: ${contentForExtraction.length}`);
-                  const { extractRelationships } = await import("../memory/knowledge-graph/relationship-extractor.js");
-                  const { KnowledgeGraphManager } = await import("../memory/knowledge-graph/manager.js");
-
-                  // 优化：分批处理长文档，避免单次处理过长
-                  const chunkSize = 3000; // 每批次处理 3000 字符
-                  const overlap = 500; // 重叠 500 字符保证上下文连贯性
-                  const totalChunks = Math.ceil(contentForExtraction.length / (chunkSize - overlap));
-                  console.log(`[kb_ingest] 文档分段处理: ${totalChunks} 段`);
-
-                  const store = graphManager.getStore();
-                  let totalRelations = 0;
-                  let createdCount = 0;
-
-                  // 节点跟踪 - 使用归一化标签避免重复创建
-                  const nodeCache = new Map<string, { id: string }>();
-
-                  // 先尝试查找或创建文档节点作为锚点
-                  const docAnchorId = `kb_doc_${result.docId}`;
-                  let docAnchorNode = await store.findNodeByLabel(docName);
-                  if (!docAnchorNode) {
-                    docAnchorNode = await store.addNode({
-                      id: docAnchorId,
-                      label: docName,
-                      type: "kb_document",
-                      tags: ['kb_document', (docName!.split('.').pop() || 'doc'), ...(Array.isArray(params.tags) ? params.tags : [])].filter(Boolean),
-                      properties: { sourceDoc: docName, docId: result.docId },
-                      createdAt: Date.now(),
-                    });
-                    nodeCache.set(docName, docAnchorNode);
-                  } else {
-                    nodeCache.set(docName, docAnchorNode);
-                  }
-
-                  // 分批处理文档内容
-                  for (let i = 0; i < totalChunks; i++) {
-                    const startPos = i * (chunkSize - overlap);
-                    const endPos = Math.min(startPos + chunkSize, contentForExtraction.length);
-                    const chunkText = contentForExtraction.slice(startPos, endPos);
-
-                    console.log(`[kb_ingest] 处理第 ${i + 1}/${totalChunks} 段 (${startPos}-${endPos})`);
-
-                    // 抽取关系
-                    const relations = await extractRelationships(chunkText, llmProvider as LLMProvider);
-                    console.log(`[kb_ingest] 第 ${i + 1} 段抽取到 ${relations.length} 个关系`);
-                    totalRelations += relations.length;
-
-                    for (const rel of relations.slice(0, 20)) {  // 每段最多 20 个关系
-                      // 归一化实体标签
-                      const normalizedSource = normalizeEntityLabel(rel.sourceLabel);
-                      const normalizedTarget = normalizeEntityLabel(rel.targetLabel);
-
-                      // 获取或创建源节点
-                      let sourceNode = nodeCache.get(normalizedSource);
-                      if (!sourceNode) {
-                        sourceNode = await store.findNodeByLabel(normalizedSource);
-                        if (!sourceNode) {
-                          sourceNode = await store.addNode({
-                            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                            label: normalizedSource,
-                            type: inferEntityType(normalizedSource, rel.relation),
-                            tags: Array.isArray(params.tags) ? params.tags : [],
-                            properties: { sourceDoc: docName, chunkIndex: i },
-                            createdAt: Date.now(),
-                          });
-                          createdCount++;
-                        }
-                        nodeCache.set(normalizedSource, sourceNode);
-                      }
-
-                      // 获取或创建目标节点
-                      let targetNode = nodeCache.get(normalizedTarget);
-                      if (!targetNode) {
-                        targetNode = await store.findNodeByLabel(normalizedTarget);
-                        if (!targetNode) {
-                          targetNode = await store.addNode({
-                            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                            label: normalizedTarget,
-                            type: inferEntityType(normalizedTarget, rel.relation),
-                            tags: Array.isArray(params.tags) ? params.tags : [],
-                            properties: { sourceDoc: docName, chunkIndex: i },
-                            createdAt: Date.now(),
-                          });
-                          createdCount++;
-                        }
-                        nodeCache.set(normalizedTarget, targetNode);
-                      }
-
-                      // 避免重复边 - 检查关系类型和置信度
-                      const existingEdges = await store.getEdgesBetween(sourceNode.id, targetNode.id);
-                      const hasEdge = existingEdges.some(e =>
-                        e.relation === rel.relation ||
-                        e.relation === normalizeRelationType(rel.relation)
-                      );
-
-                      if (!hasEdge) {
-                        await store.addEdge(
-                          sourceNode.id,
-                          targetNode.id,
-                          "LLM_EXTRACTED",
-                          normalizeRelationType(rel.relation)
-                        );
-                      }
-
-                      // 同时连接到文档锚点
-                      if (sourceNode.id !== docAnchorNode.id) {
-                        const docToSourceEdges = await store.getEdgesBetween(docAnchorNode.id, sourceNode.id);
-                        if (docToSourceEdges.length === 0) {
-                          await store.addEdge(docAnchorNode.id, sourceNode.id, "CONTAINS", "mentions_in_doc");
-                        }
-                      }
-                      if (targetNode.id !== docAnchorNode.id) {
-                        const docToTargetEdges = await store.getEdgesBetween(docAnchorNode.id, targetNode.id);
-                        if (docToTargetEdges.length === 0) {
-                          await store.addEdge(docAnchorNode.id, targetNode.id, "CONTAINS", "mentions_in_doc");
-                        }
-                      }
-                    }
-                  }
-
-                  console.log(`[kb_ingest] LLM 关系抽取完成: 总共抽取 ${totalRelations} 个关系，创建 ${createdCount} 个节点`);
+                // 5. LLM 关系抽取集成 — KG v2 阶段 2：入队异步执行
+                if (llmProvider && contentForExtraction && contentForExtraction.length > 100 && sessionManager) {
+                  console.log(`[kb_ingest] 入队 KG 抽取任务，内容长度: ${contentForExtraction.length}`);
+                  const { kgExtractionQueue } = await import("../services/kg-extraction-queue.js");
+                  const taskId = kgExtractionQueue.enqueue(
+                    {
+                      docId: result.docId,
+                      docName: docName!,
+                      userId: owner,
+                      content: contentForExtraction,
+                      chunkSize: 3000,
+                      overlap: 500,
+                      maxRelationsPerChunk: 20,
+                      createDocAnchor: true,
+                      callerTag: "kb_ingest",
+                    },
+                    sessionManager
+                  );
+                  console.log(`[kb_ingest] KG 抽取任务已入队: ${taskId}`);
                 }
               }
             } catch (err: unknown) {
@@ -2960,6 +2856,8 @@ async function getAppCollectionIds(): Promise<string[]> {
 
           let ownResults: KBSearchResultExtra[] = [];
           let graphUsed = false;
+          // KG v2 阶段 4: 用于生成 queryId + recallSnapshot
+          let recallSnapshot: any = null;
 
           // 辅助：支持单/多 collectionId 搜索
           const searchWithCollections = async (searchOpts: { limit: number; docIds?: string[]; tags?: string[] }): Promise<KBSearchResultExtra[]> => {
@@ -2993,49 +2891,131 @@ async function getAppCollectionIds(): Promise<string[]> {
             graphManager = sessionWithGraph.graphManager;
           }
 
-          // 根据查询类型选择检索策略
-          if ((classified.type === 'relational' || classified.type === 'discovery') && graphManager) {
-            // P3: 关系查询或发现查询 → 使用图谱增强检索
-            console.log(`[kb_search] 使用图谱增强检索 (${classified.type})`);
+          // 根据查询类型选择检索策略 — KG v2 阶段 3：KG-first
+          if (graphManager) {
+            // P3 阶段 3: KG-first 检索
+            // 流程：understandQuery → recall → expandToChunks → KB 混合检索作为补充
+            console.log(`[kb_search] 使用 KG-first 检索 (${classified.type})`);
             try {
               // 获取用户自己的文档 ID 列表，用于图谱权限过滤
               const ownDocIds = await kb.getAllDocIds();
 
-              // 使用 graphSearch 进行图谱检索（含预计算优化）
-              const graphResults = await graphManager.graphSearch(query, {
-                limit: limit * 2,
+              // Step 1: 查询理解（classify + NER + entity linking）
+              const { understandQuery } = await import(
+                "../memory/knowledge-graph/query-understanding.js"
+              );
+              const storeHandle = (await graphManager.getStore()) as any;
+              const understanding = await understandQuery(query, storeHandle);
+              console.log(
+                `[kb_search] 查询理解: type=${understanding.queryType}, ` +
+                `entities=${understanding.entities.length} (matched=${understanding.entities.filter((e) => e.matchedNodeIds.length > 0).length})`
+              );
+
+              // Step 2: 图谱召回
+              const { recall } = await import("../memory/knowledge-graph/recall.js");
+              const recallResult = await recall(understanding, storeHandle, {
+                maxSeeds: 5,
                 maxDepth: 3,
-                maxNodes: 50,
+                maxEntities: 50,
+                includePaths: classified.type === "relational",
                 allowedDocIds: ownDocIds,
               });
+              // KG v2 阶段 4: 把 recall 摘要保存下来，前端反馈时带回
+              recallSnapshot = {
+                seedEntities: recallResult.seedEntities.map((n) => n.id),
+                relatedEntities: recallResult.relatedEntities.map((n) => n.id),
+                edges: recallResult.edges.map((e) => e.id),
+              };
+              console.log(
+                `[kb_search] 图谱召回: seeds=${recallResult.seedEntities.length}, ` +
+                `related=${recallResult.relatedEntities.length}, ` +
+                `paths=${recallResult.paths.length}, ` +
+                `duration=${recallResult.durationMs}ms`
+              );
 
-              if (graphResults.length > 0) {
-                const docIds = graphResults.map((r) => r.docId);
-                console.log(`[kb_search] 从知识图谱找到相关文档: ${docIds.length} 个`);
+              // Step 3: KG → KB 跳回（chunk expander）
+              const { expandToChunks } = await import(
+                "../memory/knowledge-graph/chunk-expander.js"
+              );
+              const allRecalled = [...recallResult.seedEntities, ...recallResult.relatedEntities];
+              const expanded = await expandToChunks(allRecalled, {
+                perEntityLimit: 3,
+                maxChunks: limit,
+              });
+              console.log(`[kb_search] chunk expander: ${expanded.length} chunks`);
 
-                // 使用图谱相关的文档 ID 进行知识库检索
-                ownResults = await searchWithCollections({
-                  limit: limit * 2,
-                  docIds,
-                  tags: params.tags as string[],
+              if (expanded.length > 0) {
+                // KG v2 修 1: graphContext 传完整结构（节点对象 + 路径 + 子图摘要）
+                // 让 LLM 真正"理解关联关系"，而不是只看一堆 id 和 count
+                const { summarizeSubgraph } = await import(
+                  "../memory/knowledge-graph/recall.js"
+                );
+                const subgraphSummary = summarizeSubgraph(understanding, recallResult);
+
+                // 节点精简：只取核心字段
+                const compactNode = (n: any) => ({
+                  id: n.id,
+                  label: n.label,
+                  type: n.type,
+                  importance: n.importance,
+                  communityId: n.communityId,
                 });
 
-                // 为结果添加图谱上下文和增强评分
-                const graphResultMap = new Map(graphResults.map((r) => [r.docId, r]));
-                ownResults = ownResults.map((result) => {
-                  const graphResult = graphResultMap.get(result.docId);
-                  const graphBoost = graphResult ? graphResult.score * 0.2 : 0;
-                  return {
-                    ...result,
-                    score: Math.min(result.score + graphBoost, 1.0),
-                    matchType: `graph_${classified.type}`,
-                    graphContext: graphResult?.graphContext,
-                  };
+                // 路径精简：保留 source/target + 中间节点 + 关系标签
+                const compactPath = (p: any) => ({
+                  nodes: p.nodes.map((n: any) => ({ id: n.id, label: n.label })),
+                  relationLabels: p.edges.map((e: any) => e.label || e.type),
                 });
+
+                const fullGraphContext = {
+                  queryType: understanding.queryType,
+                  seedEntities: recallResult.seedEntities.map(compactNode),
+                  relatedEntities: recallResult.relatedEntities.map(compactNode),
+                  paths: recallResult.paths.map(compactPath),
+                  subgraphSummary, // 人类可读摘要，LLM 直接能用
+                  communityIds: Array.from(new Set(
+                    [...recallResult.seedEntities, ...recallResult.relatedEntities]
+                      .map((n) => n.communityId)
+                      .filter((c): c is number => c !== undefined)
+                  )),
+                };
+
+                ownResults = expanded.map((c) => ({
+                  docId: c.docId,
+                  docName: c.docName ?? c.docId,
+                  chunkIndex: c.chunkIndex,
+                  content: c.content,
+                  score: c.graphScore,
+                  matchType: `kg_first_${classified.type}`,
+                  graphContext: {
+                    ...fullGraphContext,
+                    // 单 chunk 维度的细化信号
+                    relatedEntities: c.graphSignal.relatedEntities.map(compactNode),
+                    sourceChunkIds: c.graphSignal.sourceChunkIds,
+                  },
+                  pageNumber: null,
+                  bboxes: null,
+                  docMindTaskId: null,
+                  shared: false,
+                })) as KBSearchResultExtra[];
+
+                // 不足时用 KB 混合检索补
+                if (ownResults.length < limit) {
+                  const kgDocIds = new Set(ownResults.map((r) => r.docId));
+                  const supplement = await searchWithCollections({
+                    limit: limit - ownResults.length,
+                    tags: params.tags as string[],
+                  });
+                  // 过滤掉已经在 KG 结果里的 docId
+                  ownResults.push(
+                    ...supplement.filter((r) => !kgDocIds.has(r.docId))
+                  );
+                }
 
                 graphUsed = true;
               } else {
-                console.log(`[kb_search] 知识图谱未找到直接相关文档，使用混合检索`);
+                // KG 召回为空 → 降级到混合检索
+                console.log(`[kb_search] KG 召回为空，降级到混合检索`);
                 ownResults = await searchWithCollections({
                   limit: limit,
                   tags: params.tags as string[],
@@ -3043,7 +3023,7 @@ async function getAppCollectionIds(): Promise<string[]> {
                 });
               }
             } catch (graphErr: unknown) {
-              console.warn(`[kb_search] 知识图谱检索失败，降级到混合检索:`, graphErr);
+              console.warn(`[kb_search] KG 检索失败，降级到混合检索:`, graphErr);
               ownResults = await searchWithCollections({
                 limit: limit,
                 tags: params.tags as string[],
@@ -3133,10 +3113,18 @@ async function getAppCollectionIds(): Promise<string[]> {
           }
 
           const results = combined.slice(0, limit);
+          // KG v2 阶段 4: 生成 queryId 让前端能提交反馈
+          const queryId = `q_${owner}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          // 给每个结果打上 queryId 和 recallSnapshot 引用，便于前端聚合反馈
+          const resultsWithMeta = results.map((r) => ({
+            ...r,
+            queryId,
+            recallSnapshot,
+          }));
           return {
             success: true,
-            data: results,
-            message: results.length === 0 
+            data: resultsWithMeta,
+            message: results.length === 0
               ? "知识库中没有找到与查询相关的文档。您是匿名用户或当前用户知识库为空，请先上传文档到知识库。"
               : `找到 ${results.length} 条相关知识`,
           };
@@ -3627,7 +3615,7 @@ interface SessionWithGraphManager {
         properties: Record<string, unknown>;
         createdAt: number;
       }) => { id: string };
-      getEdgesBetween: (sourceId: string, targetId: string) => Array<{ relation: string }>;
+      getEdgesBetween: (sourceId: string, targetId: string) => Array<{ label: string; type?: string }>;
       addEdge: (sourceId: string, targetId: string, type: string, relation: string) => void;
     };
   } | undefined;
