@@ -3,6 +3,51 @@
 > 记录所有影响 **检索准确 / 检索高效 / 关联理解 / 回复质量** 这 4 个产品目标的变更。
 > 详见 `docs/KG_ARCHITECTURE_VISION.md` 和 `docs/KG_REVIEW_v3.md`。
 
+## 🗺 Commit Map（commit → docs）
+
+**怎么用**：`git log --oneline --grep "<关键词>"` 找 SHA，再查本表找对应文档；反过来 `cat docs/OPERATIONS.md` 看底部 "相关 commit" 跳到代码改动。
+
+| Commit (短) | 标题 | 改了哪些文件 | 相关文档 |
+|------------|------|--------------|----------|
+| [`fffb0b9`](#fffb0b9) | **真数据标定 pipeline** | `scripts/calibrate-from-real-data.ts` + e2e | [CALIBRATION.md](CALIBRATION.md) §标定流程 |
+| [`1617922`](#1617922) | **chore: .gitignore** | `.gitignore`, untrack `server.log` | — |
+| [`3646570`](#3646570) | **P2-7 标定 + OPERATIONS/GRAPH_CONTEXT** | `normalizeFtsScore` (P2-7 tanh) + `flushFulltextIndex` (P2-9) + 3 doc files + 1 script | [CALIBRATION.md](CALIBRATION.md) · [OPERATIONS.md](OPERATIONS.md) · [GRAPH_CONTEXT_CHANGELOG.md](GRAPH_CONTEXT_CHANGELOG.md) |
+| [`63c6618`](#63c6618) | **test(kg): 阶段 1-6 + 修 1+2+3 + P0 e2e** | 11 个 test 文件 | — |
+| [`341d902`](#341d902) | **阶段 5-6: Neo4j fulltext + nodejieba** | `neo4j-store.ts` + `chinese-tokenizer.ts` | [OPERATIONS.md](OPERATIONS.md) §1.1 依赖 · [KG_REVIEW_v3.md](KG_REVIEW_v3.md) §6.5 P0/P1 修复完成度 |
+| [`6930a90`](#6930a90) | **阶段 3: KG-first 检索** | `recall.ts` + `chunk-expander.ts` + `bfs-extractor.ts` | [KG_ARCHITECTURE_VISION.md](KG_ARCHITECTURE_VISION.md) §4.2 · [GRAPH_CONTEXT_CHANGELOG.md](GRAPH_CONTEXT_CHANGELOG.md) |
+| [`b6a6e75`](#b6a6e75) | **阶段 1-2: 地基 + 离线化抽取** | 18 个文件: types / graph-store / extraction / query / feedback / health / kg-extraction-queue / parsing / db 迁移 / graph-routes | [KG_ARCHITECTURE_VISION.md](KG_ARCHITECTURE_VISION.md) §3-§4.1 · [KG_REVIEW_v3.md](KG_REVIEW_v3.md) §2 |
+| [`ad546a9`](#ad546a9) | **deps(kg): nodejieba 3.5.8** | `package.json` + `package-lock.json` | [OPERATIONS.md](OPERATIONS.md) §1.1 依赖 |
+| [`ea805e1`](#ea805e1) | **docs(kg): 阶段 0 文档** | 5 个 review/vision/changelog 文档 | (本文档 + 4 个 reviews) |
+
+### 完整 SHA（`git show <sha>` 看 diff）
+
+```
+fffb0b9 feat(kg): 真数据标定 pipeline
+1617922 chore: .gitignore 加 server.log 和 .raos-test/
+3646570 feat(kg): P2-7 标定 pipeline + OPERATIONS / GRAPH_CONTEXT CHANGELOG
+63c6618 test(kg): KG v2 阶段 1-6 + 修 1+2+3 + P0 全套 e2e 测试
+341d902 feat(kg): 阶段 5-6 Neo4j fulltext + nodejieba 中文分词
+6930a90 feat(kg): 阶段 3 KG-first 检索
+b6a6e75 feat(kg): 阶段 1-2 地基 + 离线化抽取
+ad546a9 deps(kg): add nodejieba 3.5.8
+ea805e1 docs(kg): 阶段 0 文档
+```
+
+### commit → 章节快捷跳转
+
+| 想找什么 | 看哪个 commit |
+|----------|---------------|
+| 怎么调 k？ | [`fffb0b9`](#fffb0b9)（pipeline）· [`3646570`](#3646570)（normalizeFtsScore）|
+| 中文分词不准？ | [`341d902`](#341d902)（chinese-tokenizer）|
+| ACL 漏洞？ | [`b6a6e75`](#b6a6e75)（recall.ts isAllowed）· [`63c6618`](#63c6618)（kg-v2-fixes.test.ts e2e）|
+| N+1 SQL 慢？ | [`b6a6e75`](#b6a6e75)（chunk-expander.fetchChunksByDocAndIndex）|
+| 抽取任务堆积？ | [`b6a6e75`](#b6a6e75)（kg-extraction-queue）|
+| 部署/监控/告警？ | [`3646570`](#3646570)（OPERATIONS.md）|
+| graphContext 字段含义？ | [`3646570`](#3646570)（GRAPH_CONTEXT_CHANGELOG.md）|
+| 修 1/2/3 / P0 是哪个 commit？ | 散在 [`b6a6e75`](#b6a6e75) + [`63c6618`](#63c6618) 多个里，看 commit message body |
+
+---
+
 ## 2026-06-03 — 4 个 P0 + 6 个 P1 + 4 个 P2 全部落地
 
 ### P0 修复（必修）

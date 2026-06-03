@@ -267,3 +267,15 @@ NEO4J_PASSWORD=xxx
 | LLM 偷懒返回 array 格式 | 🟢 Low | P2-10 兜底 |
 | ACL 用 `n.id === "kb_doc_${docId}"` 精确等值 | 🟢 Low | P2-11 修了之前的 includes 误中 |
 | `normalizeFtsScore` 用 tanh 经验值未用真数据校准 | 🟡 Medium | P2-7 单元测试覆盖 S 曲线行为，真数据校准在 backlog |
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`3646570`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **P2-7 标定 + OPERATIONS/GRAPH_CONTEXT** | 本文档是这次 commit 引入的；含 §1 部署 / §2 监控 / §3 故障排查 / §4 性能基准 / §5 升级回滚 / §6 已知风险 |
+| [`341d902`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 5-6 Neo4j fulltext + nodejieba** | §1.1 依赖（ngram 插件 / nodejieba 3.5.8）来自这个 commit |
+| [`ad546a9`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **deps(kg): nodejieba 3.5.8** | nodejieba 安装失败时的处理路径见 §3.1 中文分词不准确 |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

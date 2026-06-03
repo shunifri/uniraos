@@ -137,3 +137,15 @@ LLM 用这个就能直接生成"基于图谱的回复"。
 - [ ] v2.1：加 `evidence` 字段（边上的 evidence 文本，让 LLM 知道"为什么 A→B"）
 - [ ] v2.1：加 `graphStats` 字段（avgDegree / communityCount，让 LLM 知道"这个子图有多密"）
 - [ ] v2.2：拆 `subgraphSummary` 多种格式（token-efficient / human-readable / structured）
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`3646570`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **P2-7 标定 + OPERATIONS/GRAPH_CONTEXT** | 本文档是这次 commit 引入的；v1.0→v2.0 完整 schema 变更 + 摘要格式规范 |
+| [`6930a90`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 3: KG-first 检索** | v2.0 schema 的 `recallResult.seedEntities` / `relatedEntities` / `paths` 来源——这个 commit 改了 `recall.ts` 决定结构 |
+| [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | `summarizeSubgraph` 函数 + `fullGraphContext` 装配在 `knowledge-skills.ts` 都在这次 commit 引入 |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

@@ -735,3 +735,16 @@ async function applyFeedback(feedback: FeedbackEvent): Promise<void> {
 3. **反馈环路必须建**——没有反馈的图谱是死的；有了反馈，整个系统会自己变好
 
 做完后，RAOS 的图谱就不再是"KB 的影子"，而是真正的"知识的中枢神经"。
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`ea805e1`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **docs(kg): 阶段 0 文档** | 本文档是这次 commit 引入的——KG v2 阶段 1-6 整体规划 |
+| [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | §3-§4.1 描述的 types / graph-store / extraction-pipeline / query-understanding 全部在这个 commit |
+| [`6930a90`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 3: KG-first 检索** | §4.2 描述的 recall / chunk-expander / bfs-extractor 在这个 commit |
+| [`341d902`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 5-6: Neo4j fulltext + nodejieba** | §6 backend 切换 + §4 中文分词策略在这个 commit |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

@@ -450,3 +450,14 @@ v1 写"LLM 关系抽取零集成"——这条 v2 翻案，已经接进了 `kb_in
 短期最该做的事是修这两个 P0 + 修一个早就该修的 P1 (`graph_deduplicate` 漏 await) + 把 LLM 抽取逻辑收敛成一份。这四件事做完，图谱系统的"地基"才算稳。
 
 中期再谈 Neo4j 原生算法、`scoreNodes` 索引化、图谱×主检索融合这些 v1 提了但没动的事。
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`ea805e1`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **docs(kg): 阶段 0 文档** | 本文档是这次 commit 引入的——v2 review |
+| [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | v2 提出的 KG v2 阶段 1-2 实施在这个 commit |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

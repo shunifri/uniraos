@@ -421,3 +421,14 @@ RAOS 知识图谱是一个**架构设计合理、工程实现扎实**的系统�
 - 🟡 **与主检索链路脱节**: `kb_search` 仍是向量+关键词的天下，图谱检索没有真正参与 RRF 融合。
 
 **下一步最优先行动**: 若使用 Neo4j 后端，应当用 Cypher/GDS 替换手写的 BFS 和社区检测；若主要使用 MySQL 后端，应当为 `scoreNodes` 增加数据库索引过滤，避免每查询全量加载。同时，将 LLM 关系抽取接入 `onFactStored` 的异步流程，是提升图谱"知识密度"的最快途径。
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`ea805e1`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **docs(kg): 阶段 0 文档** | 本文档是这次 commit 引入的——v1 review |
+| [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | "LLM 抽取逻辑收敛成一份" + `graph_deduplicate` 等 P1 修复都在这里 |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

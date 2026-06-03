@@ -126,3 +126,14 @@ tanh 单峰 S 曲线**拟合不出**，需要更复杂的模型（piecewise / sp
 - [ ] 多峰分布支持（piecewise linear）
 - [ ] 标定漂移监控（acceptance rate 跌 5% 自动告警）
 - [ ] 双盲 A/B 测试框架（k=1.80 vs k=2.0 同时跑 1 周对比）
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 改了什么 |
+|-----|------|----------|
+| [`fffb0b9`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **真数据标定 pipeline** | 新增 `scripts/calibrate-from-real-data.ts` 端到端从真实数据生成 ground_truth.json + 自动跑 calibration |
+| [`3646570`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **P2-7 标定** | 新增 `normalizeFtsScore(raw, k?)` 函数 + `FTS_SCORE_K` env 读 k + `scripts/calibrate-fts-score.ts` 基础标定脚本 |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。

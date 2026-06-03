@@ -428,3 +428,16 @@ for (const n of nodes) {
 > 1-6 阶段 + 三个修复在**测试通过 + 类型干净**层面非常扎实，但**有 3 个真 P0 没接通**（ACL 漏洞、修 3 闭环、N+1 SQL）和 **10 个 P1/P2 累积债务**。最关键的是**修 3 没真正闭环**——`extractEntities` 抽出来的纯 entity 没有任何路径写回图谱，生产路径仍走"entity 是 relation 副产物"的老路。
 >
 > 接下来应当先修 3 个 P0，1-2 天能搞定；其它 P1/P2 分批消化。
+
+---
+
+## 相关 commit
+
+| SHA | 标题 | 与本文档关系 |
+|-----|------|--------------|
+| [`ea805e1`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **docs(kg): 阶段 0 文档** | 本文档是这次 commit 引入的——v3 全面 review，识别 3 P0 + 10 P1 + 7 P2 |
+| [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | §2 P0-2 修 3 闭环 / §2 P0-3 N+1 SQL 的代码修复散在这里（散在 18 文件的大 commit 里） |
+| [`63c6618`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **test(kg): 阶段 1-6 + 修 1+2+3 + P0 e2e** | §6.5 修复完成度表里列出的 P0 测试覆盖都在这次 commit |
+| [`341d902`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 5-6: Neo4j fulltext + nodejieba** | §6.5 提到 Neo4j fulltext / nodejieba 集成对应此 commit |
+
+详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。
