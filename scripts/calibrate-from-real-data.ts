@@ -197,34 +197,96 @@ async function getProductionScore(
 
 /**
  * 步骤 1: 收集真实 (query, node, label, type) tuples
+ * 多个数据源，按优先级：
+ *   1. CSV 文件（--data path/to.csv，格式 query,node_id,node_label）
+ *   2. kg_feedback_events 表（recall_snapshot.seedEntities）
+ *   3. Synthetic fallback
  */
-async function collectRealTuples(adapter: MySQLAdapter, limit: number): Promise<RealTuple[]> {
-  console.log(`[calibrate-real] pulling real tuples from kg_feedback_events (limit ${limit})...`);
-
-  // 优先用 recall_snapshot.seedEntities（如果非空）
-  const rows = await adapter.query<{
-    query: string;
-    snapshot: string | null;
-  }>(
-    `SELECT query, recall_snapshot AS snapshot
-     FROM kg_feedback_events
-     WHERE recall_snapshot IS NOT NULL AND query IS NOT NULL AND LENGTH(query) > 0
-     ORDER BY created_at DESC LIMIT ?`,
-    [limit]
-  );
-
+async function collectRealTuples(
+  adapter: MySQLAdapter,
+  limit: number,
+  csvPath: string | null = null
+): Promise<RealTuple[]> {
   const tuples: RealTuple[] = [];
-  for (const row of rows) {
-    try {
-      const snap = row.snapshot ? JSON.parse(row.snapshot) : null;
-      const seeds = Array.isArray(snap?.seedEntities) ? snap.seedEntities : [];
-      for (const seed of seeds) {
-        if (seed && seed.label && seed.id) {
-          tuples.push({ query: row.query, nodeId: seed.id, nodeLabel: seed.label });
+
+  // 源 1: CSV 文件（最高优先级）
+  if (csvPath) {
+    console.log(`[calibrate-real] reading CSV: ${csvPath}`);
+    const absPath = path.resolve(csvPath);
+    const content = fs.readFileSync(absPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
+    if (lines.length === 0) {
+      console.warn(`[calibrate-real] CSV file is empty`);
+    } else {
+      // 检测 header
+      const firstLine = lines[0].toLowerCase();
+      const hasHeader = firstLine.includes("query") || firstLine.includes("node") || firstLine.includes("label");
+      const dataLines = hasHeader ? lines.slice(1) : lines;
+      for (const line of dataLines) {
+        const parts = line.split(",").map((p) => p.trim().replace(/^["']|["']$/g, ""));
+        if (parts.length >= 2) {
+          tuples.push({
+            query: parts[0],
+            nodeId: parts[1] || `csv-${tuples.length}`,
+            nodeLabel: parts[2] ?? parts[1] ?? parts[0], // fallback to query or nodeId
+          });
         }
       }
-    } catch { /* skip */ }
+      console.log(`[calibrate-real] CSV: read ${tuples.length} rows from ${absPath}`);
+    }
   }
+
+  // 源 2: kg_feedback_events 表
+  if (tuples.length < limit) {
+    console.log(`[calibrate-real] pulling real tuples from kg_feedback_events (limit ${limit})...`);
+    const rows = await adapter.query<{
+      query: string;
+      snapshot: string | null;
+    }>(
+      `SELECT query, recall_snapshot AS snapshot
+       FROM kg_feedback_events
+       WHERE recall_snapshot IS NOT NULL AND query IS NOT NULL AND LENGTH(query) > 0
+       ORDER BY created_at DESC LIMIT ?`,
+      [limit]
+    );
+
+    // recall_snapshot 只有 ids，没 label——查 kb_graph_nodes 拿 label
+    const seedIds = new Set<string>();
+    for (const row of rows) {
+      try {
+        const snap = row.snapshot ? JSON.parse(row.snapshot) : null;
+        const seeds = Array.isArray(snap?.seedEntities) ? snap.seedEntities : [];
+        for (const seed of seeds) {
+          if (seed && seed.id) seedIds.add(seed.id);
+        }
+      } catch { /* skip */ }
+    }
+    let idToLabel = new Map<string, string>();
+    if (seedIds.size > 0) {
+      const placeholders = Array.from(seedIds).map(() => "?").join(",");
+      const nodeRows = await adapter.query<{ id: string; label: string }>(
+        `SELECT id, label FROM kb_graph_nodes WHERE id IN (${placeholders})`,
+        Array.from(seedIds)
+      );
+      idToLabel = new Map(nodeRows.map((n) => [n.id, n.label]));
+    }
+
+    for (const row of rows) {
+      try {
+        const snap = row.snapshot ? JSON.parse(row.snapshot) : null;
+        const seeds = Array.isArray(snap?.seedEntities) ? snap.seedEntities : [];
+        for (const seed of seeds) {
+          if (seed && seed.id) {
+            const label = idToLabel.get(seed.id);
+            if (label) {
+              tuples.push({ query: row.query, nodeId: seed.id, nodeLabel: label });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+  }
+
   return tuples;
 }
 
@@ -382,7 +444,14 @@ async function main() {
   } catch { /* ignore */ }
 
   // 步骤 1: 收集真实 tuples
-  let tuples = await collectRealTuples(adapter, realLimit);
+  // 解析 --data CSV 路径（如果有）
+  const dataIdx = args.indexOf("--data");
+  let csvPath: string | null = null;
+  if (dataIdx !== -1 && dataIdx + 1 < args.length) {
+    csvPath = args[dataIdx + 1];
+  }
+
+  let tuples = await collectRealTuples(adapter, realLimit, csvPath);
   console.log(`[calibrate-real] collected ${tuples.length} real tuples`);
 
   // 步骤 2: Fallback 到 synthetic（如果没真实数据）

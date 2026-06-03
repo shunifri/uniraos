@@ -1,0 +1,48 @@
+query,node_id,node_label
+苹果公司,kg_node_1,苹果公司
+蒂姆·库克,kg_node_2,蒂姆·库克
+iPhone,kg_node_3,iPhone
+苹果公司 CEO,kg_node_2,蒂姆·库克
+蒂姆 苹果,kg_node_1,苹果公司
+Apple 苹果公司,kg_node_1,苹果公司
+iPhone 生产,kg_node_3,iPhone
+苹果公司创始人,kg_node_2,蒂姆·库克
+iOS,kg_node_3,iPhone
+什么是人工智能,ai_node_1,人工智能
+机器学习,ai_node_2,机器学习
+深度学习,ai_node_3,深度学习
+神经网络,ai_node_3,深度学习
+transformer 模型,ai_node_3,深度学习
+python 编程,prog_node_1,python
+javascript,prog_node_2,javascript
+react 框架,prog_node_2,javascript
+数据库,db_node_1,mysql
+mysql 索引,db_node_1,mysql
+sql 优化,db_node_1,mysql
+机器学习算法,ai_node_2,机器学习
+transformer,ai_node_3,深度学习
+nlp 自然语言处理,ai_node_3,深度学习
+kg 知识图谱,kg_node_1,苹果公司
+kg 抽取,kg_node_1,苹果公司
+LLM 抽取,kg_node_2,蒂姆·库克
+图谱检索,kg_node_1,苹果公司
+kg 召回,kg_node_2,蒂姆·库克
+kb_document 是什么,kb_doc_1,kb_document
+kb chunk 处理,kb_doc_1,kb_document
+kb 索引,kb_doc_1,kb_document
+kb:docx 解析,kb_doc_1,kb_document
+kb 文档存储,kb_doc_1,kb_document
+用户行为,user_node_1,用户行为
+用户偏好,user_node_1,用户行为
+用户画像,user_node_1,用户行为
+用户意图,user_node_1,用户行为
+用户历史,user_node_1,用户行为
+RAG 是什么,ai_node_1,人工智能
+RAG 检索增强,ai_node_1,人工智能
+llm 推理,ai_node_2,机器学习
+embedding 向量化,ai_node_2,机器学习
+向量数据库,db_node_1,mysql
+pinecone 向量库,db_node_1,mysql
+mysql 关系数据库,db_node_1,mysql
+ts 类型系统,prog_node_2,javascript
+typescript 编译,prog_node_2,javascript
