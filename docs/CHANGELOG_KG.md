@@ -9,6 +9,7 @@
 
 | Commit (短) | 标题 | 改了哪些文件 | 相关文档 |
 |------------|------|--------------|----------|
+| (next) | **Relation Ontology + Acceptance alerting** | `types.ts:EdgeType` + `inferEdgeTypeFromLabel` + `check-acceptance-rate.ts` + OPERATIONS.md | [OPERATIONS.md](OPERATIONS.md) §3.5 |
 | (next) | **A/B test on LLM 响应** | `scripts/ab-test-llm-responses.ts` + tests | 本文 §A/B on LLM |
 | (next) | **graphContext A/B + v1 P0-2 全修完验证** | `scripts/ab-test-graph-context.ts` + doc | [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) |
 | (next) | **BFS N+1 → MySQL recursive CTE** | `graph-store.ts` + `bfs-extractor.ts` + `bench-bfs-cte.ts` | [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) |
@@ -26,6 +27,7 @@
 ### 完整 SHA（`git show <sha>` 看 diff）
 
 ```
+(pending) feat(kg): Relation Ontology 扩展 + Acceptance rate alerting
 (pending) feat(kg): A/B test on LLM 真实响应
 (pending) feat(kg): graphContext A/B + v1 P0-2 全修完验证
 (pending) fix(kg): BFS N+1 → MySQL recursive CTE
@@ -99,6 +101,8 @@ ea805e1 docs(kg): 阶段 0 文档
 | **P2-11** | ACL 改用精确匹配 | `recall.ts:91-101` + `bfs-extractor.ts:99-119` + `graph-store.ts:49-89` | **安全修复**：`doc_abc` 不再误中 `doc_abc_v2`；同时修了 `parseTags` 双重嵌套的隐藏 bug |
 | **P2-12** | 清理 `as any`（6+ 处）+ 提 `GraphStoreLike` interface + BFS N+1 → MySQL recursive CTE | `extraction-pipeline.ts:27-67` + `graph-store.ts:1032+` (`extractSubgraphCTE`) + `bfs-extractor.ts:152+` | **类型安全 + 检索高效**：bench 1.2-5.8x faster (50-500 节点 chain graph) |
 | **P2-13** | graphContext A/B test on LLM 真实响应 | `scripts/ab-test-llm-responses.ts` | **回复质量 (核心问题)**：15 queries 实测 LLM judge +0.205 (40% 相对提升), heuristic hit rate 0.27 → 0.84 (3x). 证 graphContext 真帮 LLM 答得更好，不是"召回多但答得一样" |
+| **P2-14** | Relation Ontology 扩展：PARENT_OF / REVISION_OF / ANCHORED_TO + 自动归类 | `types.ts:EdgeType` + `inferEdgeTypeFromLabel` + `manager.ts:onFactStored` | **关联理解 (生产化)**：docx 产物（父子结构/修订历史/浮动对象）现在能 typed；LLM-extracted relation label 自动归类，省 1 次 LLM 调用 |
+| **P2-15** | Acceptance rate alerting 自动化 | `scripts/check-acceptance-rate.ts` + `OPERATIONS.md §3.5` | **生产可观测性**：cron 跑 exit 0/1/2, 阈值/MIN_VOLUME 可配, 排除 test user 避免 noise |
 
 ---
 
@@ -122,7 +126,7 @@ ea805e1 docs(kg): 阶段 0 文档
 |------|----------|
 | **检索更准确** | P0-1 ACL（防越权）、P1-4 MySQL FULLTEXT、和 Neo4j 路径对齐、P2-11 ACL 精确匹配 |
 | **检索更高效** | P0-3 N+1 SQL → 1 查询、P1-3 LRU 缓存、P1-4 MySQL 走 FULLTEXT 索引、P1-6 LLM 合并（-50% 延迟）、修 A 接合并 |
-| **理解知识之间的关联** | P0-2 修 3 闭环（纯 entity 落库）、P1-2 Neo4j 索引精度 |
+| **理解知识之间的关联** | P0-2 修 3 闭环（纯 entity 落库）、P1-2 Neo4j 索引精度、**P2-14 Relation Ontology 扩展 (PARENT_OF/REVISION_OF/ANCHORED_TO)** |
 | **提升回复质量** | P1-1 API 不说谎、P1-5 health check 暴露 tokenizer backend、P2-10 LLM 鲁棒性、**P2-13 A/B test on LLM 证明 +40%** |
 
 ---

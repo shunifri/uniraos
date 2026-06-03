@@ -4,6 +4,7 @@ import { detectCommunities } from "./community-detection.js";
 import { identifyGodNodes, scoreSurprise } from "./scoring.js";
 import { extractRelationships, extractTagRelationships } from "./relationship-extractor.js";
 import type { GraphNode, GraphEdge, SubgraphResult, NodeType } from "./types.js";
+import { inferEdgeTypeFromLabel } from "./types.js";
 import type { BFSOptions } from "./bfs-extractor.js";
 import type { LLMProvider } from "../../llm/types.js";
 
@@ -149,14 +150,20 @@ export class KnowledgeGraphManager {
       }
     }
 
-    // 4. If relation param provided, create EXTRACTED edge to target
+    // 4. If relation param provided, create typed edge to target
+    // 关系 ontology (#5 P2): 用 inferEdgeTypeFromLabel 自动归类
+    //   - "属于/包含"  → PARENT_OF
+    //   - "修订/版本" → REVISION_OF
+    //   - "锚定/附着" → ANCHORED_TO
+    //   - 默认        → EXTRACTED
     if (entry.relation) {
       const targetNode = await store.findNodeByLabel(entry.relation);
       if (targetNode) {
         // Avoid duplicate edges
         const existing = await store.getEdgesBetween(node.id, targetNode.id);
         if (existing.length === 0) {
-          await store.addEdge(node.id, targetNode.id, "EXTRACTED", "related_to");
+          const edgeType = inferEdgeTypeFromLabel(entry.relation);
+          await store.addEdge(node.id, targetNode.id, edgeType, entry.relation);
         }
       }
     }

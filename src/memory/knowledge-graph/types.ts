@@ -8,6 +8,9 @@ export type NodeType = "ltm" | "kb_document" | "entity" | "concept";
  * - PERSONAL: 来自个人信息聚合（user_name → user_phone / user_company）
  * - CONTAINS: 文档锚点 → 内容实体（kb_doc_xxx → entity_xxx）
  * - LLM_EXTRACTED: 来自在线 kb_ingest / ParsingQueue 调用的 LLM 抽取
+ * - PARENT_OF: 文档结构父子关系（document → section → paragraph → run）；docx 编辑器产物
+ * - REVISION_OF: 修订历史（v1 → v2 → v3）；track-changes 产物
+ * - ANCHORED_TO: 浮动对象锚定（v:shape / textbox → 文本位置）；docx 浮动元素产物
  */
 export type EdgeType =
   | "EXTRACTED"
@@ -15,7 +18,28 @@ export type EdgeType =
   | "TEMPORAL"
   | "PERSONAL"
   | "CONTAINS"
-  | "LLM_EXTRACTED";
+  | "LLM_EXTRACTED"
+  | "PARENT_OF"
+  | "REVISION_OF"
+  | "ANCHORED_TO";
+
+/**
+ * 关系分类辅助：根据 LLM 抽取的 relation label 自动建议 EdgeType
+ *
+ * 目的：让 extraction pipeline 少调一次 LLM（避免 2x cost）
+ * 启发式基于 label 关键词匹配：
+ *   - "属于/包含/位于/在...里"   → PARENT_OF (downward: 父→子)
+ *   - "继承/历史/版本/修订/替换"  → REVISION_OF
+ *   - "锚定/附着/挂载"            → ANCHORED_TO
+ *   - 默认                       → EXTRACTED
+ */
+export function inferEdgeTypeFromLabel(label: string): EdgeType {
+  const l = label.toLowerCase();
+  if (/(?:属于|包含|位于|在.+里|parent|contains|has_child)/.test(l)) return "PARENT_OF";
+  if (/(?:继承|历史|版本|修订|替换|replaces|revision|history|version)/.test(l)) return "REVISION_OF";
+  if (/(?:锚定|附着|挂载|anchor|attached_to)/.test(l)) return "ANCHORED_TO";
+  return "EXTRACTED";
+}
 
 export interface GraphNode {
   id: string;

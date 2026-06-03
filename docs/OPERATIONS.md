@@ -200,6 +200,13 @@ LIMIT 10;
 - 新 KB 文档结构变了（标题/分类变了导致 recall 偏差）
 - tokenizer 降级到启发式（中文切分错了）
 
+**自动化报警**：`scripts/check-acceptance-rate.ts` (commit 4dfc558+)
+- cron 跑：`*/30 * * * * cd /path && npx tsx scripts/check-acceptance-rate.ts || alert`
+- 阈值：`ACCEPTANCE_THRESHOLD=0.5` (24h rate 低于告警)
+- 最小样本：`MIN_VOLUME=20` (避免 noise)
+- exit 0 = OK, exit 1 = ALERT, exit 2 = script error
+- 干跑：`DRY_RUN=1 npx tsx scripts/check-acceptance-rate.ts`
+
 ---
 
 ## 4. 性能基准
