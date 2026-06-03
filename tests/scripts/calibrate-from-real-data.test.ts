@@ -142,4 +142,41 @@ describe.sequential("calibrate-from-real-data.ts (P2-7 标定 pipeline)", () => 
     // 应该没抛错就完成
     expect(output).toContain("===== RESULTS =====");
   }, 120_000);
+
+  it("analyze-calibration.ts 能对生成的 ground_truth.json 做详细分析", () => {
+    // 先用 pipeline 跑一份 ground_truth
+    execSync(
+      `npx tsx ${scriptPath} --out ${tmpOut}`,
+      {
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          MYSQL_PRIMARY_HOST: "localhost",
+          MYSQL_PRIMARY_PORT: "3307",
+          MYSQL_USER: "raos",
+          MYSQL_PASSWORD: "raospassword",
+          MYSQL_DATABASE: "raos",
+        },
+      }
+    );
+    expect(fs.existsSync(tmpOut)).toBe(true);
+
+    // 跑分析
+    const analyzeScript = path.resolve(__dirname, "../../scripts/analyze-calibration.ts");
+    const output = execSync(`npx tsx ${analyzeScript} ${tmpOut}`, { encoding: "utf-8" });
+
+    // 应该输出关键段落
+    expect(output).toContain("RAW SCORE DISTRIBUTION");
+    expect(output).toContain("RELEVANCE DISTRIBUTION");
+    expect(output).toContain("CORRELATION");
+    expect(output).toContain("RMSE BY RAW BUCKET");
+    expect(output).toContain("FINE-GRAINED K SEARCH");
+    expect(output).toContain("HIGHEST-ERROR POINTS");
+    // best k 应该在合理区间
+    const bestKMatch = output.match(/best k:\s+([\d.]+)/);
+    expect(bestKMatch).not.toBeNull();
+    const bestK = parseFloat(bestKMatch![1]);
+    expect(bestK).toBeGreaterThan(0.5);
+    expect(bestK).toBeLessThan(5);
+  }, 120_000);
 });
