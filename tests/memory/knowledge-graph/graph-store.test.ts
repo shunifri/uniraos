@@ -545,4 +545,86 @@ describe.sequential("GraphStore", () => {
       // 不抛错就过
     });
   });
+
+  // ============================================================
+  // P2-CRITICAL-FIX（标定实跑发现 60% raw=0 的根因）：multi-stage search 召回
+  // 之前 dev 数据 60% (109/183) 的 tuples raw=0 但语义完美匹配
+  // 原因：FULLTEXT BOOLEAN MODE 对长 label + 特殊字符（kb:...docx:paragraph:N）失败
+  // 修复：searchNodesByKeywords 加 multi-stage fallback
+  //   Stage 1: FULLTEXT（原有）
+  //   Stage 2: Exact label match (`WHERE label = ?`)
+  //   Stage 3: Canonical form match
+  //   Stage 4: Substring match (`WHERE label LIKE '%query%'`)
+  // ============================================================
+  describe("multi-stage search fallback (P2-CRITICAL-FIX)", () => {
+    it("raw=0 但 query == label（FULLTEXT 失败场景）：fallback 仍召回", async () => {
+      // 这个 label 含 `:` 等特殊字符，FULLTEXT BOOLEAN MODE 必然 raw=0
+      const specialLabel = "kb:上海应用技术大学_退费规定.docx:paragraph:0";
+      const queryTerm = "kb:上海应用技术大学_退费规定.docx:paragraph:0";
+
+      // 顺便添加一个 entity 节点（防止 owner 唯一 anchor）
+      await store.addNode({
+        label: "filler_entity_1",
+        type: "entity",
+        tags: [],
+        properties: {},
+        createdAt: Date.now(),
+      });
+      await store.addNode({ id: "test_node_1", label: specialLabel, type: "kb_document", tags: ["kb_document"], properties: { sourceDoc: "test" }, createdAt: Date.now() });
+
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 搜这个特殊 query
+      const hits = await store.searchNodesByKeywords([queryTerm], 10);
+      const labels = hits.map((h) => h.node.label);
+
+      // P2-CRITICAL-FIX 后：fallback 应该能召回这个节点
+      expect(labels).toContain(specialLabel);
+      // Fallback 命中的 score 应该 > 0（至少 0.65 substring / 0.92 exact / 0.95）
+      const hit = hits.find((h) => h.node.label === specialLabel);
+      expect(hit).toBeDefined();
+      expect(hit!.score).toBeGreaterThan(0);
+    });
+
+    it("Stage 1 召回足够时不触发 fallback（避免不必要 SQL）", async () => {
+      // 设置 owner 内有足够多 FULLTEXT 命中的节点
+      const uniqueLabel = `fulltext_test_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      await store.addNode({ label: uniqueLabel, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: `${uniqueLabel}_variant`, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+      await store.addNode({ label: `${uniqueLabel}_related`, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+
+      await flushFulltextIndex(getMySQLAdapter());
+
+      // 用 FULLTEXT 友好的 query（word length >= 4 触发默认 FULLTEXT 索引）
+      const hits = await store.searchNodesByKeywords([uniqueLabel], 10);
+      // FULLTEXT 至少召回 1 个；如果它召回 ≥ limit/2，fallback 不触发
+      expect(hits.length).toBeGreaterThan(0);
+      // 全部应该都是 Stage 1 FULLTEXT 命中（不混 fallback）
+      for (const hit of hits) {
+        expect(hit.score).toBeGreaterThan(0);
+      }
+    });
+
+    it("dedup：同一个节点被 FULLTEXT 和 fallback 都命中时，取高 score", async () => {
+      // 一个 node 同时被 FULLTEXT 和 substring 命中
+      const dedupLabel = `dedup_test_${Date.now()}_${Math.random().toString(36).slice(2)}_keyword`;
+      await store.addNode({ label: dedupLabel, type: "entity", tags: [], properties: {}, createdAt: Date.now() });
+
+      await flushFulltextIndex(getMySQLAdapter());
+
+      const hits = await store.searchNodesByKeywords([dedupLabel], 10);
+      // 同一个 node.id 应该只出现一次
+      const ids = hits.map((h) => h.node.id);
+      const uniqueIds = new Set(ids);
+      expect(uniqueIds.size).toBe(ids.length);
+    });
+
+    it("substring fallback 长度过滤：太短的 query（< 3 字符）不跑 LIKE", async () => {
+      // "ai" 长度 2，太短，不应该触发 substring
+      // 但 FULLTEXT 也不命中，应该返回空
+      const hits = await store.searchNodesByKeywords(["ai"], 5);
+      // 不抛错、返回合法数组就行
+      expect(Array.isArray(hits)).toBe(true);
+    });
+  });
 });

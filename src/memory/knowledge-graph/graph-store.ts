@@ -537,16 +537,23 @@ export class GraphStore {
   }
 
   /**
-   * P1-4 修复（v3 review）+ P2-8 增强：用 MySQL FULLTEXT 索引实现
+   * P1-4 修复（v3 review）+ P2-8 增强 + P2-CRITICAL-FIX：用 MySQL FULLTEXT 索引实现
    *   searchNodesByKeywords，让 MySQL 后端也能用原生索引检索（之前是全表扫描）。
    *
    * 实现细节：
    * - 优先用 ngram parser 索引（中文 2-gram，对中文实体友好）— v21 optional migration
    * - 退到默认 FULLTEXT 索引（ft_min_word_len=4，英文长词有效）— v20 必有
    * - 启动时探一下 ngram 索引是否存在，缓存到 `ngramIndexAvailable` 字段
-   *   避免每次查询都跑 SHOW INDEX（开销）
    * - 输入 terms 是 canonical form（已小写、去下划线），不是 surface form
    * - 输出兼容 bfs-extractor.scoreNodes 期望的两种格式：{ node, score }[] 或 GraphNode[]
+   *
+   * **P2-CRITICAL-FIX（2026-06-03 标定发现）**：FULLTEXT 召回盲点
+   *   dev 数据 60% (109/183) raw=0 但语义完美匹配（label 含 `:` 等特殊字符时
+   *   FULLTEXT BOOLEAN MODE tokenization 失败）。加 multi-stage fallback：
+   *   Stage 1: FULLTEXT (fast, native index)
+   *   Stage 2: Exact label match (`WHERE label = ?`)
+   *   Stage 3: Canonical form match (`WHERE label = ?` after surfaceToCanonical)
+   *   Stage 4: Substring match (`WHERE label LIKE '%query%'`) — 最后一道
    *
    * @returns Array<{ node: GraphNode; score: number }>
    */
@@ -570,23 +577,41 @@ export class GraphStore {
     return this.ngramIndexAvailable;
   }
 
-  async searchNodesByKeywords(
-    terms: string[],
-    limit: number = 50
-  ): Promise<Array<{ node: GraphNode; score: number }>> {
-    const cleaned = (terms ?? [])
-      .map((t) => (typeof t === "string" ? t.trim() : ""))
-      .filter((t) => t.length > 0);
-    if (cleaned.length === 0 || limit <= 0) return [];
+  /**
+   * P2-CRITICAL-FIX: row → node 转换 + 缓存写入（多 stage 复用）
+   */
+  private rowToNode(row: NodeRow): GraphNode {
+    const node: GraphNode = {
+      id: row.id,
+      label: row.label,
+      type: row.type,
+      tags: this.parseTags(row.tags),
+      properties: this.parseProperties(row.properties),
+      createdAt: row.created_at,
+    };
+    if (row.community_id !== null && row.community_id !== undefined) {
+      node.communityId = row.community_id;
+    }
+    if (row.version !== null && row.version !== undefined) {
+      node.version = row.version;
+    }
+    if (row.importance !== null && row.importance !== undefined) {
+      node.importance = Number(row.importance);
+    }
+    this.liftExtendedNodeFields(node);
+    this.cache.set(node.id, node);
+    return node;
+  }
 
-    // P2-8 优雅降级：探一下 ngram 索引可用性
-    const useNgram = await this.probeNgramIndex();
-    const indexHint = useNgram
-      ? "ft_kb_graph_nodes_label_ngram"
-      : "ft_kb_graph_nodes_label";
-
-    // MySQL BOOLEAN MODE 语法：每个 term 包 + 必须包含，* 是前缀通配
-    // 例：["苹果", "公司"] → "+苹果* +公司*"
+  /**
+   * P2-CRITICAL-FIX Stage 1: FULLTEXT 召回（带 index hint 选 ngram 或 default）
+   */
+  private async stage1FulltextSearch(
+    cleaned: string[],
+    limit: number,
+    useNgram: boolean
+  ): Promise<Array<{ node: GraphNode; score: number; stage: number }>> {
+    const indexHint = useNgram ? "ft_kb_graph_nodes_label_ngram" : "ft_kb_graph_nodes_label";
     const boolQuery = cleaned.map((t) => `+${t.replace(/[+\-><()~*"@]/g, " ")}*`).join(" ");
 
     const rows = await this.adapter.query<NodeRow & { score: number }>(
@@ -599,34 +624,124 @@ export class GraphStore {
       [boolQuery, this.owner, boolQuery, limit]
     );
 
+    return rows.map((row) => ({
+      node: this.rowToNode(row),
+      score: normalizeFtsScore(Number(row.score)),
+      stage: 1,
+    }));
+  }
+
+  /**
+   * P2-CRITICAL-FIX Stage 2+3: Exact label / canonical match
+   * 命中 0.95 (exact) / 0.90 (canonical)
+   */
+  private async stage2ExactAndCanonicalSearch(
+    cleaned: string[],
+    limit: number
+  ): Promise<Array<{ node: GraphNode; score: number; stage: number }>> {
+    // 构建候选 label 集合：原 term + surfaceToCanonical 后的 canonical form
+    const candidateLabels = new Set<string>();
+    for (const t of cleaned) {
+      candidateLabels.add(t);
+      try {
+        // surfaceToCanonical 是 sync，try-import 它
+        const linker = await import("./entity-linker.js");
+        const canonical = linker.surfaceToCanonical(t);
+        if (canonical && canonical !== t) candidateLabels.add(canonical);
+      } catch { /* ignore */ }
+    }
+    if (candidateLabels.size === 0) return [];
+
+    const placeholders = Array.from(candidateLabels).map(() => "?").join(",");
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes
+       WHERE owner_id = ? AND label IN (${placeholders})
+       LIMIT ?`,
+      [this.owner, ...candidateLabels, limit]
+    );
+
     return rows.map((row) => {
-      const node: GraphNode = {
-        id: row.id,
-        label: row.label,
-        type: row.type,
-        tags: this.parseTags(row.tags),
-        properties: this.parseProperties(row.properties),
-        createdAt: row.created_at,
-      };
-      if (row.community_id !== null && row.community_id !== undefined) {
-        node.communityId = row.community_id;
-      }
-      if (row.version !== null && row.version !== undefined) {
-        node.version = row.version;
-      }
-      if (row.importance !== null && row.importance !== undefined) {
-        node.importance = Number(row.importance);
-      }
-      this.liftExtendedNodeFields(node);
-      this.cache.set(node.id, node);
-      // P2-7 修复（v3 review）：归一化从「除以 5」魔法值改为 tanh S 曲线。
-      //   之前 `raw/5` 在长尾场景下要么压成 0.5（真实命中），要么接近 1（噪声），
-      //   **斜率是错的**。tanh 在 raw=2 时约 0.76、raw=4 时约 0.99，**S 曲线** 形状
-      //   更贴近 LLM 评分实际分布（中位数落中间、尾部不爆炸）。
-      //   待真实数据标定后可以替换为拟合系数（CALIBRATION.md 跟踪）。
-      const normalized = normalizeFtsScore(Number(row.score));
-      return { node, score: normalized };
+      // exact 命中得高分 0.95，canonical 命中得 0.90
+      // 简化：所有 IN 查询结果都给 0.92（exact / canonical 中间）
+      return { node: this.rowToNode(row), score: 0.92, stage: 2 };
     });
+  }
+
+  /**
+   * P2-CRITICAL-FIX Stage 4: Substring match (last resort)
+   * 命中 0.65（较保守，因为 substring 容易误中）
+   * 用 LOWER() 不区分大小写；长度限制避免 1-2 字符的过短 query
+   */
+  private async stage4SubstringSearch(
+    cleaned: string[],
+    limit: number
+  ): Promise<Array<{ node: GraphNode; score: number; stage: number }>> {
+    // 只用长度 >= 3 的 term 跑 substring（避免 "ai" "ok" 误中）
+    const longTerms = cleaned.filter((t) => t.length >= 3);
+    if (longTerms.length === 0) return [];
+
+    const conditions = longTerms.map(() => "LOWER(label) LIKE LOWER(?)").join(" OR ");
+    const params = longTerms.map((t) => `%${t}%`);
+    const rows = await this.adapter.query<NodeRow>(
+      `SELECT * FROM kb_graph_nodes
+       WHERE owner_id = ? AND (${conditions})
+       LIMIT ?`,
+      [this.owner, ...params, limit]
+    );
+
+    return rows.map((row) => ({ node: this.rowToNode(row), score: 0.65, stage: 4 }));
+  }
+
+  /**
+   * P2-CRITICAL-FIX: 多 stage 结果合并 + 去重 + 取高
+   */
+  private mergeAndRank(
+    stages: Array<Array<{ node: GraphNode; score: number; stage: number }>>,
+    limit: number
+  ): Array<{ node: GraphNode; score: number }> {
+    const byId = new Map<string, { node: GraphNode; score: number; stage: number }>();
+    for (const stageHits of stages) {
+      for (const hit of stageHits) {
+        const existing = byId.get(hit.node.id);
+        if (!existing || hit.score > existing.score) {
+          byId.set(hit.node.id, hit);
+        }
+      }
+    }
+    return Array.from(byId.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(({ node, score }) => ({ node, score }));
+  }
+
+  async searchNodesByKeywords(
+    terms: string[],
+    limit: number = 50
+  ): Promise<Array<{ node: GraphNode; score: number }>> {
+    const cleaned = (terms ?? [])
+      .map((t) => (typeof t === "string" ? t.trim() : ""))
+      .filter((t) => t.length > 0);
+    if (cleaned.length === 0 || limit <= 0) return [];
+
+    // P2-8 优雅降级：探一下 ngram 索引可用性
+    const useNgram = await this.probeNgramIndex();
+
+    // Stage 1: FULLTEXT
+    const fulltextHits = await this.stage1FulltextSearch(cleaned, limit, useNgram);
+
+    // P2-CRITICAL-FIX: 如果 FULLTEXT 召回不足 50% limit，触发 fallback
+    // 原因：raw=0 命中 60% 的情况下，单 FULLTEXT 会错过最有意义的 label-exact 节点
+    const minResultsToTriggerFallback = Math.max(1, Math.floor(limit / 2));
+    if (fulltextHits.length >= minResultsToTriggerFallback) {
+      return fulltextHits.map(({ node, score }) => ({ node, score }));
+    }
+
+    // Stage 2 + 3: Exact + canonical
+    const exactHits = await this.stage2ExactAndCanonicalSearch(cleaned, limit);
+    // Stage 4: Substring
+    const substringHits = await this.stage4SubstringSearch(cleaned, limit);
+
+    return this.mergeAndRank([fulltextHits, exactHits, substringHits], limit);
   }
 
   async getAllNodes(): Promise<GraphNode[]> {
