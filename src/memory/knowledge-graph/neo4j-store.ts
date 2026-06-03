@@ -4,6 +4,18 @@ import neo4j, { Driver, Session } from "neo4j-driver";
 import { GraphStore } from "./graph-store.js";
 import { LRUCache } from "../../utils/lru-cache.js";
 
+/** 兼容属性字段可能为 string 或 object */
+function safeJsonParse(s: any): Record<string, unknown> {
+  if (s == null) return {};
+  if (typeof s === "object") return s;
+  try {
+    const parsed = JSON.parse(s);
+    return typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export class Neo4jGraphStore {
   private driver: Driver;
   private owner: string;
@@ -13,21 +25,148 @@ export class Neo4jGraphStore {
   private cache: LRUCache<GraphNode>;
   private cacheEdges: LRUCache<GraphEdge>;
 
+  /**
+   * 从 Neo4j record 提取 KG v2 扩展字段到 GraphEdge 顶层。
+   */
+  private applyEdgeExtendedFields(edge: GraphEdge, record: any): GraphEdge {
+    const sourceChunkId = record.get("sourceChunkId");
+    const evidence = record.get("evidence");
+    const feedbackScore = record.get("feedbackScore");
+    const version = record.get("version");
+    const validFrom = record.get("validFrom");
+    const validTo = record.get("validTo");
+    if (edge.sourceChunkId === undefined && sourceChunkId != null) edge.sourceChunkId = String(sourceChunkId);
+    if (edge.evidence === undefined && evidence != null) edge.evidence = String(evidence);
+    if (edge.feedbackScore === undefined && feedbackScore != null) edge.feedbackScore = Number(feedbackScore);
+    if (edge.version === undefined && version != null) edge.version = Number(version);
+    if (edge.validFrom === undefined && validFrom != null) edge.validFrom = Number(validFrom);
+    if (edge.validTo === undefined && validTo != null) edge.validTo = Number(validTo);
+    return edge;
+  }
+
   constructor(
     owner: string,
     uri: string = process.env.NEO4J_URI || "bolt://localhost:7687",
     user: string = process.env.NEO4J_USER || "neo4j",
     password: string = process.env.NEO4J_PASSWORD || "",
-    database: string = process.env.NEO4J_DATABASE || "raos"
+    database: string = process.env.NEO4J_DATABASE || "raos",
+    options?: {
+      maxConnectionPoolSize?: number;
+      connectionAcquisitionTimeout?: number;
+      maxTransactionRetryTime?: number;
+    }
   ) {
     if (!password) {
       throw new Error("Neo4j password is required. Set NEO4J_PASSWORD environment variable.");
     }
     this.owner = owner;
     this.database = database;
-    this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password));
+    // KG v2 阶段 5: 连接池配置
+    // 默认 maxConnectionPoolSize=50, 原来 driver 创建时无配置，默认 100，但未设置获取超时
+    const driverConfig: any = {
+      maxConnectionPoolSize: options?.maxConnectionPoolSize ?? 50,
+      connectionAcquisitionTimeout: options?.connectionAcquisitionTimeout ?? 30_000,
+      maxTransactionRetryTime: options?.maxTransactionRetryTime ?? 15_000,
+      // 禁用未加密警告（生产应配 encrypted=true）
+      disableLosslessIntegers: true,
+    };
+    this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password), driverConfig);
     this.cache = new LRUCache<GraphNode>(10_000, 5 * 60 * 1000);
     this.cacheEdges = new LRUCache<GraphEdge>(10_000, 5 * 60 * 1000);
+
+    // 阶段 5: 启动时确保 fulltext index 存在（异步、不阻塞构造）
+    this.ensureFulltextIndex().catch((err) => {
+      console.warn(`[Neo4jGraphStore] Failed to ensure fulltext index: ${(err as Error).message}`);
+    });
+  }
+
+  /**
+   * KG v2 阶段 5: 一次性创建/确保 fulltext 索引存在。
+   *
+   * P1-2 修复（v3 review）：索引只覆盖 label / tags，不再覆盖 n.properties.value。
+   * 原因：properties 是 JSON 字符串（如 `{"sourceDoc":"foo.md"}`），fulltext 索引
+   *       把整个 JSON 当字符串建索引，搜中文/英文实体时**完全搜不到**——是死索引。
+   *       真正有内容语义的字段应该提到节点顶级属性，而不是塞进 properties JSON。
+   */
+  private async ensureFulltextIndex(): Promise<void> {
+    const session = this.driver.session({ database: this.database });
+    try {
+      await session.run(
+        `CREATE FULLTEXT INDEX node_search IF NOT EXISTS FOR (n:KBNode) ON EACH [n.label, n.tags]`
+      );
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * KG v2 阶段 5: 用 Neo4j fulltext 索引搜索节点（替代 scoreNodes 的 getAllNodes 全量扫描）。
+   * 返回按 score 降序的节点列表。
+   */
+  async searchNodesByKeywords(terms: string[], limit = 50): Promise<Array<{ node: GraphNode; score: number }>> {
+    if (terms.length === 0) return [];
+    // Lucene 全文查询语法：term 之间用 AND
+    const luceneQuery = terms
+      .filter((t) => t.length > 1)
+      .map((t) => {
+        // 转义 Lucene 特殊字符
+        const escaped = t.replace(/[+\-&|!(){}\[\]^"~*?:\\/]/g, " ");
+        return `(${escaped})`;
+      })
+      .join(" AND ");
+
+    if (!luceneQuery) return [];
+
+    const session = this.driver.session({ database: this.database });
+    try {
+      const result = await session.run(
+        `CALL db.index.fulltext.queryNodes('node_search', $query) YIELD node, score
+         WHERE node.ownerId = $ownerId
+         RETURN node.id as id, node.label as label, node.type as type, node.tags as tags,
+                node.properties as properties, node.createdAt as createdAt,
+                node.version as version, node.importance as importance,
+                score
+         ORDER BY score DESC
+         LIMIT $limit`,
+        { query: luceneQuery, ownerId: this.owner, limit }
+      );
+
+      const scored: Array<{ node: GraphNode; score: number }> = [];
+      for (const record of result.records) {
+        const propsStr = record.get("properties");
+        const properties = typeof propsStr === "string" ? safeJsonParse(propsStr) : (propsStr || {});
+        const node: GraphNode = {
+          id: record.get("id"),
+          label: record.get("label"),
+          type: record.get("type") as NodeType,
+          tags: record.get("tags") || [],
+          properties,
+          createdAt: record.get("createdAt"),
+          version: record.get("version") != null ? Number(record.get("version")) : undefined,
+          importance: record.get("importance") != null ? Number(record.get("importance")) : undefined,
+        };
+        scored.push({ node, score: record.get("score") });
+      }
+      return scored;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * KG v2 阶段 5: 通用 session helper。
+   * 把 try/finally 模式统一起来，减少每个方法里的 boilerplate。
+   */
+  private async withSession<T>(mode: "READ" | "WRITE", fn: (session: Session) => Promise<T>): Promise<T> {
+    const session = this.driver.session({
+      database: this.database,
+      defaultAccessMode: mode === "WRITE" ? neo4j.session.WRITE : neo4j.session.READ,
+    });
+    try {
+      return await fn(session);
+    } finally {
+      await session.close();
+    }
   }
 
   // 关闭连接
@@ -299,7 +438,14 @@ export class Neo4jGraphStore {
     target: string,
     type: EdgeType,
     label: string,
-    weight = 1.0
+    weight = 1.0,
+    options?: {
+      sourceChunkId?: string;
+      evidence?: string;
+      feedbackScore?: number;
+      validFrom?: number;
+      validTo?: number;
+    }
   ): Promise<GraphEdge> {
     // 验证节点存在
     const [sourceNode, targetNode] = await Promise.all([
@@ -322,6 +468,12 @@ export class Neo4jGraphStore {
       label,
       weight,
       createdAt: Date.now(),
+      sourceChunkId: options?.sourceChunkId,
+      evidence: options?.evidence,
+      feedbackScore: options?.feedbackScore,
+      version: 1,
+      validFrom: options?.validFrom,
+      validTo: options?.validTo,
     };
 
     const session = this.driver.session({ database: this.database });
@@ -336,7 +488,13 @@ export class Neo4jGraphStore {
            label: $label,
            type: $type,
            weight: $weight,
-           createdAt: $createdAt
+           createdAt: $createdAt,
+           version: $version,
+           sourceChunkId: $sourceChunkId,
+           evidence: $evidence,
+           feedbackScore: $feedbackScore,
+           validFrom: $validFrom,
+           validTo: $validTo
          }]->(b)
          RETURN r`,
         {
@@ -347,7 +505,13 @@ export class Neo4jGraphStore {
           label: edge.label,
           type: edge.type,
           weight: edge.weight,
-          createdAt: edge.createdAt
+          createdAt: edge.createdAt,
+          version: edge.version ?? 1,
+          sourceChunkId: edge.sourceChunkId ?? null,
+          evidence: edge.evidence ?? null,
+          feedbackScore: edge.feedbackScore ?? null,
+          validFrom: edge.validFrom ?? null,
+          validTo: edge.validTo ?? null,
         }
       );
 
@@ -361,11 +525,13 @@ export class Neo4jGraphStore {
   async removeEdge(id: string): Promise<boolean> {
     const session = this.driver.session({ database: this.database });
     try {
+      // v2 review §2: 必须限定 ownerId，避免跨用户误删（虽然 edge id 撞库概率极低）
+      // 通过端点节点的 ownerId 限定：MATCH (a:KBNode {ownerId: $ownerId})-[r {id: $id}]-(b:KBNode)
       const result = await session.run(
-        `MATCH ()-[r {id: $id}]-()
+        `MATCH (a:KBNode {ownerId: $ownerId})-[r {id: $id}]-(b:KBNode)
          DELETE r
          RETURN count(r) as deletedCount`,
-        { id }
+        { id, ownerId: this.owner }
       );
 
       const deletedCount = result.records[0]?.get("deletedCount")?.toNumber() || 0;
@@ -384,7 +550,7 @@ export class Neo4jGraphStore {
       const result = await session.run(
         `MATCH ()-[r {id: $id}]-()
          RETURN r.id as id, startNode(r).id as source, endNode(r).id as target,
-                r.type as type, r.label as label, r.weight as weight,
+                r.type as type, r.label as label, r.weight as weight, r.version as version, r.sourceChunkId as sourceChunkId, r.evidence as evidence, r.feedbackScore as feedbackScore, r.validFrom as validFrom, r.validTo as validTo,
                 r.createdAt as createdAt`,
         { id }
       );
@@ -401,7 +567,7 @@ export class Neo4jGraphStore {
         weight: record.get("weight"),
         createdAt: record.get("createdAt")
       };
-
+      this.applyEdgeExtendedFields(edge, record);
       this.cacheEdges.set(id, edge);
       return edge;
     } finally {
@@ -415,12 +581,12 @@ export class Neo4jGraphStore {
       const result = await session.run(
         `MATCH (a:KBNode {id: $nodeId, ownerId: $ownerId})-[r]->(b:KBNode)
          RETURN r.id as id, a.id as source, b.id as target,
-                r.type as type, r.label as label, r.weight as weight,
+                r.type as type, r.label as label, r.weight as weight, r.version as version, r.sourceChunkId as sourceChunkId, r.evidence as evidence, r.feedbackScore as feedbackScore, r.validFrom as validFrom, r.validTo as validTo,
                 r.createdAt as createdAt
          UNION
          MATCH (a:KBNode)-[r]->(b:KBNode {id: $nodeId, ownerId: $ownerId})
          RETURN r.id as id, a.id as source, b.id as target,
-                r.type as type, r.label as label, r.weight as weight,
+                r.type as type, r.label as label, r.weight as weight, r.version as version, r.sourceChunkId as sourceChunkId, r.evidence as evidence, r.feedbackScore as feedbackScore, r.validFrom as validFrom, r.validTo as validTo,
                 r.createdAt as createdAt`,
         { nodeId, ownerId: this.owner }
       );
@@ -435,7 +601,8 @@ export class Neo4jGraphStore {
           label: record.get("label"),
           weight: record.get("weight"),
           createdAt: record.get("createdAt")
-        };
+      };
+        this.applyEdgeExtendedFields(edge, record);
         this.cacheEdges.set(edge.id, edge);
         edges.push(edge);
       }
@@ -453,7 +620,7 @@ export class Neo4jGraphStore {
         `MATCH (a:KBNode)-[r]-(b:KBNode)
          WHERE a.id IN [$a, $b] AND b.id IN [$a, $b] AND a.id <> b.id
          RETURN r.id as id, startNode(r).id as source, endNode(r).id as target,
-                r.type as type, r.label as label, r.weight as weight,
+                r.type as type, r.label as label, r.weight as weight, r.version as version, r.sourceChunkId as sourceChunkId, r.evidence as evidence, r.feedbackScore as feedbackScore, r.validFrom as validFrom, r.validTo as validTo,
                 r.createdAt as createdAt`,
         { a, b }
       );
@@ -467,7 +634,8 @@ export class Neo4jGraphStore {
           label: record.get("label"),
           weight: record.get("weight"),
           createdAt: record.get("createdAt")
-        };
+      };
+        this.applyEdgeExtendedFields(edge, record);
         this.cacheEdges.set(edge.id, edge);
         return edge;
       });
@@ -482,7 +650,7 @@ export class Neo4jGraphStore {
       const result = await session.run(
         `MATCH (a:KBNode {ownerId: $ownerId})-[r]-(b:KBNode)
          RETURN r.id as id, startNode(r).id as source, endNode(r).id as target,
-                r.type as type, r.label as label, r.weight as weight,
+                r.type as type, r.label as label, r.weight as weight, r.version as version, r.sourceChunkId as sourceChunkId, r.evidence as evidence, r.feedbackScore as feedbackScore, r.validFrom as validFrom, r.validTo as validTo,
                 r.createdAt as createdAt`,
         { ownerId: this.owner }
       );
@@ -496,7 +664,8 @@ export class Neo4jGraphStore {
           label: record.get("label"),
           weight: record.get("weight"),
           createdAt: record.get("createdAt")
-        };
+      };
+        this.applyEdgeExtendedFields(edge, record);
         this.cacheEdges.set(edge.id, edge);
         return edge;
       });
