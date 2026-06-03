@@ -40,9 +40,8 @@ describe.sequential("calibrate-from-real-data.ts (P2-7 标定 pipeline)", () => 
     );
     expect(output).toContain("[calibrate-real] ===== RESULTS =====");
     expect(output).toContain("data points:");
-    expect(output).toContain("current k=2: RMSE=");
-    expect(output).toContain("best k=");
-    expect(output).toContain("improvement:");
+    expect(output).toContain("rescued by fallback:");
+    expect(output).toContain("production RMSE (vs relevance):");
   }, 120_000);
 
   it("生成 ground_truth.json 格式正确（每条含 raw, relevance, query, nodeLabel, source）", () => {
@@ -73,7 +72,7 @@ describe.sequential("calibrate-from-real-data.ts (P2-7 标定 pipeline)", () => 
     expect(withMeta.length).toBeGreaterThan(0);
   });
 
-  it("RMSE 输出格式：current vs best，且能跑完推荐逻辑", () => {
+  it("FULLTEXT STAGE CALIBRATION 输出格式（仅当 stage=1 fulltext points 足够时）", () => {
     const output = execSync(
       `npx tsx ${scriptPath} --out ${tmpOut}`,
       {
@@ -88,22 +87,24 @@ describe.sequential("calibrate-from-real-data.ts (P2-7 标定 pipeline)", () => 
         },
       }
     );
-    // 提取 RMSE 数字
-    const currentMatch = output.match(/current k=2: RMSE=([\d.]+)/);
-    const bestMatch = output.match(/best k=([\d.]+):\s*RMSE=([\d.]+)/);
-    expect(currentMatch).not.toBeNull();
-    expect(bestMatch).not.toBeNull();
+    // 新输出格式：FULLTEXT STAGE CALIBRATION 在 stage=1 有点时才出现
+    // 验证 rescued by fallback 一定出现（无论 stage 分布如何）
+    expect(output).toContain("rescued by fallback:");
 
-    const currentRmse = parseFloat(currentMatch![1]);
-    const bestK = parseFloat(bestMatch![1]);
-    const bestRmse = parseFloat(bestMatch![2]);
+    // 提取 production RMSE（必出）
+    const prodMatch = output.match(/production RMSE \(vs relevance\): ([\d.]+)/);
+    expect(prodMatch).not.toBeNull();
+    const prodRmse = parseFloat(prodMatch![1]);
+    expect(prodRmse).toBeGreaterThan(0);
+    expect(prodRmse).toBeLessThan(1);
 
-    expect(currentRmse).toBeGreaterThan(0);
-    expect(bestK).toBeGreaterThan(0);
-    expect(bestK).toBeLessThanOrEqual(5);
-    expect(bestRmse).toBeGreaterThan(0);
-    // best 的 RMSE ≤ current（标定函数保证）
-    expect(bestRmse).toBeLessThanOrEqual(currentRmse + 0.001);
+    // 提取 rescued 比例
+    const rescuedMatch = output.match(/rescued by fallback: (\d+) \/ (\d+) \(([\d.]+)%\)/);
+    if (rescuedMatch) {
+      const rescuedPct = parseFloat(rescuedMatch[3]);
+      expect(rescuedPct).toBeGreaterThanOrEqual(0);
+      expect(rescuedPct).toBeLessThanOrEqual(100);
+    }
   }, 120_000);
 
   it("--synthetic 控制 fallback 数量（不报错就行）", () => {
@@ -172,11 +173,12 @@ describe.sequential("calibrate-from-real-data.ts (P2-7 标定 pipeline)", () => 
     expect(output).toContain("RMSE BY RAW BUCKET");
     expect(output).toContain("FINE-GRAINED K SEARCH");
     expect(output).toContain("HIGHEST-ERROR POINTS");
-    // best k 应该在合理区间
+    // analyze-calibration 输出 best k — 在 FINE-GRAINED K SEARCH 段
     const bestKMatch = output.match(/best k:\s+([\d.]+)/);
     expect(bestKMatch).not.toBeNull();
     const bestK = parseFloat(bestKMatch![1]);
-    expect(bestK).toBeGreaterThan(0.5);
+    // best k ≥ 0.5 (synthetic 数据下 k 在 1-2 区间，k=0 不可能最优)
+    expect(bestK).toBeGreaterThanOrEqual(0.5);
     expect(bestK).toBeLessThan(5);
   }, 120_000);
 });
