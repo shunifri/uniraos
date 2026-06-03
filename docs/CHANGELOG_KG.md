@@ -9,6 +9,7 @@
 
 | Commit (短) | 标题 | 改了哪些文件 | 相关文档 |
 |------------|------|--------------|----------|
+| (next) | **Neo4j APOC path (P2-12 #8)** | `neo4j-store.ts:extractSubgraphCTE` + `injectedDriver` test hook + 8 unit tests | [OPERATIONS.md](OPERATIONS.md) §1.1 依赖 (Neo4j APOC) |
 | (next) | **Relation Ontology + Acceptance alerting** | `types.ts:EdgeType` + `inferEdgeTypeFromLabel` + `check-acceptance-rate.ts` + OPERATIONS.md | [OPERATIONS.md](OPERATIONS.md) §3.5 |
 | (next) | **A/B test on LLM 响应** | `scripts/ab-test-llm-responses.ts` + tests | 本文 §A/B on LLM |
 | (next) | **graphContext A/B + v1 P0-2 全修完验证** | `scripts/ab-test-graph-context.ts` + doc | [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) |
@@ -99,7 +100,7 @@ ea805e1 docs(kg): 阶段 0 文档
 | **P2-8** | ngram FULLTEXT 插件优雅降级 | `mysql-database.ts` v21 (optional) + `graph-store.ts:431+` | **生产风险**：缺 ngram 插件的 MySQL 镜像，v21 migration 失败时降级、runtime 自动探 ngram 索引、缺失时改用默认 FULLTEXT |
 | **P2-10** | LLM 返回 array 容错 | `relationship-extractor.ts:222-256` | **鲁棒性**：LLM 偷懒不输出 object 时也能用 |
 | **P2-11** | ACL 改用精确匹配 | `recall.ts:91-101` + `bfs-extractor.ts:99-119` + `graph-store.ts:49-89` | **安全修复**：`doc_abc` 不再误中 `doc_abc_v2`；同时修了 `parseTags` 双重嵌套的隐藏 bug |
-| **P2-12** | 清理 `as any`（6+ 处）+ 提 `GraphStoreLike` interface + BFS N+1 → MySQL recursive CTE | `extraction-pipeline.ts:27-67` + `graph-store.ts:1032+` (`extractSubgraphCTE`) + `bfs-extractor.ts:152+` | **类型安全 + 检索高效**：bench 1.2-5.8x faster (50-500 节点 chain graph) |
+| **P2-12** | 清理 `as any`（6+ 处）+ 提 `GraphStoreLike` interface + BFS N+1 → MySQL recursive CTE + **Neo4j APOC 等价物** | `extraction-pipeline.ts:27-67` + `graph-store.ts:1032+` (`extractSubgraphCTE`) + `bfs-extractor.ts:152+` + **`neo4j-store.ts:extractSubgraphCTE` (APOC 优先 + Cypher fallback)** + `injectedDriver` 测试 hook | **类型安全 + 检索高效 + 生产 backend parity**：MySQL 8.0+ recursive CTE (1.2-5.8x faster) + Neo4j `apoc.path.subgraphAll` (BFS-native, 1 round-trip)；缺 APOC 自动 fallback 到 Cypher variable-length path |
 | **P2-13** | graphContext A/B test on LLM 真实响应 | `scripts/ab-test-llm-responses.ts` | **回复质量 (核心问题)**：15 queries 实测 LLM judge +0.205 (40% 相对提升), heuristic hit rate 0.27 → 0.84 (3x). 证 graphContext 真帮 LLM 答得更好，不是"召回多但答得一样" |
 | **P2-14** | Relation Ontology 扩展：PARENT_OF / REVISION_OF / ANCHORED_TO + 自动归类 | `types.ts:EdgeType` + `inferEdgeTypeFromLabel` + `manager.ts:onFactStored` | **关联理解 (生产化)**：docx 产物（父子结构/修订历史/浮动对象）现在能 typed；LLM-extracted relation label 自动归类，省 1 次 LLM 调用 |
 | **P2-15** | Acceptance rate alerting 自动化 | `scripts/check-acceptance-rate.ts` + `OPERATIONS.md §3.5` | **生产可观测性**：cron 跑 exit 0/1/2, 阈值/MIN_VOLUME 可配, 排除 test user 避免 noise |
@@ -110,11 +111,11 @@ ea805e1 docs(kg): 阶段 0 文档
 
 | 指标 | 数值 | 备注 |
 |------|------|------|
-| **测试通过率** | **585/585** | `tests/memory/knowledge-graph/` 174 + `tests/skills/` 215 + `tests/memory/` 163 + `tests/scripts/` 33 |
+| **测试通过率** | **599/599** | `tests/memory/knowledge-graph/` 174 + `tests/skills/` 215 + `tests/memory/` 163 + `tests/scripts/` 47 |
 | **TypeScript 错误** | **0** | `npx tsc --noEmit` |
 | **LLM 成本** | **-50%** | 2 个独立调用合并为 1 个 |
 | **chunk-expander SQL** | **-99%** | 150+ 次 → 1 次 |
-| **BFS 内部 N+1** | **→ 1 query (CTE)** | 1.2-5.8x faster (50-500 节点 chain graph) |
+| **BFS 内部 N+1** | **→ 1 query (CTE/APOC)** | MySQL: 1.2-5.8x faster (50-500 节点 chain graph); Neo4j: `apoc.path.subgraphAll` (BFS-native, 1 round-trip) |
 | **MySQL 后端检索** | **走 FULLTEXT 索引** | 从全表扫描改为原生全文索引 |
 | **graphContext 贡献 (A/B on LLM)** | **+40% LLM judge (0.54→0.74), 3x heuristic hit** | dev MySQL 15 queries; B 路径 12/15 wins |
 
@@ -125,7 +126,7 @@ ea805e1 docs(kg): 阶段 0 文档
 | 目标 | 关联变更 |
 |------|----------|
 | **检索更准确** | P0-1 ACL（防越权）、P1-4 MySQL FULLTEXT、和 Neo4j 路径对齐、P2-11 ACL 精确匹配 |
-| **检索更高效** | P0-3 N+1 SQL → 1 查询、P1-3 LRU 缓存、P1-4 MySQL 走 FULLTEXT 索引、P1-6 LLM 合并（-50% 延迟）、修 A 接合并 |
+| **检索更高效** | P0-3 N+1 SQL → 1 查询、P1-3 LRU 缓存、P1-4 MySQL 走 FULLTEXT 索引、P1-6 LLM 合并（-50% 延迟）、修 A 接合并、**P2-12 MySQL recursive CTE + Neo4j APOC path** |
 | **理解知识之间的关联** | P0-2 修 3 闭环（纯 entity 落库）、P1-2 Neo4j 索引精度、**P2-14 Relation Ontology 扩展 (PARENT_OF/REVISION_OF/ANCHORED_TO)** |
 | **提升回复质量** | P1-1 API 不说谎、P1-5 health check 暴露 tokenizer backend、P2-10 LLM 鲁棒性、**P2-13 A/B test on LLM 证明 +40%** |
 

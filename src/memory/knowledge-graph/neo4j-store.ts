@@ -54,11 +54,10 @@ export class Neo4jGraphStore {
       maxConnectionPoolSize?: number;
       connectionAcquisitionTimeout?: number;
       maxTransactionRetryTime?: number;
+      /** 测试用：注入一个预构建的 driver (跳过真实连接)，仅供 mock 单测 */
+      injectedDriver?: Driver;
     }
   ) {
-    if (!password) {
-      throw new Error("Neo4j password is required. Set NEO4J_PASSWORD environment variable.");
-    }
     this.owner = owner;
     this.database = database;
     // KG v2 阶段 5: 连接池配置
@@ -70,7 +69,15 @@ export class Neo4jGraphStore {
       // 禁用未加密警告（生产应配 encrypted=true）
       disableLosslessIntegers: true,
     };
-    this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password), driverConfig);
+    // 测试注入 driver 时不校验 password (单测用 mock)
+    if (options?.injectedDriver) {
+      this.driver = options.injectedDriver;
+    } else {
+      if (!password) {
+        throw new Error("Neo4j password is required. Set NEO4J_PASSWORD environment variable.");
+      }
+      this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password), driverConfig);
+    }
     this.cache = new LRUCache<GraphNode>(10_000, 5 * 60 * 1000);
     this.cacheEdges = new LRUCache<GraphEdge>(10_000, 5 * 60 * 1000);
 
@@ -700,6 +707,111 @@ export class Neo4jGraphStore {
       }
 
       return neighbors;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * P2-12 (#8 Neo4j APOC path): MySQL recursive CTE 在 Neo4j 上的等价物
+   *
+   * 优先用 `apoc.path.subgraphAll()`（BFS-native，O(1) round-trip）
+   * fallback 到 Cypher variable-length path（无 APOC 环境）
+   *
+   * 返回 shape 必须跟 GraphStore.extractSubgraphCTE 完全一致：
+   *   { nodeIds: string[]; edges: [{id, source, target, type, label}] }
+   * bfs-extractor.ts 用 `if (store.extractSubgraphCTE)` 判定调用
+   */
+  async extractSubgraphCTE(
+    seedNodeIds: string[],
+    maxDepth: number = 3,
+    maxNodes: number = 50
+  ): Promise<{ nodeIds: string[]; edges: Array<{ id: string; source: string; target: string; type: string; label: string }> }> {
+    if (seedNodeIds.length === 0) return { nodeIds: [], edges: [] };
+
+    const session = this.driver.session({ database: this.database });
+    try {
+      // ===== 路径 1: APOC subgraphAll (BFS, 推荐) =====
+      try {
+        const apocResult = await session.run(
+          `MATCH (seed:KBNode)
+           WHERE seed.id IN $seedIds AND seed.ownerId = $ownerId
+           CALL apoc.path.subgraphAll(seed, {
+             relationshipFilter: '',
+             maxLevel: $maxDepth,
+             limit: $maxNodes,
+             bfs: true
+           }) YIELD nodes, relationships
+           WITH [n IN nodes | n.id] AS nodeIds,
+                collect({
+                  id: toString(id(rel)),
+                  source: coalesce(startNode(rel).id, ''),
+                  target: coalesce(endNode(rel).id, ''),
+                  type: coalesce(type(rel), ''),
+                  label: coalesce(rel.label, '')
+                }) AS relData
+           UNWIND relData AS r
+           WITH nodeIds, collect(r) AS edges
+           RETURN nodeIds, edges`,
+          { seedIds: seedNodeIds, ownerId: this.owner, maxDepth, maxNodes }
+        );
+
+        if (apocResult.records.length > 0) {
+          const record = apocResult.records[0];
+          return {
+            nodeIds: record.get("nodeIds") as string[],
+            edges: record.get("edges") as Array<{ id: string; source: string; target: string; type: string; label: string }>,
+          };
+        }
+        // 走到这里说明 APOC 返回空（seed 全不在）—— 试 fallback
+      } catch (err: any) {
+        // APOC 没装（Neo4j Community / 没装插件）→ fallback
+        if (err?.code === "Neo.ClientError.Procedure.ProcedureNotFound" || /apoc/i.test(err?.message || "")) {
+          // fall through
+        } else {
+          throw err; // 别的错误不吞
+        }
+      }
+
+      // ===== 路径 2: Cypher variable-length path fallback =====
+      // 不依赖 APOC；用 -[*..maxDepth]- 无向遍历
+      // 两段：先拉 nodes，再拉 edges（避免单 query 太大）
+      const nodeResult = await session.run(
+        `MATCH (seed:KBNode) WHERE seed.id IN $seedIds AND seed.ownerId = $ownerId
+         MATCH path = (seed)-[*0..${maxDepth}]-(related:KBNode)
+         WHERE related.ownerId = $ownerId
+         WITH collect(DISTINCT related) + collect(DISTINCT seed) AS allNodes
+         UNWIND allNodes AS n
+         WITH collect(DISTINCT n.id) AS nodeIds
+         RETURN nodeIds[..${maxNodes}] AS nodeIds`,
+        { seedIds: seedNodeIds, ownerId: this.owner }
+      );
+
+      if (nodeResult.records.length === 0) {
+        return { nodeIds: [], edges: [] };
+      }
+      const nodeIds: string[] = nodeResult.records[0].get("nodeIds") as string[];
+
+      // 拉 edges
+      const edgeResult = await session.run(
+        `MATCH (a:KBNode)-[r]->(b:KBNode)
+         WHERE a.ownerId = $ownerId AND b.ownerId = $ownerId
+           AND a.id IN $nodeIds AND b.id IN $nodeIds
+         RETURN toString(id(r)) AS id, a.id AS source, b.id AS target,
+                type(r) AS type, coalesce(r.label, '') AS label
+         LIMIT ${maxNodes * 2}`,
+        { ownerId: this.owner, nodeIds }
+      );
+
+      const edges = edgeResult.records.map((record) => ({
+        id: record.get("id"),
+        source: record.get("source"),
+        target: record.get("target"),
+        type: record.get("type"),
+        label: record.get("label"),
+      }));
+
+      return { nodeIds, edges };
     } finally {
       await session.close();
     }
