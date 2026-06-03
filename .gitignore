@@ -2,7 +2,8 @@ node_modules/
 dist/
 src/ui/assets/
 .raos/
-.raos-test/  # P2-9: 测试时 LTM file backend 临时目录
+# P2-9: 测试时 LTM file backend 临时目录
+.raos-test/
 .worktrees/
 uploads/
 *.tsbuildinfo
@@ -11,7 +12,8 @@ uploads/
 *.log
 backend.log
 frontend.log
-server.log  # P2-9: 测试运行产生的 server noise（v3 review 之前漏了）
+# P2-9: 测试运行产生的 server noise（v3 review 之前漏了）
+server.log
 
 # Coverage
 coverage/
@@ -19,6 +21,8 @@ web/coverage/
 
 # Test reports
 playwright-report/
+# 测试运行时生成的 fixture（ground_truth.json 等）
+tests/fixtures/
 
 # IDE
 .vscode/
