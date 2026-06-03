@@ -432,3 +432,7 @@ RAOS 知识图谱是一个**架构设计合理、工程实现扎实**的系统�
 | [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | "LLM 抽取逻辑收敛成一份" + `graph_deduplicate` 等 P1 修复都在这里 |
 
 详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。
+
+## P0 验证
+
+`docs/V1-V2-P0-VERIFICATION.md` 有 4 个 P0（v1 2 个 + v2 2 个）逐项 grep + tsc 验证结果：**3 个真修完，1 个（BFS 内部 N+1）部分修**。

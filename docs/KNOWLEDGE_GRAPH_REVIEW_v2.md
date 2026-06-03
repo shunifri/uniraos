@@ -461,3 +461,7 @@ v1 写"LLM 关系抽取零集成"——这条 v2 翻案，已经接进了 `kb_in
 | [`b6a6e75`](CHANGELOG_KG.md#-commit-mapcommit--docs) | **阶段 1-2: 地基 + 离线化抽取** | v2 提出的 KG v2 阶段 1-2 实施在这个 commit |
 
 详细索引见 [CHANGELOG_KG.md §Commit Map](CHANGELOG_KG.md#-commit-mapcommit--docs)。
+
+## P0 验证
+
+`docs/V1-V2-P0-VERIFICATION.md` 有 4 个 P0（v1 2 个 + v2 2 个）逐项 grep + tsc 验证结果：**3 个真修完，1 个（BFS 内部 N+1）部分修**。

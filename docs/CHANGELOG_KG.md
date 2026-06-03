@@ -42,6 +42,8 @@ ea805e1 docs(kg): 阶段 0 文档
 | ACL 漏洞？ | [`b6a6e75`](#b6a6e75)（recall.ts isAllowed）· [`63c6618`](#63c6618)（kg-v2-fixes.test.ts e2e）|
 | N+1 SQL 慢？ | [`b6a6e75`](#b6a6e75)（chunk-expander.fetchChunksByDocAndIndex）|
 | 抽取任务堆积？ | [`b6a6e75`](#b6a6e75)（kg-extraction-queue）|
+| v1/v2 P0 验证报告（4 个 P0 状态）| [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) |
+| BFS 内部 N+1 怎么解？ | 见 [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) ⚠️ 部分修小节 |
 | 部署/监控/告警？ | [`3646570`](#3646570)（OPERATIONS.md）|
 | graphContext 字段含义？ | [`3646570`](#3646570)（GRAPH_CONTEXT_CHANGELOG.md）|
 | 修 1/2/3 / P0 是哪个 commit？ | 散在 [`b6a6e75`](#b6a6e75) + [`63c6618`](#63c6618) 多个里，看 commit message body |
