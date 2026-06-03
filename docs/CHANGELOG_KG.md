@@ -10,6 +10,7 @@
 | Commit (短) | 标题 | 改了哪些文件 | 相关文档 |
 |------------|------|--------------|----------|
 | (next) | **Neo4j APOC path (P2-12 #8)** | `neo4j-store.ts:extractSubgraphCTE` + `injectedDriver` test hook + 8 unit tests | [OPERATIONS.md](OPERATIONS.md) §1.1 依赖 (Neo4j APOC) |
+| (next) | **手动标定入口 (替代 #6 CI/CD auto)** | `src/services/calibration-control.ts` + `routes/calibration-admin-routes.ts` + `web/src/pages/Config.tsx` CalibrationPanel + 7 unit tests | 本文 §手动标定 |
 | (next) | **Relation Ontology + Acceptance alerting** | `types.ts:EdgeType` + `inferEdgeTypeFromLabel` + `check-acceptance-rate.ts` + OPERATIONS.md | [OPERATIONS.md](OPERATIONS.md) §3.5 |
 | (next) | **A/B test on LLM 响应** | `scripts/ab-test-llm-responses.ts` + tests | 本文 §A/B on LLM |
 | (next) | **graphContext A/B + v1 P0-2 全修完验证** | `scripts/ab-test-graph-context.ts` + doc | [V1-V2-P0-VERIFICATION.md](V1-V2-P0-VERIFICATION.md) |

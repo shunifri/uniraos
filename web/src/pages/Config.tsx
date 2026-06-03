@@ -36,10 +36,15 @@ import {
   PlusOutlined,
   FileTextOutlined,
   AliyunOutlined,
+  ExperimentOutlined,
+  ReloadOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  LoadingOutlined,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
-import { api } from "@/api";
+import { api, runCalibration, getCalibrationStatus, getCalibrationHistory, type CalibrationRun } from "@/api";
 
 const { Text, Title } = Typography;
 
@@ -51,7 +56,7 @@ const presets: Record<string, any> = {
 };
 
 type ModelCardType = "llm" | "vision" | "imageGen" | "tts" | "stt" | "embedding";
-type MenuKey = "models" | "agent" | "docmind" | "federation" | "evolution";
+type MenuKey = "models" | "agent" | "docmind" | "federation" | "evolution" | "calibration";
 
 interface CardDef {
   key: ModelCardType;
@@ -196,6 +201,208 @@ function ModelCardForm({
         </Form.Item>
       </Form>
     </Card>
+  );
+}
+
+// =============================================================================
+// Calibration 面板 (admin only)
+// 手动触发 FTS score 标定 + 看历史 runs
+// =============================================================================
+
+function CalibrationPanel() {
+  const t = useI18nStore((s) => s.t);
+  const { message } = App.useApp();
+  const [currentRun, setCurrentRun] = useState<CalibrationRun | null>(null);
+  const [history, setHistory] = useState<CalibrationRun[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [polling, setPolling] = useState(false);
+
+  // 初始 + 轮询：run 在跑时 1s 拉一次 status
+  const refresh = useCallback(async () => {
+    try {
+      const status = await getCalibrationStatus();
+      setCurrentRun(status.currentRun);
+      const hist = await getCalibrationHistory(10);
+      setHistory(hist.runs);
+    } catch (err: any) {
+      console.warn("[calibration-panel] refresh failed:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!polling) return;
+    const id = setInterval(refresh, 1000);
+    return () => clearInterval(id);
+  }, [polling, refresh]);
+
+  // 当 run 状态从 running 变 success/failed → 停轮询
+  useEffect(() => {
+    if (currentRun && currentRun.status !== "running" && polling) {
+      setPolling(false);
+    }
+  }, [currentRun, polling]);
+
+  const handleRun = async () => {
+    setSubmitting(true);
+    try {
+      const r = await runCalibration();
+      message.success("标定已启动: " + r.run.runId);
+      setPolling(true);
+      await refresh();
+    } catch (err: any) {
+      const data = err?.response?.data;
+      if (data?.error?.includes("already running")) {
+        message.warning("已有标定在跑中,稍候...");
+        setPolling(true);
+      } else {
+        message.error("启动失败: " + (err?.message || "未知错误"));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isRunning = currentRun?.status === "running";
+
+  return (
+    <Flex vertical gap={16}>
+      <Title level={4} style={{ margin: 0 }}>
+        <ExperimentOutlined style={{ marginRight: 8 }} />
+        标定管理
+      </Title>
+
+      <Alert
+        message="手动触发 FTS 评分标定"
+        description={
+          <>
+            标定会用最近 1000 条真实反馈 + synthetic 补充数据,跑出最优的 <code>FTS_SCORE_K</code>。
+            生产建议: acceptance rate 跌到 50% 以下 / LLM 升级后 / 索引重建后 → 跑一次。
+            结果写到 <code>.raos/calibration/{`{runId}`}.json</code>。
+          </>
+        }
+        type="info"
+        showIcon
+      />
+
+      <Card size="small" className="glass-card" title="当前状态">
+        <Flex align="center" gap={16} wrap="wrap">
+          <Button
+            type="primary"
+            icon={isRunning ? <LoadingOutlined /> : <ExperimentOutlined />}
+            loading={submitting || isRunning}
+            onClick={handleRun}
+            disabled={isRunning}
+          >
+            {isRunning ? "标定中..." : "开始标定"}
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={refresh}>
+            刷新
+          </Button>
+          {currentRun && (
+            <Space>
+              <Text type="secondary">Run ID:</Text>
+              <Tag>{currentRun.runId}</Tag>
+              {currentRun.status === "running" && (
+                <Tag color="processing" icon={<LoadingOutlined />}>
+                  running
+                </Tag>
+              )}
+              {currentRun.status === "success" && (
+                <Tag color="success" icon={<CheckCircleOutlined />}>
+                  success
+                </Tag>
+              )}
+              {currentRun.status === "failed" && (
+                <Tag color="error" icon={<CloseCircleOutlined />}>
+                  failed
+                </Tag>
+              )}
+              {currentRun.bestK !== undefined && (
+                <Tag color="cyan">best k = {currentRun.bestK.toFixed(2)}</Tag>
+              )}
+              {currentRun.productionRmse !== undefined && (
+                <Tag color="geekblue">RMSE = {currentRun.productionRmse.toFixed(3)}</Tag>
+              )}
+            </Space>
+          )}
+        </Flex>
+        {currentRun?.error && (
+          <Alert type="error" message={currentRun.error} style={{ marginTop: 12 }} />
+        )}
+        {currentRun?.stderrTail && currentRun.status === "failed" && (
+          <pre
+            style={{
+              marginTop: 12,
+              padding: 8,
+              background: "#f5f5f5",
+              fontSize: 12,
+              maxHeight: 160,
+              overflow: "auto",
+              borderRadius: 4,
+            }}
+          >
+            {currentRun.stderrTail}
+          </pre>
+        )}
+      </Card>
+
+      <Card size="small" className="glass-card" title={`历史 (${history.length})`}>
+        {history.length === 0 ? (
+          <Text type="secondary">暂无历史</Text>
+        ) : (
+          <List
+            size="small"
+            dataSource={history}
+            renderItem={(run) => (
+              <List.Item>
+                <Flex justify="space-between" style={{ width: "100%" }} wrap="wrap" gap={8}>
+                  <Space>
+                    {run.status === "running" && (
+                      <Tag color="processing" icon={<LoadingOutlined />}>
+                        running
+                      </Tag>
+                    )}
+                    {run.status === "success" && (
+                      <Tag color="success" icon={<CheckCircleOutlined />}>
+                        success
+                      </Tag>
+                    )}
+                    {run.status === "failed" && (
+                      <Tag color="error" icon={<CloseCircleOutlined />}>
+                        failed
+                      </Tag>
+                    )}
+                    <Text code style={{ fontSize: 12 }}>
+                      {run.runId}
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {new Date(run.startedAt).toLocaleString()}
+                    </Text>
+                  </Space>
+                  <Space>
+                    {run.bestK !== undefined && (
+                      <Tag color="cyan">k = {run.bestK.toFixed(2)}</Tag>
+                    )}
+                    {run.productionRmse !== undefined && (
+                      <Tag color="geekblue">RMSE = {run.productionRmse.toFixed(3)}</Tag>
+                    )}
+                    {run.finishedAt && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {((run.finishedAt - run.startedAt) / 1000).toFixed(1)}s
+                      </Text>
+                    )}
+                  </Space>
+                </Flex>
+              </List.Item>
+            )}
+          />
+        )}
+      </Card>
+    </Flex>
   );
 }
 
@@ -400,6 +607,11 @@ export default function ConfigPage() {
         key: "evolution",
         icon: <RocketOutlined />,
         label: t("evolution_engine") || "进化引擎",
+      },
+      {
+        key: "calibration",
+        icon: <ExperimentOutlined />,
+        label: "标定管理",
       },
     ] : []),
   ];
@@ -637,6 +849,9 @@ export default function ConfigPage() {
             </Card>
           </Flex>
         );
+
+      case "calibration":
+        return <CalibrationPanel />;
 
       default:
         return null;

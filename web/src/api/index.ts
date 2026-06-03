@@ -165,6 +165,37 @@ export const startSchedule = () => api.post('/api/memory/schedule', { action: 's
 export const stopSchedule = () => api.post('/api/memory/schedule', { action: 'stop' });
 
 // ---------------------------------------------------------------------------
+// Admin - Calibration (manual trigger, status, history)
+// ---------------------------------------------------------------------------
+
+export interface CalibrationRun {
+  runId: string;
+  startedAt: number;
+  finishedAt?: number;
+  status: "running" | "success" | "failed";
+  exitCode?: number;
+  stdoutTail?: string;
+  stderrTail?: string;
+  resultJsonPath?: string;
+  bestK?: number;
+  productionRmse?: number;
+  error?: string;
+}
+
+export const runCalibration = () =>
+  api.post<{ message: string; run: CalibrationRun }>('/api/admin/calibration/run');
+
+export const getCalibrationStatus = () =>
+  api.get<{ currentRun: CalibrationRun | null; isRunning: boolean }>(
+    '/api/admin/calibration/status'
+  );
+
+export const getCalibrationHistory = (limit = 10) =>
+  api.get<{ runs: CalibrationRun[]; count: number }>(
+    `/api/admin/calibration/history?limit=${limit}`
+  );
+
+// ---------------------------------------------------------------------------
 // Admin - Users / Departments / Roles / Resources
 // ---------------------------------------------------------------------------
 
