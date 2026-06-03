@@ -22,7 +22,26 @@ import { LRUCache } from "../../utils/lru-cache.js";
 const DEFAULT_FTS_K = 2;
 
 /**
- * 从环境变量读 FTS_SCORE_K（生产用）
+ * 从 env 读 FTS_SCORE_K (兜底)
+ *
+ * P2-CRITICAL-FIX #6 (auto-promote): 优先用 score-candidates 的 runtime k，
+ * runtime 没有再退回 env → default。这样 auto-promote 改 k 后不需要重启。
+ *
+ * 用 dynamic import 避免循环依赖 (graph-store 也被 calibration-control 反向引用)
+ */
+async function getFtsKAsync(): Promise<number> {
+  try {
+    const { getCurrentK } = await import("../../services/score-candidates.js");
+    const cur = getCurrentK();
+    if (cur.k > 0) return cur.k;
+  } catch {
+    // 静默：score-candidates 还没加载或 import 失败 → 用 env
+  }
+  return getFtsK();
+}
+
+/**
+ * 同步版 (兼容老调用)：从 env 读 FTS_SCORE_K（生产用）
  */
 function getFtsK(): number {
   const envK = process.env.FTS_SCORE_K;

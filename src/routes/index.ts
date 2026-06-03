@@ -15,6 +15,7 @@ import { createGraphRoutes } from "./graph-routes.js";
 import { createShareRoutes } from "./share-routes.js";
 import { createAdminCompatRoutes } from "./admin-compat-routes.js";
 import { createCalibrationAdminRoutes } from "./calibration-admin-routes.js";
+import { createCandidateAdminRoutes } from "./candidate-admin-routes.js";
 import connectionsRoutes from "./connections-routes.js";
 import { createFormRoutes } from "./form-routes.js";
 import workflowFormRoutes from "./workflow-form-routes.js";
@@ -45,6 +46,7 @@ export function mountRoutes(app: Express, deps: RouteDependencies): void {
   }
   app.use("/api", createAdminCompatRoutes(deps));
   app.use("/api", createCalibrationAdminRoutes());
+  app.use("/api", createCandidateAdminRoutes());
   app.use("/api/connections", connectionsRoutes);
   app.use("/api", createFormRoutes(deps));
   app.use("/api", workflowFormRoutes);

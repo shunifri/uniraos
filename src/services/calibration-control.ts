@@ -52,6 +52,14 @@ export interface CalibrationRun {
   productionRmse?: number;
   /** 错误信息（如果 status=failed） */
   error?: string;
+  /** 候选池 id (success 后写入) */
+  candidateId?: string;
+  /** 候选最终状态 */
+  candidateStatus?: "active" | "candidate" | "rejected" | "deleted";
+  /** 是否被自动采纳 */
+  autoPromoted?: boolean;
+  /** 候选池 reason (auto-promoted / kept as candidate) */
+  candidateReason?: string;
 }
 
 /** Calibration 数据目录：.raos/calibration/ */
@@ -178,7 +186,7 @@ export async function startCalibration(): Promise<CalibrationRun> {
   }
 
   // 异步等结果，不阻塞 HTTP response
-  child.on("close", (code) => {
+  child.on("close", async (code) => {
     const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
     const stderr = Buffer.concat(stderrChunks).toString("utf-8");
     run.finishedAt = Date.now();
@@ -194,6 +202,28 @@ export async function startCalibration(): Promise<CalibrationRun> {
       const summary = extractSummaryFromOutput(stdout);
       run.bestK = summary.bestK;
       run.productionRmse = summary.productionRmse;
+
+      // P2-CRITICAL-FIX #6 (auto-promote): 成功后把 bestK 加进候选池
+      // 池子会跟当前 active 比 RMSE，够优就 auto-promote
+      if (summary.bestK !== undefined && summary.productionRmse !== undefined) {
+        try {
+          const { addCandidate } = await import("./score-candidates.js");
+          const sampleMatch = stdout.match(/data points:\s*(\d+)/);
+          const sampleSize = sampleMatch ? parseInt(sampleMatch[1], 10) : 0;
+          const result = await addCandidate({
+            k: summary.bestK,
+            rmse: summary.productionRmse,
+            sampleSize,
+            runId: run.runId,
+          });
+          run.candidateId = result.candidate.id;
+          run.candidateStatus = result.candidate.status;
+          run.autoPromoted = result.autoPromoted;
+          run.candidateReason = result.reason;
+        } catch (err: any) {
+          console.warn("[calibration-control] failed to add candidate:", err);
+        }
+      }
     }
     // 持久化
     writeFile(stateFilePath, JSON.stringify(run, null, 2)).catch(() => {});

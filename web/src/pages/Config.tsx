@@ -20,6 +20,8 @@ import {
   Menu,
   Alert,
   Tooltip,
+  Table,
+  Modal,
 } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -44,10 +46,13 @@ import {
   LoadingOutlined,
   InfoCircleOutlined,
   QuestionCircleOutlined,
+  RollbackOutlined,
+  StopOutlined,
+  DeleteOutlined as DeleteIcon,
 } from "@ant-design/icons";
 import { useI18nStore } from "@/i18n";
 import { useAuthStore } from "@/store/auth";
-import { api, runCalibration, getCalibrationStatus, getCalibrationHistory, type CalibrationRun } from "@/api";
+import { api, runCalibration, getCalibrationStatus, getCalibrationHistory, getCandidates, promoteCandidate, rejectCandidate, deleteCandidate, revertActiveCandidate, getCandidateSettings, updateCandidateSettings, type CalibrationRun, type ScoreCandidate, type CandidateStatus } from "@/api";
 
 const { Text, Title } = Typography;
 
@@ -424,7 +429,294 @@ function CalibrationPanel() {
           />
         )}
       </Card>
+
+      <CandidatesTable />
     </Flex>
+  );
+}
+
+// =============================================================================
+// Candidates 候选池 + auto-promote 控制面板
+// =============================================================================
+
+function CandidatesTable() {
+  const { message, modal } = App.useApp();
+  const [candidates, setCandidates] = useState<ScoreCandidate[]>([]);
+  const [active, setActive] = useState<ScoreCandidate | null>(null);
+  const [currentK, setCurrentK] = useState<{ k: number; source: "env" | "candidate"; setAt: number }>({ k: 0, source: "env", setAt: 0 });
+  const [autoPromote, setAutoPromote] = useState(true);
+  const [threshold, setThreshold] = useState(5);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const data = await getCandidates();
+      setCandidates(data.candidates);
+      setActive(data.active);
+      setCurrentK(data.currentK);
+      const settings = await getCandidateSettings();
+      setAutoPromote(settings.autoPromote);
+      setThreshold(settings.improvementThresholdPct);
+    } catch (err: any) {
+      console.warn("[candidates] refresh failed:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handlePromote = async (id: string, k: number) => {
+    setLoading(true);
+    try {
+      const r = await promoteCandidate(id);
+      if (r.ok) {
+        message.success("已采纳 k=" + k.toFixed(2));
+        await refresh();
+      } else {
+        message.error(r.reason);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReject = (id: string, k: number) => {
+    modal.confirm({
+      title: "确认 reject?",
+      content: `k=${k.toFixed(2)} 这个候选将被标记为 rejected (保留在池里但不会被 auto-promote)`,
+      okText: "reject",
+      onOk: async () => {
+        const r = await rejectCandidate(id);
+        if (r.ok) {
+          message.success("已 reject");
+          await refresh();
+        } else {
+          message.error(r.reason);
+        }
+      },
+    });
+  };
+
+  const handleDelete = (id: string, k: number) => {
+    modal.confirm({
+      title: "确认 delete?",
+      content: `k=${k.toFixed(2)} 这个候选将从池里移除 (软删, 审计保留)`,
+      okText: "delete",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const r = await deleteCandidate(id);
+        if (r.ok) {
+          message.success("已 delete");
+          await refresh();
+        } else {
+          message.error(r.reason);
+        }
+      },
+    });
+  };
+
+  const handleRevert = () => {
+    modal.confirm({
+      title: "确认 revert?",
+      content: "回滚当前 active 到上一版 (如果没有上一版 → 回到 env 默认值)",
+      okText: "revert",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const r = await revertActiveCandidate();
+        if (r.ok) {
+          message.success(r.reason);
+          await refresh();
+        } else {
+          message.error(r.reason);
+        }
+      },
+    });
+  };
+
+  const handleToggleAuto = async (val: boolean) => {
+    const r = await updateCandidateSettings({ autoPromote: val });
+    if (r.ok) {
+      setAutoPromote(r.autoPromote);
+      message.success("auto-promote " + (val ? "已开启" : "已关闭"));
+    }
+  };
+
+  const handleThresholdChange = async (val: number) => {
+    const r = await updateCandidateSettings({ improvementThresholdPct: val });
+    if (r.ok) {
+      setThreshold(r.improvementThresholdPct);
+    }
+  };
+
+  // 过滤掉 deleted 让表格更干净
+  const visibleCandidates = candidates.filter((c) => c.status !== "deleted");
+
+  const columns = [
+    {
+      title: "Status",
+      dataIndex: "status",
+      key: "status",
+      width: 90,
+      render: (s: CandidateStatus) => {
+        if (s === "active") return <Tag color="success" icon={<CheckCircleOutlined />}>active</Tag>;
+        if (s === "candidate") return <Tag color="processing">candidate</Tag>;
+        if (s === "rejected") return <Tag color="default">rejected</Tag>;
+        return <Tag>{s}</Tag>;
+      },
+    },
+    {
+      title: "k",
+      dataIndex: "k",
+      key: "k",
+      width: 70,
+      render: (k: number) => <Text code>{k.toFixed(2)}</Text>,
+    },
+    {
+      title: "RMSE",
+      dataIndex: "rmse",
+      key: "rmse",
+      width: 80,
+      render: (r: number) => r.toFixed(4),
+    },
+    {
+      title: "样本",
+      dataIndex: "sampleSize",
+      key: "sampleSize",
+      width: 60,
+    },
+    {
+      title: "改善",
+      dataIndex: "improvementVsPrevious",
+      key: "improvementVsPrevious",
+      width: 80,
+      render: (v?: number) => {
+        if (v === undefined) return <Text type="secondary">-</Text>;
+        const color = v >= 0 ? "green" : "red";
+        return <Tag color={color}>{v >= 0 ? "+" : ""}{v.toFixed(1)}%</Tag>;
+      },
+    },
+    {
+      title: "Run ID",
+      dataIndex: "runId",
+      key: "runId",
+      width: 80,
+      render: (id: string) => <Text code style={{ fontSize: 11 }}>{id.slice(0, 12)}</Text>,
+    },
+    {
+      title: "时间",
+      key: "time",
+      render: (r: ScoreCandidate) => (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {new Date(r.createdAt).toLocaleString()}
+        </Text>
+      ),
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 200,
+      render: (r: ScoreCandidate) => {
+        if (r.status === "active") {
+          return (
+            <Button size="small" icon={<RollbackOutlined />} onClick={handleRevert}>
+              revert
+            </Button>
+          );
+        }
+        if (r.status === "deleted") {
+          return <Text type="secondary">已删</Text>;
+        }
+        return (
+          <Space size={4}>
+            <Button
+              size="small"
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              loading={loading}
+              onClick={() => handlePromote(r.id, r.k)}
+            >
+              采纳
+            </Button>
+            <Button
+              size="small"
+              icon={<StopOutlined />}
+              onClick={() => handleReject(r.id, r.k)}
+            >
+              reject
+            </Button>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteIcon />}
+              onClick={() => handleDelete(r.id, r.k)}
+            >
+              删
+            </Button>
+          </Space>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      className="glass-card"
+      title={
+        <Flex justify="space-between" align="center" wrap="wrap" gap={8}>
+          <span>
+            <ExperimentOutlined style={{ marginRight: 8 }} />
+            候选池 ({visibleCandidates.length})
+            {currentK.k > 0 && (
+              <Tag color="cyan" style={{ marginLeft: 12 }}>
+                当前 k = {currentK.k.toFixed(2)} ({currentK.source})
+              </Tag>
+            )}
+          </span>
+          <Space>
+            <Tooltip title="新 candidate RMSE 必须比 active 低至少这个百分比, 才会被自动采纳">
+              <span>阈值 {threshold}%</span>
+            </Tooltip>
+            <InputNumber
+              size="small"
+              min={0}
+              max={50}
+              value={threshold}
+              onChange={(v) => v !== null && handleThresholdChange(v)}
+              style={{ width: 60 }}
+            />
+            <Tooltip title="开启后, 新 candidate 满足阈值就自动改 active">
+              <Switch
+                size="small"
+                checked={autoPromote}
+                onChange={handleToggleAuto}
+                checkedChildren="auto"
+                unCheckedChildren="manual"
+              />
+            </Tooltip>
+            <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>
+              刷新
+            </Button>
+          </Space>
+        </Flex>
+      }
+    >
+      {visibleCandidates.length === 0 ? (
+        <Text type="secondary">
+          池里还没有候选。点上面"开始标定"按钮跑一次, 跑完会自动加进来。
+        </Text>
+      ) : (
+        <Table
+          size="small"
+          rowKey="id"
+          dataSource={visibleCandidates}
+          columns={columns}
+          pagination={false}
+          rowClassName={(r) => (r.status === "active" ? "ant-table-row-selected" : "")}
+        />
+      )}
+    </Card>
   );
 }
 

@@ -196,6 +196,59 @@ export const getCalibrationHistory = (limit = 10) =>
   );
 
 // ---------------------------------------------------------------------------
+// Admin - Score Candidates (候选池 + auto-promote)
+// ---------------------------------------------------------------------------
+
+export type CandidateStatus = "active" | "candidate" | "rejected" | "deleted";
+
+export interface ScoreCandidate {
+  id: string;
+  k: number;
+  rmse: number;
+  sampleSize: number;
+  runId: string;
+  status: CandidateStatus;
+  createdAt: number;
+  activatedAt?: number;
+  rejectedAt?: number;
+  notes?: string;
+  improvementVsPrevious?: number;
+}
+
+export interface CandidateListResp {
+  candidates: ScoreCandidate[];
+  active: ScoreCandidate | null;
+  currentK: { k: number; source: "env" | "candidate"; setAt: number };
+  count: number;
+}
+
+export const getCandidates = () =>
+  api.get<CandidateListResp>('/api/admin/calibration/candidates');
+
+export const promoteCandidate = (id: string) =>
+  api.post<{ ok: boolean; reason: string }>(`/api/admin/calibration/candidates/${id}/promote`);
+
+export const rejectCandidate = (id: string, notes?: string) =>
+  api.post<{ ok: boolean; reason: string }>(`/api/admin/calibration/candidates/${id}/reject`, { notes });
+
+export const deleteCandidate = (id: string) =>
+  api.del<{ ok: boolean; reason: string }>(`/api/admin/calibration/candidates/${id}`);
+
+export const revertActiveCandidate = () =>
+  api.post<{ ok: boolean; reason: string }>('/api/admin/calibration/candidates/revert');
+
+export const getCandidateSettings = () =>
+  api.get<{ autoPromote: boolean; improvementThresholdPct: number }>(
+    '/api/admin/calibration/candidates/settings'
+  );
+
+export const updateCandidateSettings = (settings: { autoPromote?: boolean; improvementThresholdPct?: number }) =>
+  api.post<{ ok: boolean; autoPromote: boolean; improvementThresholdPct: number }>(
+    '/api/admin/calibration/candidates/settings',
+    settings
+  );
+
+// ---------------------------------------------------------------------------
 // Admin - Users / Departments / Roles / Resources
 // ---------------------------------------------------------------------------
 

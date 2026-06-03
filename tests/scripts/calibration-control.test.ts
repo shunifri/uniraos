@@ -40,10 +40,13 @@ async function waitForRunStatus(runId: string, target: "success" | "failed", tim
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const r = getRecentRuns(50).find((x) => x.runId === runId);
-    if (r && r.status === target) return;
+    if (r && r.status === target) {
+      // 同时等 currentRun 清掉 (因为 handler 是 async, status 设了之后还在 await addCandidate)
+      if (getCurrentRun() === null) return;
+    }
     await new Promise((res) => setTimeout(res, 5));
   }
-  throw new Error(`Timeout waiting for run ${runId} to reach status=${target}`);
+  throw new Error(`Timeout waiting for run ${runId} to reach status=${target} (currentRun=${getCurrentRun()?.runId})`);
 }
 
 describe("calibration-control (#6 manual entry)", () => {
