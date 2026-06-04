@@ -156,12 +156,12 @@ export class ReactAgent implements Agent {
         data: { iteration: iterations },
       };
 
-      if (this.deps.provider.chatStream) {
-        let textContent = "";
-        const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+        if (this.deps.provider.chatStream) {
+          let textContent = "";
+          const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
-        let thinkBuf = "";
-        for await (const chunk of this.deps.provider.chatStream(messages, tools, chatOptions)) {
+          let thinkBuf = "";
+          for await (const chunk of this.deps.provider.chatStream(messages, tools, chatOptions)) {
           if (chunk.type === "text_delta" && chunk.text) {
             // reasoning_content → thinking 事件
             if ((chunk as any).reasoning) {

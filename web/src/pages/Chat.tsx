@@ -374,7 +374,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               });
             });
           }
-        } else if (eventName === "agent_done" || eventName === "done") {
+        } else if (eventName === "agent_done" || eventName === "done" || eventName === "stream_complete") {
           setConvStates(prev => {
             const state = prev.get(activeConvId)!;
             return new Map(prev).set(activeConvId, {
@@ -386,6 +386,12 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               ),
             });
           });
+          // P2 修复：stream_complete 到了 → 主动断开 WS
+          // 之前靠 onClose 触发，但 server WS 不会主动关，导致 loading 一直 true
+          if (eventName === "stream_complete") {
+            const ws = (abortController as any)?._wsClient;
+            if (ws) { try { ws.disconnect(); } catch {} }
+          }
           const url = new URL(window.location.href);
           url.searchParams.delete("stream");
           window.history.replaceState({}, "", url.toString());

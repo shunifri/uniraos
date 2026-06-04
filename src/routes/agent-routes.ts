@@ -815,7 +815,7 @@ ${message}`;
     params: RunAgentChatStreamParams,
     onEvent: (eventName: string, data: unknown) => void | Promise<void>
   ): Promise<void> {
-    const { userId, message, mode, conversationId: convId, defaultSkill, defaultSkills, appId, role } = params;
+    const { userId, message, mode, conversationId: convId, defaultSkill, defaultSkills, appId, role, streamId } = params;
 
     async function saveMsg(role: string, content: string, opts?: { skillName?: string; status?: string; isError?: boolean; extra?: unknown }) {
       if (!convId) return;
@@ -1076,9 +1076,14 @@ ${message}`;
         await saveMsg("assistant", currentAssistantText, { extra });
         currentAssistantText = "";
       }
+
+      // P2 修复：发 stream_complete 事件让前端关掉 loading 状态
+      // 之前靠 WS onClose 触发，但 server WS 不会主动关，导致 loading 一直转圈
+      onEvent("stream_complete", { streamId });
     } catch (err) {
       onEvent("error", { error: err instanceof Error ? err.message : String(err) });
       await saveMsg("assistant", err instanceof Error ? err.message : String(err), { isError: true });
+      onEvent("stream_complete", { streamId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
