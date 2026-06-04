@@ -62,6 +62,8 @@ export interface ChatMsg {
   planId?: string;
   /** 用户消息附带的附件元数据（持久化后刷新可恢复） */
   attachments?: ChatAttachment[];
+  /** 该 user message 关联的 server streamId, 用于刷新/切页面后重连 in-flight stream */
+  streamId?: string;
 }
 
 export interface Conversation {

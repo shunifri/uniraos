@@ -866,7 +866,11 @@ ${message}`;
       attachments.push({ name: m[1], path: m[2] });
     }
 
-    await saveMsg("user", message, attachments.length > 0 ? { extra: { attachments } } : undefined);
+    // 把 streamId 存到 user message extra, 客户端刷新/切页面回来后可凭此重连
+    const userExtra: Record<string, unknown> = {};
+    if (attachments.length > 0) userExtra.attachments = attachments;
+    if (streamId) userExtra.streamId = streamId;
+    await saveMsg("user", message, Object.keys(userExtra).length > 0 ? { extra: userExtra } : undefined);
     await updateConvTitle(message.slice(0, 50) + (message.length > 50 ? "..." : ""));
 
     let enrichedMessage = message;

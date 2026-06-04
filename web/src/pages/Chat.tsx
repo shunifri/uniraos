@@ -248,6 +248,7 @@ function parseMsg(m: any): ChatMsg {
     webReferences: m.extra?.webReferences || undefined,
     resultData: m.extra?.resultData ?? undefined,
     attachments: attachments || undefined,
+    streamId: m.extra?.streamId || undefined,
   };
   // 预解析 user_confirm 数据，避免每次渲染 JSON.parse 产生新对象引用
   if (parsed.role === "user_confirm") {
@@ -327,6 +328,39 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
   };
 
   useEffect(() => { loadConversations(); }, []);
+
+  // P3 修复: 无论怎么打断 (刷新页面/切别的页面再回来), 都能接上 in-flight stream
+  // 核心思路: streamId 持久化在 user message 的 extra.streamId (后端 agent-routes 写入),
+  // 这里在 mount 后, conv 消息加载完时, 扫一遍最后一条 user message, 拿到 streamId 就重连.
+  // 用 ref 记录"已检查过哪些 conv", 避免每次 convStates 变化都重扫.
+  const recoveryCheckedConvsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const convId = activeConvId; // 闭包当前值, deps 触发重跑
+    if (!convId) return;
+    if (recoveryCheckedConvsRef.current.has(convId)) return;
+    const state = convStates.get(convId);
+    if (!state || state.messages.length === 0) return; // 消息还没 load 完, 等下一次
+    // 标记为已检查, 避免后面再触发
+    recoveryCheckedConvsRef.current.add(convId);
+
+    // 从后往前找最后一条 user message
+    let lastUserIdx = -1;
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      if (state.messages[i].role === "user") { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx < 0) return;
+    const lastUser = state.messages[lastUserIdx];
+    if (!lastUser.streamId) return; // 没有 streamId, 说明不是 in-flight, 是历史消息
+
+    // 看 user 后面有没有 response (assistant / thinking / tool / user_confirm)
+    const hasResponse = state.messages.slice(lastUserIdx + 1).some(m =>
+      m.role === "assistant" || m.role === "thinking" || m.role === "tool" || m.role === "user_confirm"
+    );
+    if (hasResponse) return; // 已经接完了, 不用重连
+
+    // 还在 in-flight, 走 recovery
+    doRecovery(convId, lastUser.streamId);
+  }, [convStates, activeConvId]); // convStates 变 (消息加载完) 就触发一次
 
   // Refresh recovery: reconnect to ongoing stream via URL streamId
   // P2 修复: 之前 deps=[activeConvId], 切换对话也重连, 导致旧 conv 的 stream 事件写到新 conv
@@ -415,6 +449,9 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           const url = new URL(window.location.href);
           url.searchParams.delete("stream");
           window.history.replaceState({}, "", url.toString());
+          // P3 修复: stream 完成后从 DB 拉一次最新, 防止 server 端 assistant 消息已 save 但 buffer 被清
+          // (典型场景: 用户切走很久再回来, 5s buffer cleanup 早已触发, replay() 返回 0 没事件)
+          loadMessages(convId);
         } else if (eventName === "error") {
           setConvStates(prev => {
             const state = prev.get(convId)!;
@@ -431,7 +468,17 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
         }
       },
       onReplayComplete: () => {
-        // Historical events replayed, now receiving live events
+        // P3 修复: 历史事件 replay 完, 如果一条事件都没收到 (replay=0), 说明
+        // server 端 stream 已经跑完且 buffer 被清理了 (5s cleanup). 此时 client
+        // 等不到 stream_complete, 必须主动去 DB 拉一次最新消息.
+        // 如果 stream 还在 in-flight, 后续 live 事件会照常来, 这里只是兜底.
+        if (needNewBubble) {
+          setTimeout(() => {
+            // 再次检查: 如果在 timeout 期间新事件已经让 needNewBubble=false, 就不用拉
+            if (!needNewBubble) return;
+            loadMessages(convId);
+          }, 1500);
+        }
       },
       onError: (error) => {
         setConvStates(prev => {
