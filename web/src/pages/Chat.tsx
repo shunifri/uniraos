@@ -329,13 +329,36 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
   useEffect(() => { loadConversations(); }, []);
 
   // Refresh recovery: reconnect to ongoing stream via URL streamId
+  // P2 修复: 之前 deps=[activeConvId], 切换对话也重连, 导致旧 conv 的 stream 事件写到新 conv
+  // 现在 deps=[], 只在 mount 时跑一次. 如果没找到 stream (activeConvId 还没设上), 用 setTimeout 等
+  const recoveryTriedRef = useRef(false);
   useEffect(() => {
-    if (!activeConvId) return;
-    const urlParams = new URLSearchParams(window.location.search);
-    const streamId = urlParams.get("stream");
-    if (!streamId) return;
+    if (recoveryTriedRef.current) return;
+    const tryRecover = () => {
+      if (recoveryTriedRef.current) return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const streamId = urlParams.get("stream");
+      if (!streamId) return false;
+      const convId = activeConvIdRef.current;
+      if (!convId) return false; // 还没选到对话, 等下一次
+      recoveryTriedRef.current = true;
+      // 走完整 recovery 流程 (见下面)
+      doRecovery(convId, streamId);
+      return true;
+    };
+    // 立即试一次, 如果 activeConvId 还没设, 1秒后再试
+    if (!tryRecover()) {
+      const timer = setTimeout(tryRecover, 1000);
+      return () => clearTimeout(timer);
+    }
+    // 已 recovery, 不再重试
+  }, []);
 
-    const currentState = convStates.get(activeConvId);
+  /** 从 URL ?stream=xxx 重连到对话 (refresh recovery) */
+  function doRecovery(convId: string, streamId: string) {
+    // 防御: 如果用户已经切到别的对话, 不打扰
+    if (activeConvIdRef.current !== convId) return;
+    const currentState = convStates.get(convId);
     if (currentState?.loading) return; // Already connected
 
     const token = useAuthStore.getState().token;
@@ -356,8 +379,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
             needNewBubble = false;
             currentText = data.text;
             setConvStates(prev => {
-              const state = prev.get(activeConvId)!;
-              return new Map(prev).set(activeConvId, {
+              const state = prev.get(convId)!;
+              return new Map(prev).set(convId, {
                 ...state,
                 messages: [...removeTyping(state.messages), { role: "assistant", content: data.text, status: "streaming" }],
               });
@@ -365,8 +388,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           } else {
             currentText += data.text;
             setConvStates(prev => {
-              const state = prev.get(activeConvId)!;
-              return new Map(prev).set(activeConvId, {
+              const state = prev.get(convId)!;
+              return new Map(prev).set(convId, {
                 ...state,
                 messages: state.messages.map(msg =>
                   msg.status === "streaming" ? { ...msg, content: currentText } : msg
@@ -376,8 +399,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           }
         } else if (eventName === "agent_done" || eventName === "done" || eventName === "stream_complete") {
           setConvStates(prev => {
-            const state = prev.get(activeConvId)!;
-            return new Map(prev).set(activeConvId, {
+            const state = prev.get(convId)!;
+            return new Map(prev).set(convId, {
               ...state,
               loading: false,
               abortController: null,
@@ -386,8 +409,6 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
               ),
             });
           });
-          // P2 修复：stream_complete 到了 → 主动断开 WS
-          // 之前靠 onClose 触发，但 server WS 不会主动关，导致 loading 一直 true
           if (eventName === "stream_complete" && wsClient) {
             try { wsClient.disconnect(); } catch {}
           }
@@ -396,8 +417,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           window.history.replaceState({}, "", url.toString());
         } else if (eventName === "error") {
           setConvStates(prev => {
-            const state = prev.get(activeConvId)!;
-            return new Map(prev).set(activeConvId, {
+            const state = prev.get(convId)!;
+            return new Map(prev).set(convId, {
               ...state,
               loading: false,
               abortController: null,
@@ -414,8 +435,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
       },
       onError: (error) => {
         setConvStates(prev => {
-          const state = prev.get(activeConvId)!;
-          return new Map(prev).set(activeConvId, {
+          const state = prev.get(convId)!;
+          return new Map(prev).set(convId, {
             ...state,
             loading: false,
             abortController: null,
@@ -425,8 +446,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
       },
       onClose: () => {
         setConvStates(prev => {
-          const state = prev.get(activeConvId)!;
-          return new Map(prev).set(activeConvId, { ...state, loading: false, abortController: null });
+          const state = prev.get(convId)!;
+          return new Map(prev).set(convId, { ...state, loading: false, abortController: null });
         });
       },
     });
@@ -441,8 +462,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
     });
 
     setConvStates(prev => {
-      const state = prev.get(activeConvId)!;
-      return new Map(prev).set(activeConvId, {
+      const state = prev.get(convId)!;
+      return new Map(prev).set(convId, {
         ...state,
         loading: true,
         abortController,
@@ -452,7 +473,7 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
 
     wsClient.connect();
     wsClient.subscribe(streamId);
-  }, [activeConvId]);
+  }
 
   useEffect(() => {
     if (pptxThemesFetched.current) return;
@@ -1265,6 +1286,12 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
   const switchConversation = (convId: string) => {
     const currentId = activeConvIdRef.current;
     if (convId === currentId) return;
+    // P2 修复: 切对话时清掉 URL ?stream=xxx, 避免旧 conv 的 stream 标志干扰新 conv
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("stream")) {
+      url.searchParams.delete("stream");
+      window.history.replaceState({}, "", url.toString());
+    }
     setActiveConvId(convId);
     const targetState = convStates.get(convId);
     if (!targetState || targetState.messages.length === 0) {
