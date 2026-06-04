@@ -804,29 +804,45 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
   }
 
   // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）- 只有在有视觉模型配置时才生成图片
+  // P1-20 修复: mammoth 已经提取出 144K 字符的纯文本时, 还要跑 LibreOffice + PDF + gm
+  // 生成图片 (用于"双视图"), LibreOffice 经常 30s+ 把整个 Node 事件循环卡死,
+  // 导致 kb_list / kb_stats 全部超时. 改为:
+  // 1. 文本够多 (>= 5K 字符) → 跳过图片生成, 完全不跑 LibreOffice
+  // 2. 文本稀疏 (扫描件 / 图文混排) → 保留图片生成, 但加 10s 硬超时保险
+  // 3. 用户可后续手动调 generatePageImages API 按需生成 (TODO)
+  const textLenForSkipDecision = mammothContent?.trim().length ?? 0;
+  const shouldGenerateImages = !!visionConfig && textLenForSkipDecision < 5000;
   const imagePromise = (async (): Promise<{ images: Map<number, string>; pageCount: number } | null> => {
-    // 没有视觉模型配置时，跳过图片生成，直接返回 null，避免调用 LibreOffice
-    if (!visionConfig) {
+    if (!shouldGenerateImages) {
       return null;
     }
 
-    try {
-      const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
-      const pdfPath = convertToPDF(filePath, tempDir);
-      // @ts-expect-error - 第三方库无类型定义
-      const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = getPdfParse(pdfParseModule);
-      const pdfData = await pdfParse(safeReadFile(pdfPath));
+    // 硬超时 10s, 防止 LibreOffice 卡死把 Node 拖死
+    const timeoutPromise = new Promise<null>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[doc-parser] Word: image generation timed out after 10s, skipping`);
+        resolve(null);
+      }, 10_000);
+    });
 
-      const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
-      mkdirSync(imageTempDir, { recursive: true });
-      const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+    const workPromise = (async (): Promise<{ images: Map<number, string>; pageCount: number } | null> => {
+      try {
+        const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
+        const pdfPath = convertToPDF(filePath, tempDir);
+        // @ts-expect-error - 第三方库无类型定义
+        const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
+        const pdfParse = getPdfParse(pdfParseModule);
+        const pdfData = await pdfParse(safeReadFile(pdfPath));
 
-      const images = new Map<number, string>();
-      for (const pageNum of successPages) {
-        const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-        images.set(pageNum, safeReadFile(imageFile).toString("base64"));
-      }
+        const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
+        mkdirSync(imageTempDir, { recursive: true });
+        const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
+
+        const images = new Map<number, string>();
+        for (const pageNum of successPages) {
+          const imageFile = join(imageTempDir, `page.${pageNum}.png`);
+          images.set(pageNum, safeReadFile(imageFile).toString("base64"));
+        }
 
       cleanupDir(tempDir);
       cleanupDir(imageTempDir);
@@ -836,8 +852,17 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
     }
   })();
 
+  // 实际等待 workPromise 完成或 10s 超时, 早返回的胜出
+  const result = await Promise.race([workPromise, timeoutPromise]);
+  return result;
+  })();
+
   if (mammothContent && mammothContent.trim().length > 0) {
-    console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars, generating images in background`);
+    if (shouldGenerateImages) {
+      console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars (sparse text), generating images with 10s timeout`);
+    } else {
+      console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars, skipping image generation (text sufficient)`);
+    }
     let content = mammothContent.length > 100000
       ? mammothContent.substring(0, 100000) + "\n...[内容已截断]"
       : mammothContent;
