@@ -388,9 +388,8 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           });
           // P2 修复：stream_complete 到了 → 主动断开 WS
           // 之前靠 onClose 触发，但 server WS 不会主动关，导致 loading 一直 true
-          if (eventName === "stream_complete") {
-            const ws = (abortController as any)?._wsClient;
-            if (ws) { try { ws.disconnect(); } catch {} }
+          if (eventName === "stream_complete" && wsClient) {
+            try { wsClient.disconnect(); } catch {}
           }
           const url = new URL(window.location.href);
           url.searchParams.delete("stream");
@@ -1149,6 +1148,25 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                   messages: [...removeTyping(currentState.messages), { role: "system", content: progressText, planId: data.planId }],
                 });
               });
+            } else if (eventName === "stream_complete" || eventName === "agent_done" || eventName === "done") {
+              // P2 修复：消息发完 → loading=false + 主动断 WS
+              setConvStates(prev => {
+                const currentState = prev.get(convId)!;
+                return new Map(prev).set(convId, {
+                  ...currentState,
+                  loading: false,
+                  abortController: null,
+                  messages: removeTyping(currentState.messages).map(msg =>
+                    msg.status === "streaming" ? { ...msg, status: undefined } : msg
+                  ),
+                });
+              });
+              if (eventName === "stream_complete" && wsClient) {
+                try { wsClient.disconnect(); } catch {}
+              }
+              const url = new URL(window.location.href);
+              url.searchParams.delete("stream");
+              window.history.replaceState({}, "", url.toString());
             }
           },
           onReplayComplete: () => {
@@ -1228,6 +1246,13 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
 
   // New Chat
   const newChat = async () => {
+    // P2 修复：先清掉 URL 上的 ?stream=xxx，否则下面的 useEffect 看到 stream param
+    // 会重连到旧 stream 给新 conv 设 loading: true
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("stream")) {
+      url.searchParams.delete("stream");
+      window.history.replaceState({}, "", url.toString());
+    }
     const id = await apiCreateConversation("新对话");
     if (id) {
       setActiveConvId(id);
