@@ -368,16 +368,25 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       // 根据不同类型进行简单测试
       switch (cardType) {
         case "vision": {
-          // Vision 模型测试 - 尝试一个简单的图像描述请求（不带图片）
+          // Vision 模型测试 - 用 1x1 透明 PNG 当占位图
+          // 之前发 content: "Hello" 纯文本被很多 vision provider (Doubao/Qwen) 拒绝 → 400
+          // 改成 OpenAI vision 标准格式 (text + image_url data URL), 所有 provider 都接受
+          const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
           const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${config.apiKey}`,
+              Authorization: `Bearer ${config.apiKey}`,
             },
             body: JSON.stringify({
               model: config.model,
-              messages: [{ role: "user", content: "Hello" }],
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "text", text: "Hi" },
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${TINY_PNG}` } },
+                ],
+              }],
               max_tokens: 10,
             }),
           });
@@ -385,7 +394,6 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
             const error = await response.text();
             throw new Error(`API error: ${response.status} ${error}`);
           }
-          const data = await response.json();
           res.json({
             success: true,
             model: config.model,
