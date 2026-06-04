@@ -3,6 +3,7 @@ import { permissions } from "../permissions/index.js";
 import { OpenAIEmbeddingProvider } from "../memory/embedding-provider.js";
 import { setGlobalKBEmbeddingProvider, setGlobalKBVisionConfig } from "../skills/knowledge-skills.js";
 import { fetchWithTimeout } from "../utils/fetch-with-timeout.js";
+import { resolveEndpoint } from "../utils/endpoint-url.js";
 import type { LLMProviderConfig } from "../llm/types.js";
 import type { RouteDependencies } from "./types.js";
 
@@ -127,11 +128,30 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       res.status(400).json({ success: false, error: `Invalid model card type: ${cardType}` });
       return;
     }
-    const { type, apiKey, baseUrl, model, maxTokens, temperature, embeddingMode, apiMode } = req.body;
+    const { type, apiKey, baseUrl, model, maxTokens, temperature, embeddingMode, apiMode, inheritFromLLM } = req.body;
     const existingCards = configManager.getModelCards();
     const existingCard = (existingCards as Record<string, any>)[cardType] ?? {};
-    const resolvedApiKey = (!apiKey || apiKey.startsWith("***")) ? existingCard.apiKey : apiKey;
-    configManager.setModelCard(cardType, { type, apiKey: resolvedApiKey, baseUrl, model, maxTokens, temperature, embeddingMode, apiMode });
+
+    // 解析最终 apiKey/baseUrl:
+    // - inheritFromLLM === true (非 LLM 卡): 清空, 让 getResolvedModelConfig 回退到 LLM 的配置
+    // - apiKey 缺失 / "***xxx" 掩码: 保持原值 (用户没改)
+    // - apiKey 为新字符串: 替换
+    let resolvedApiKey: string;
+    let resolvedBaseUrl: string | undefined;
+    if (cardType !== "llm" && inheritFromLLM === true) {
+      resolvedApiKey = "";
+      resolvedBaseUrl = undefined;
+    } else {
+      if (apiKey === undefined || apiKey === null) {
+        resolvedApiKey = existingCard.apiKey || "";
+      } else if (typeof apiKey === "string" && apiKey.startsWith("***")) {
+        resolvedApiKey = existingCard.apiKey || "";
+      } else {
+        resolvedApiKey = apiKey;
+      }
+      resolvedBaseUrl = baseUrl;
+    }
+    configManager.setModelCard(cardType, { type, apiKey: resolvedApiKey, baseUrl: resolvedBaseUrl, model, maxTokens, temperature, embeddingMode, apiMode });
 
     if (cardType === "llm" && type && resolvedApiKey && model) {
       configManager.setLLM({ type, apiKey: resolvedApiKey, baseUrl, model, maxTokens: maxTokens ?? 4096, temperature: temperature ?? 0.7 });
@@ -364,15 +384,21 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
       return;
     }
 
+    // 拼完整 endpoint URL: baseUrl 可能是基础 URL (https://ark.cn-beijing.volces.com/api/v3)
+    // 也可能已是完整 endpoint (https://api.openai.com/v1/chat/completions). 检测后智能拼接.
+    // resolveEndpoint 已抽到 src/utils/endpoint-url.ts, 这里直接用.
+
     try {
       // 根据不同类型进行简单测试
       switch (cardType) {
         case "vision": {
-          // Vision 模型测试 - 用 1x1 透明 PNG 当占位图
+          // Vision 模型测试 - 用 32x32 透明 PNG 当占位图
           // 之前发 content: "Hello" 纯文本被很多 vision provider (Doubao/Qwen) 拒绝 → 400
           // 改成 OpenAI vision 标准格式 (text + image_url data URL), 所有 provider 都接受
-          const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/chat/completions", {
+          // 1x1 PNG 不行, Doubao 要求最小 14x14, 用 32x32 留点 buffer
+          const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAGklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAO8GECAAARlDNO4AAAAASUVORK5CYII=";
+          const url = resolveEndpoint(config.baseUrl, "/chat/completions", "https://api.openai.com/v1");
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -403,7 +429,8 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "imageGen": {
           // Image Gen 测试 - 尝试一个简单请求（不实际生成图片）
-          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/images/generations", {
+          const url = resolveEndpoint(config.baseUrl, "/images/generations", "https://api.openai.com/v1");
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -437,7 +464,8 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "tts": {
           // TTS 测试 - 检查 API 可达性
-          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/audio/speech", {
+          const url = resolveEndpoint(config.baseUrl, "/audio/speech", "https://api.openai.com/v1");
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -470,7 +498,8 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "stt": {
           // STT 测试 - 检查 API 可达性
-          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/audio/transcriptions", {
+          const url = resolveEndpoint(config.baseUrl, "/audio/transcriptions", "https://api.openai.com/v1");
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${config.apiKey}`,
@@ -499,7 +528,8 @@ export function createConfigRoutes(deps: RouteDependencies): Router {
         }
         case "embedding": {
           // Embedding 测试
-          const response = await fetchWithTimeout(config.baseUrl || "https://api.openai.com/v1/embeddings", {
+          const url = resolveEndpoint(config.baseUrl, "/embeddings", "https://api.openai.com/v1");
+          const response = await fetchWithTimeout(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",

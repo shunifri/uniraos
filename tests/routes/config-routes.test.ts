@@ -304,4 +304,76 @@ describe("Config Routes", () => {
     expect(deps.configManager.setDocMind).toHaveBeenCalled();
     expect(res.json.mock.calls[0][0].success).toBe(true);
   });
+
+  // P3 修复: 测试 model-cards 的 inheritFromLLM 持久化逻辑
+  describe("model-cards/:type with inheritFromLLM", () => {
+    it("should clear apiKey and baseUrl when inheritFromLLM=true (non-LLM card)", () => {
+      const deps = createMockDeps();
+      // 已有 vision card, apiKey 之前是 LLM 的 key (用户在测试 inherit)
+      deps.configManager.getModelCards = vi.fn(() => ({
+        vision: { type: "openai-compatible", apiKey: "old-key", baseUrl: "https://old.url", model: "doubao-x" },
+      }));
+      createConfigRoutes(deps);
+      const req = createMockReq({
+        type: "openai-compatible",
+        model: "doubao-x",
+        inheritFromLLM: true,
+      }, { type: "vision" });
+      const res = createMockRes();
+
+      routeHandlers["POST /config/model-cards/:type"](req, res);
+
+      expect(deps.configManager.setModelCard).toHaveBeenCalledWith(
+        "vision",
+        expect.objectContaining({
+          apiKey: "",
+          baseUrl: undefined,
+          model: "doubao-x",
+        }),
+      );
+    });
+
+    it("should preserve masked apiKey (***xxx) when inheritFromLLM is not set", () => {
+      const deps = createMockDeps();
+      deps.configManager.getModelCards = vi.fn(() => ({
+        vision: { type: "openai-compatible", apiKey: "real-key-1234", baseUrl: "https://ark.x", model: "doubao-y" },
+      }));
+      createConfigRoutes(deps);
+      const req = createMockReq({
+        type: "openai-compatible",
+        apiKey: "***1234", // masked, user did not change
+        baseUrl: "https://ark.x",
+        model: "doubao-y",
+      }, { type: "vision" });
+      const res = createMockRes();
+
+      routeHandlers["POST /config/model-cards/:type"](req, res);
+
+      expect(deps.configManager.setModelCard).toHaveBeenCalledWith(
+        "vision",
+        expect.objectContaining({ apiKey: "real-key-1234" }),
+      );
+    });
+
+    it("should use new apiKey when user provides a new value", () => {
+      const deps = createMockDeps();
+      deps.configManager.getModelCards = vi.fn(() => ({
+        vision: { type: "openai-compatible", apiKey: "old-key", model: "doubao-z" },
+      }));
+      createConfigRoutes(deps);
+      const req = createMockReq({
+        type: "openai-compatible",
+        apiKey: "brand-new-key-5678",
+        model: "doubao-z",
+      }, { type: "vision" });
+      const res = createMockRes();
+
+      routeHandlers["POST /config/model-cards/:type"](req, res);
+
+      expect(deps.configManager.setModelCard).toHaveBeenCalledWith(
+        "vision",
+        expect.objectContaining({ apiKey: "brand-new-key-5678" }),
+      );
+    });
+  });
 });

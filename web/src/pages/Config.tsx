@@ -117,6 +117,8 @@ function ModelCardForm({
       values.apiKey = undefined;
       values.baseUrl = undefined;
     }
+    // 显式把 inherit 状态传给后端, 让它能区分"用户没改 apiKey 字段"vs"用户要清空回退到 LLM"
+    values.inheritFromLLM = !isLLM && inheritLLM;
     await onSave(def.key, values);
   };
 
