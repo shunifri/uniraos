@@ -2,6 +2,8 @@ import { Router } from "express";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { getStreamBuffer } from "../websocket/stream-buffer.js";
+import { requireAdmin as _requireAdmin } from "../permissions/middleware/auth-middleware.js";
+const requireAdmin = _requireAdmin;
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { getDb, isMySQL } from "../db/database.js";
 import { getRoleAgentConfig, getUserRoles } from "../db/user-repository.js";
@@ -404,6 +406,20 @@ ${message}`;
   }
 
   // POST /api/agent/chat/confirm — resolve a pending user_confirm
+  // P2 调试：admin 看 chat stream 状态 (排查 WebSocket 收不到内容)
+  // GET /api/agent/chat/stream-stats          — 所有 streamId 概览
+  // GET /api/agent/chat/stream/:id/peek        — 某 stream 最近 N 条事件
+  router.get("/agent/chat/stream-stats", requireAuth, requireAdmin, async (_req, res) => {
+    const stats = getStreamBuffer().stats();
+    res.json({ streams: stats, count: stats.length });
+  });
+  router.get("/agent/chat/stream/:id/peek", requireAuth, requireAdmin, async (req, res) => {
+    const limitRaw: unknown = req.query.limit;
+    const limit = Math.min(parseInt(String(Array.isArray(limitRaw) ? limitRaw[0] : limitRaw ?? "50"), 10) || 50, 200);
+    const events = getStreamBuffer().peek(String(req.params.id), limit);
+    res.json({ streamId: req.params.id, count: events.length, events });
+  });
+
   router.post("/agent/chat/confirm", requireAuth, async (req, res) => {
     const { confirmId, response, cancelled } = req.body;
     const responseData = (typeof response === "object" && response !== null ? response : {}) as Record<string, unknown>;

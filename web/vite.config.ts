@@ -28,6 +28,18 @@ export default defineConfig({
           });
         },
       },
+      // P2 修复：把 /ws WebSocket 也代理到后端 (之前只代理 /api，WS 握手直接 404)
+      // ws: true 启用 WebSocket 升级；changeOrigin 让后端看到正确的 host
+      "/ws": {
+        target: "ws://localhost:3000",
+        ws: true,
+        changeOrigin: true,
+        configure: (proxy, _options) => {
+          proxy.on("error", (err, _req, _socket) => {
+            console.error("[Vite WS Proxy Error]", err.message);
+          });
+        },
+      },
     },
   },
   build: {

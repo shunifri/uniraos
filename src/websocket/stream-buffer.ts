@@ -68,6 +68,28 @@ export class StreamBuffer {
     }
   }
 
+  /** P2 调试用：列出所有 streamId 及其事件计数 (不要返事件内容, 避免泄露) */
+  stats(): Array<{ streamId: string; eventCount: number; subscriberCount: number; ageMs: number }> {
+    const now = Date.now();
+    const results: Array<{ streamId: string; eventCount: number; subscriberCount: number; ageMs: number }> = [];
+    for (const [streamId, list] of this.buffers) {
+      results.push({
+        streamId,
+        eventCount: list.length,
+        subscriberCount: this.subscribers.get(streamId)?.size ?? 0,
+        ageMs: list.length > 0 ? now - list[0].timestamp : 0,
+      });
+    }
+    return results;
+  }
+
+  /** P2 调试用：取某 stream 的最近 N 条事件 (返完整内容, admin only) */
+  peek(streamId: string, limit = 50): StreamEvent[] {
+    const list = this.buffers.get(streamId);
+    if (!list) return [];
+    return list.slice(-limit);
+  }
+
   private scheduleCleanup(streamId: string): void {
     const existing = this.timers.get(streamId);
     if (existing) clearTimeout(existing);

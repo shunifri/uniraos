@@ -213,6 +213,296 @@ function ModelCardForm({
 }
 
 // =============================================================================
+// 4 个 useForm 子组件 (useForm() 在子组件里调用, 仅当 panel active 时才创建 form 实例)
+// 避免 antd 警告 "Instance created by useForm is not connected to any Form element"
+// =============================================================================
+
+function AgentPanel({ t, onSave, initialValues }: { t: any; onSave: (v: any) => Promise<void>; initialValues?: any }) {
+  const [form] = Form.useForm();
+  return (
+    <Flex vertical gap={16}>
+      <Title level={4} style={{ margin: 0 }}>
+        <SettingOutlined style={{ marginRight: 8 }} />
+        {t("agent_settings")}
+      </Title>
+      <Card size="small" className="glass-card">
+        <Form
+          form={form}
+          layout="horizontal"
+          labelCol={{ span: 6 }}
+          onFinish={onSave}
+          size="small"
+          initialValues={initialValues}
+        >
+          <Form.Item name="maxIterations" label={t("max_iterations")}>
+            <InputNumber min={1} max={50} style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="systemPrompt" label={t("system_prompt")}>
+            <Input.TextArea rows={3} placeholder={t("system_prompt_hint")} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
+              {t("save")}
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+    </Flex>
+  );
+}
+
+function DocMindPanel({
+  t,
+  config,
+  testLoading,
+  onSave,
+  onTest,
+}: {
+  t: any;
+  config: any;
+  testLoading: boolean;
+  onSave: (v: any) => Promise<void>;
+  onTest: () => void;
+}) {
+  const [form] = Form.useForm();
+  return (
+    <Flex vertical gap={16}>
+      <Title level={4} style={{ margin: 0 }}>
+        <AliyunOutlined style={{ marginRight: 8 }} />
+        Document Mind
+      </Title>
+      <Alert
+        type="info"
+        showIcon
+        message={t("docmind_title")}
+        description={t("docmind_desc")}
+        style={{ marginBottom: 8 }}
+      />
+      <Card
+        size="small"
+        className="glass-card"
+        title={
+          <Flex align="center" gap={8}>
+            <FileTextOutlined />
+            <span>{t("api_config")}</span>
+            <Tag color={config?.enabled ? "success" : "default"} style={{ fontSize: 11 }}>
+              {config?.enabled ? t("enabled") : t("disabled")}
+            </Tag>
+          </Flex>
+        }
+      >
+        <Form
+          form={form}
+          layout="horizontal"
+          labelCol={{ span: 7 }}
+          onFinish={onSave}
+          size="small"
+          initialValues={config || {}}
+        >
+          <Form.Item name="enabled" label={t("enable")} valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="accessKeyId" label="AccessKey ID" rules={[{ required: true }]}>
+            <Input placeholder="LTAI..." />
+          </Form.Item>
+          <Form.Item name="accessKeySecret" label="AccessKey Secret" rules={[{ required: true }]}>
+            <Input.Password placeholder="your-secret-key" />
+          </Form.Item>
+          <Form.Item name="endpoint" label="Endpoint">
+            <Input placeholder="docmind-api.cn-hangzhou.aliyuncs.com" />
+          </Form.Item>
+          <Form.Item name="regionId" label="Region">
+            <Input placeholder="cn-hangzhou" />
+          </Form.Item>
+          <Divider orientation="left" style={{ fontSize: 13 }}>{t("advanced_options")}</Divider>
+          <Form.Item name="multimediaMode" label={t("multimedia_mode")}>
+            <Select
+              options={[
+                { label: t("base_recognition"), value: "base" },
+                { label: t("advance_parsing"), value: "advance" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="maxPollingMinutes" label={t("max_polling_time")}>
+            <InputNumber min={5} max={120} addonAfter={t("minutes")} style={{ width: 150 }} />
+          </Form.Item>
+          <Form.Item name="pollingIntervalSeconds" label={t("polling_interval")}>
+            <InputNumber min={1} max={30} addonAfter={t("seconds")} style={{ width: 150 }} />
+          </Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
+                {t("save")}
+              </Button>
+              <Button onClick={onTest} loading={testLoading} icon={<ApiOutlined />}>
+                {t("test_connection")}
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Card>
+    </Flex>
+  );
+}
+
+function FederationPanel({
+  t,
+  config,
+  peers,
+  newPeer,
+  setNewPeer,
+  addPeer,
+  removePeer,
+  onSave,
+}: {
+  t: any;
+  config: any;
+  peers: Array<{ endpoint: string; name?: string }>;
+  newPeer: { endpoint: string; name: string };
+  setNewPeer: any;
+  addPeer: () => void;
+  removePeer: (endpoint: string) => void;
+  onSave: (v: any) => Promise<void>;
+}) {
+  const [form] = Form.useForm();
+  return (
+    <Flex vertical gap={16}>
+      <Title level={4} style={{ margin: 0 }}>
+        <CloudServerOutlined style={{ marginRight: 8 }} />
+        {t("federation")}
+      </Title>
+      <Card size="small" className="glass-card">
+        <Form
+          form={form}
+          layout="horizontal"
+          labelCol={{ span: 7 }}
+          onFinish={onSave}
+          size="small"
+          initialValues={config || {}}
+        >
+          <Form.Item name="instanceId" label={t("instance_id")}>
+            <Input placeholder="raos_main" />
+          </Form.Item>
+          <Form.Item name="federationKey" label={t("federation_key")}>
+            <Input.Password placeholder={t("federation_key_hint")} />
+          </Form.Item>
+          <Form.Item name="heartbeatIntervalMs" label={t("heartbeat")}>
+            <InputNumber min={5000} style={{ width: 160 }} addonAfter="ms" />
+          </Form.Item>
+          <Form.Item name="syncIntervalMs" label={t("sync_interval")}>
+            <InputNumber min={10000} style={{ width: 160 }} addonAfter="ms" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
+              {t("save")}
+            </Button>
+          </Form.Item>
+        </Form>
+
+        <Divider orientation="left" style={{ fontSize: 13 }}>{t("peers")}</Divider>
+        <List
+          size="small"
+          dataSource={peers}
+          locale={{ emptyText: t("no_peers") }}
+          renderItem={(p) => (
+            <List.Item
+              actions={[
+                <Button
+                  key="del"
+                  type="text"
+                  danger
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  onClick={() => removePeer(p.endpoint)}
+                />,
+              ]}
+            >
+              <List.Item.Meta
+                title={<Text code style={{ fontSize: 12 }}>{p.endpoint}</Text>}
+                description={p.name || undefined}
+              />
+            </List.Item>
+          )}
+        />
+        <Flex gap={8} style={{ marginTop: 8 }}>
+          <Input
+            size="small"
+            placeholder="http://remote:3000"
+            value={newPeer.endpoint}
+            onChange={(e) => setNewPeer((p: any) => ({ ...p, endpoint: e.target.value }))}
+            style={{ flex: 1 }}
+          />
+          <Input
+            size="small"
+            placeholder={t("name")}
+            value={newPeer.name}
+            onChange={(e) => setNewPeer((p: any) => ({ ...p, name: e.target.value }))}
+            style={{ width: 150 }}
+          />
+          <Button size="small" icon={<PlusOutlined />} onClick={addPeer}>
+            {t("add")}
+          </Button>
+        </Flex>
+      </Card>
+    </Flex>
+  );
+}
+
+function EvolutionPanel({
+  t,
+  config,
+  onSave,
+}: {
+  t: any;
+  config: any;
+  onSave: (v: any) => Promise<void>;
+}) {
+  const [form] = Form.useForm();
+  return (
+    <Flex vertical gap={16}>
+      <Title level={4} style={{ margin: 0 }}>
+        <RocketOutlined style={{ marginRight: 8 }} />
+        {t("evolution_engine")}
+      </Title>
+      <Card size="small" className="glass-card">
+        <Form
+          form={form}
+          layout="horizontal"
+          labelCol={{ span: 8 }}
+          onFinish={onSave}
+          size="small"
+          initialValues={config || {}}
+        >
+          <Form.Item name="autoExecute" label={t("auto_execute")} valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="cycleIntervalMs" label={t("cycle_interval")}>
+            <InputNumber min={60000} style={{ width: 160 }} addonAfter="ms" />
+          </Form.Item>
+          <Form.Item name="maxActionsPerCycle" label={t("max_actions")}>
+            <InputNumber min={1} max={50} style={{ width: 100 }} />
+          </Form.Item>
+          <Form.Item name="successRateThreshold" label={t("success_threshold")}>
+            <Slider min={0} max={1} step={0.05} />
+          </Form.Item>
+          <Form.Item name="latencyThresholdMs" label={t("latency_threshold")}>
+            <InputNumber min={100} style={{ width: 160 }} addonAfter="ms" />
+          </Form.Item>
+          <Form.Item name="inactiveDays" label={t("inactive_days")}>
+            <InputNumber min={1} style={{ width: 100 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
+              {t("save")}
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+    </Flex>
+  );
+}
+
+// =============================================================================
 // Calibration 面板 (admin only)
 // 手动触发 FTS score 标定 + 看历史 runs
 // =============================================================================
@@ -726,16 +1016,18 @@ export default function ConfigPage() {
   const isAdmin = useAuthStore((s) => s.isAdmin);
 
   const [activeKey, setActiveKey] = useState<MenuKey>("models");
-  const [agentForm] = Form.useForm();
-  const [fedForm] = Form.useForm();
-  const [evoForm] = Form.useForm();
-  const [docMindForm] = Form.useForm();
+  // 注: agentForm / fedForm / evoForm / docMindForm 已下沉到各自子组件 (AgentPanel /
+  // FederationPanel / EvolutionPanel / DocMindPanel) — 这样 useForm() 只在对应 panel
+  // active 时才调用，不会触发 antd "Instance created by useForm is not connected" 警告
 
   const [cardConfigs, setCardConfigs] = useState<Record<string, any>>({});
   const [testLoading, setTestLoading] = useState<Record<string, boolean>>({});
   const [peers, setPeers] = useState<Array<{ endpoint: string; name?: string }>>([]);
   const [newPeer, setNewPeer] = useState({ endpoint: "", name: "" });
   const [docMindConfig, setDocMindConfig] = useState<any>({});
+  const [agentConfig, setAgentConfig] = useState<any>(null);
+  const [fedConfig, setFedConfig] = useState<any>(null);
+  const [evoConfig, setEvoConfig] = useState<any>(null);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -749,7 +1041,7 @@ export default function ConfigPage() {
       }
       setCardConfigs(cards);
 
-      agentForm.setFieldsValue({
+      setAgentConfig({
         maxIterations: cfg.agent.maxIterations,
         systemPrompt: cfg.agent.systemPrompt,
       });
@@ -767,8 +1059,7 @@ export default function ConfigPage() {
       };
       const docMindCfg = cfg.docMind || docMindDefaults;
       setDocMindConfig(docMindCfg);
-      docMindForm.setFieldsValue(docMindCfg);
-    } catch (err: unknown) { 
+    } catch (err: unknown) {
       console.warn('Failed to load docMind config:', err);
     }
 
@@ -776,20 +1067,20 @@ export default function ConfigPage() {
       try {
         const fedCfg = await api.get<any>("/api/config/federation");
         if (fedCfg.success) {
-          fedForm.setFieldsValue(fedCfg.config);
+          setFedConfig(fedCfg.config);
           setPeers(fedCfg.config.peers || []);
         }
-      } catch (err: unknown) { 
+      } catch (err: unknown) {
         console.warn('Failed to load federation config:', err);
       }
       try {
         const evoCfg = await api.get<any>("/api/config/evolution-engine");
-        if (evoCfg.success) evoForm.setFieldsValue(evoCfg.config);
-      } catch (err: unknown) { 
+        if (evoCfg.success) setEvoConfig(evoCfg.config);
+      } catch (err: unknown) {
         console.warn('Failed to load evolution config:', err);
       }
     }
-  }, [isAdmin, agentForm, fedForm, evoForm, docMindForm]);
+  }, [isAdmin]);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
@@ -957,212 +1248,35 @@ export default function ConfigPage() {
         );
 
       case "agent":
-        return (
-          <Flex vertical gap={16}>
-            <Title level={4} style={{ margin: 0 }}>
-              <SettingOutlined style={{ marginRight: 8 }} />
-              {t("agent_settings")}
-            </Title>
-            <Card size="small" className="glass-card">
-              <Form form={agentForm} layout="horizontal" labelCol={{ span: 6 }} onFinish={saveAgent} size="small">
-                <Form.Item name="maxIterations" label={t("max_iterations")}>
-                  <InputNumber min={1} max={50} style={{ width: 140 }} />
-                </Form.Item>
-                <Form.Item name="systemPrompt" label={t("system_prompt")}>
-                  <Input.TextArea rows={3} placeholder={t("system_prompt_hint")} />
-                </Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
-                    {t("save")}
-                  </Button>
-                </Form.Item>
-              </Form>
-            </Card>
-          </Flex>
-        );
+        return <AgentPanel t={t} onSave={saveAgent} initialValues={cardConfigs.agent} />;
 
       case "docmind":
         return (
-          <Flex vertical gap={16}>
-            <Title level={4} style={{ margin: 0 }}>
-              <AliyunOutlined style={{ marginRight: 8 }} />
-              Document Mind
-            </Title>
-            <Alert
-              type="info"
-              showIcon
-              message={t("docmind_title")}
-              description={t("docmind_desc")}
-              style={{ marginBottom: 8 }}
-            />
-            <Card size="small" className="glass-card" title={
-              <Flex align="center" gap={8}>
-                <FileTextOutlined />
-                <span>{t("api_config")}</span>
-                <Tag color={docMindConfig.enabled ? "success" : "default"} style={{ fontSize: 11 }}>
-                  {docMindConfig.enabled ? t("enabled") : t("disabled")}
-                </Tag>
-              </Flex>
-            }>
-              <Form form={docMindForm} layout="horizontal" labelCol={{ span: 7 }} onFinish={saveDocMind} size="small">
-                <Form.Item name="enabled" label={t("enable")} valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="accessKeyId" label="AccessKey ID" rules={[{ required: true }]}>
-                  <Input placeholder="LTAI..." />
-                </Form.Item>
-                <Form.Item name="accessKeySecret" label="AccessKey Secret" rules={[{ required: true }]}>
-                  <Input.Password placeholder="your-secret-key" />
-                </Form.Item>
-                <Form.Item name="endpoint" label="Endpoint">
-                  <Input placeholder="docmind-api.cn-hangzhou.aliyuncs.com" />
-                </Form.Item>
-                <Form.Item name="regionId" label="Region">
-                  <Input placeholder="cn-hangzhou" />
-                </Form.Item>
-                <Divider orientation="left" style={{ fontSize: 13 }}>{t("advanced_options")}</Divider>
-                <Form.Item name="multimediaMode" label={t("multimedia_mode")}>
-                  <Select options={[
-                    { label: t("base_recognition"), value: "base" },
-                    { label: t("advance_parsing"), value: "advance" },
-                  ]} />
-                </Form.Item>
-                <Form.Item name="maxPollingMinutes" label={t("max_polling_time")}>
-                  <InputNumber min={5} max={120} addonAfter={t("minutes")} style={{ width: 150 }} />
-                </Form.Item>
-                <Form.Item name="pollingIntervalSeconds" label={t("polling_interval")}>
-                  <InputNumber min={1} max={30} addonAfter={t("seconds")} style={{ width: 150 }} />
-                </Form.Item>
-                <Form.Item>
-                  <Space>
-                    <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
-                      {t("save")}
-                    </Button>
-                    <Button 
-                      onClick={testDocMind} 
-                      loading={testLoading["docmind"]}
-                      icon={<ApiOutlined />}
-                    >
-                      {t("test_connection")}
-                    </Button>
-                  </Space>
-                </Form.Item>
-              </Form>
-            </Card>
-          </Flex>
+          <DocMindPanel
+            t={t}
+            config={docMindConfig}
+            testLoading={!!testLoading["docmind"]}
+            onSave={saveDocMind}
+            onTest={testDocMind}
+          />
         );
 
       case "federation":
         return (
-          <Flex vertical gap={16}>
-            <Title level={4} style={{ margin: 0 }}>
-              <CloudServerOutlined style={{ marginRight: 8 }} />
-              {t("federation")}
-            </Title>
-            <Card size="small" className="glass-card">
-              <Form form={fedForm} layout="horizontal" labelCol={{ span: 7 }} onFinish={saveFed} size="small">
-                <Form.Item name="instanceId" label={t("instance_id")}>
-                  <Input placeholder="raos_main" />
-                </Form.Item>
-                <Form.Item name="federationKey" label={t("federation_key")}>
-                  <Input.Password placeholder={t("federation_key_hint")} />
-                </Form.Item>
-                <Form.Item name="heartbeatIntervalMs" label={t("heartbeat")}>
-                  <InputNumber min={5000} style={{ width: 160 }} addonAfter="ms" />
-                </Form.Item>
-                <Form.Item name="syncIntervalMs" label={t("sync_interval")}>
-                  <InputNumber min={10000} style={{ width: 160 }} addonAfter="ms" />
-                </Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
-                    {t("save")}
-                  </Button>
-                </Form.Item>
-              </Form>
-
-              <Divider orientation="left" style={{ fontSize: 13 }}>{t("peers")}</Divider>
-              <List
-                size="small"
-                dataSource={peers}
-                locale={{ emptyText: t("no_peers") }}
-                renderItem={(p) => (
-                  <List.Item
-                    actions={[
-                      <Button
-                        type="text"
-                        danger
-                        size="small"
-                        icon={<DeleteOutlined />}
-                        onClick={() => removePeer(p.endpoint)}
-                      />,
-                    ]}
-                  >
-                    <List.Item.Meta
-                      title={<Text code style={{ fontSize: 12 }}>{p.endpoint}</Text>}
-                      description={p.name || undefined}
-                    />
-                  </List.Item>
-                )}
-              />
-              <Flex gap={8} style={{ marginTop: 8 }}>
-                <Input
-                  size="small"
-                  placeholder="http://remote:3000"
-                  value={newPeer.endpoint}
-                  onChange={(e) => setNewPeer((p) => ({ ...p, endpoint: e.target.value }))}
-                  style={{ flex: 1 }}
-                />
-                <Input
-                  size="small"
-                  placeholder={t("name")}
-                  value={newPeer.name}
-                  onChange={(e) => setNewPeer((p) => ({ ...p, name: e.target.value }))}
-                  style={{ width: 150 }}
-                />
-                <Button size="small" icon={<PlusOutlined />} onClick={addPeer}>
-                  {t("add")}
-                </Button>
-              </Flex>
-            </Card>
-          </Flex>
+          <FederationPanel
+            t={t}
+            config={fedConfig}
+            peers={peers}
+            newPeer={newPeer}
+            setNewPeer={setNewPeer}
+            addPeer={addPeer}
+            removePeer={removePeer}
+            onSave={saveFed}
+          />
         );
 
       case "evolution":
-        return (
-          <Flex vertical gap={16}>
-            <Title level={4} style={{ margin: 0 }}>
-              <RocketOutlined style={{ marginRight: 8 }} />
-              {t("evolution_engine")}
-            </Title>
-            <Card size="small" className="glass-card">
-              <Form form={evoForm} layout="horizontal" labelCol={{ span: 8 }} onFinish={saveEvo} size="small">
-                <Form.Item name="autoExecute" label={t("auto_execute")} valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="cycleIntervalMs" label={t("cycle_interval")}>
-                  <InputNumber min={60000} style={{ width: 160 }} addonAfter="ms" />
-                </Form.Item>
-                <Form.Item name="maxActionsPerCycle" label={t("max_actions")}>
-                  <InputNumber min={1} max={50} style={{ width: 100 }} />
-                </Form.Item>
-                <Form.Item name="successRateThreshold" label={t("success_threshold")}>
-                  <Slider min={0} max={1} step={0.05} />
-                </Form.Item>
-                <Form.Item name="latencyThresholdMs" label={t("latency_threshold")}>
-                  <InputNumber min={100} style={{ width: 160 }} addonAfter="ms" />
-                </Form.Item>
-                <Form.Item name="inactiveDays" label={t("inactive_days")}>
-                  <InputNumber min={1} style={{ width: 100 }} />
-                </Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>
-                    {t("save")}
-                  </Button>
-                </Form.Item>
-              </Form>
-            </Card>
-          </Flex>
-        );
+        return <EvolutionPanel t={t} config={evoConfig} onSave={saveEvo} />;
 
       case "calibration":
         return <CalibrationPanel />;
