@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import express from "express";
 import multer from "multer";
 import { fileTypeFromFile } from "file-type";
@@ -16,6 +16,7 @@ import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
 import { requestContext } from "../user/request-context.js";
 import type { RouteDependencies } from "./types.js";
+import { handleUploadErrors } from "../utils/upload-error-handler.js";
 
 // MySQL adapter helper
 async function getMySQLAdapter() {
@@ -28,8 +29,13 @@ const WS_BASE = join(process.cwd(), ".raos", "workspace");
 // ===== File parse cache =====
 const fileParseCache = new Map<string, { status: "parsing" | "done" | "error"; content?: string; error?: string; format?: string; tags?: string[]; pageCount?: number }>();
 
-// MAX file size 50MB
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+// P1-19 修复: 文件上传 50MB 太小, 用户的 18MB 真实生产 docx 加上 1-2 个 PDF 就超了.
+// 改用环境变量, 默认 200MB, 上传时返 413 + 清晰错误 (之前是 500 + 通用 "File too large").
+const MAX_FILE_SIZE = (() => {
+  const envMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB);
+  if (Number.isFinite(envMb) && envMb > 0) return envMb * 1024 * 1024;
+  return 200 * 1024 * 1024; // 200MB default
+})();
 
 // P1 安全修复：文件扩展名白名单
 const ALLOWED_EXTENSIONS = new Set([
@@ -623,7 +629,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
     { name: "files", maxCount: 10 },
   ]);
 
-  router.post("/upload", requireAuth, requirePermission("files.write"), uploadFields, async (req: Request, res: Response) => {
+  router.post("/upload", requireAuth, requirePermission("files.write"), handleUploadErrors(uploadFields, MAX_FILE_SIZE), async (req: Request, res: Response) => {
     const filesMap = req.files as Record<string, Express.Multer.File[]> | undefined;
     const uploadedFiles = filesMap?.file || filesMap?.files;
     if (!uploadedFiles || uploadedFiles.length === 0) {
