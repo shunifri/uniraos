@@ -682,23 +682,8 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
   const quality = assessPdfTextQuality(pdfText, pageCount);
   console.log(`[doc-parser] PDF质量评估: 质量=${quality.reason}, 平均每页字符数=${Math.round(pdfText.length / Math.max(pageCount, 1))}, 总页数=${pageCount}`);
 
-  // Step 2: 文本质量好 → 快速路径
+  // P1-22 设计变更: 文本质量好 → 直接用文本, 不再生成页面图片 (避免 30s+ libreOffice 路径)
   if (quality.isGoodQuality && pageCount > 0) {
-    // 后台并行生成页面图片（不阻塞文本处理）
-    const tempDir = resolve(tmpdir(), `raos-pdf-${Date.now()}`);
-     const imagePromise = (async () => {
-       mkdirSync(tempDir, { recursive: true });
-       const successPages = await generatePageImages(filePath, pageCount, tempDir);
-       const imageMap = new Map<number, string>();
-       for (const pageNum of successPages) {
-         const imageFile = join(tempDir, `page.${pageNum}.png`);
-         imageMap.set(pageNum, safeReadFile(imageFile).toString("base64"));
-       }
-       cleanupDir(tempDir);
-       return imageMap;
-     })().catch(() => new Map<number, string>());
-
-    // 逐页整理文本
     const pages: PageResult[] = [];
     let priorPage: string | undefined;
 
@@ -723,18 +708,6 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
       priorPage = content;
     }
 
-    // 不等待图片生成完成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
-    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
-    const imageMap = await Promise.race([
-      imagePromise,
-      new Promise<Map<number, string>>(resolve => setTimeout(() => resolve(new Map()), 1000))
-    ]);
-    for (const p of pages) {
-      const img = imageMap.get(p.page);
-      if (img) p.imageBase64 = img;
-    }
-    cleanupDir(tempDir);
-
     const fullContent = pages.map((p) => p.content).join("\n\n---\n\n");
     return {
       success: true,
@@ -745,7 +718,7 @@ async function parsePDF(filePath: string, visionConfig: VisionModelConfig | null
     };
   }
 
-  // Step 3: 文本质量差 → 视觉 OCR 回退（扫描件）
+  // Step 2: 文本质量差 → 视觉 OCR 回退（扫描件）
   if (visionConfig) {
     try {
       console.log(`[doc-parser] PDF文本质量差(${quality.reason})，使用视觉模型OCR(扫描件)`);
@@ -786,6 +759,10 @@ async function parsePDFText(filePath: string): Promise<DocParseResult> {
  */
 async function parseWord(filePath: string, visionConfig: VisionModelConfig | null): Promise<DocParseResult> {
   // Step 1: mammoth 提取 HTML 转 markdown（主路径，极快）
+  // P1-22 设计变更: 正常 docx (mammoth 能抽出文本) 不再生成页面图片用于"双视图".
+  //   - 原因: LibreOffice + gm 生成图片经常 30s+, 把 Node 事件循环卡死
+  //   - 用户的 docx 即使 73MB / 主要是图, mammoth 也能抽出 11K+ 字符 (标题/正文), 够 KB 检索/问答
+  //   - 视觉 OCR 只在 mammoth 完全失败时 fallback (扫描件 / 纯图片 docx)
   let mammothContent: string | null = null;
   try {
     const mammoth = await import("mammoth");
@@ -803,66 +780,8 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
     mammothContent = null;
   }
 
-  // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）- 只有在有视觉模型配置时才生成图片
-  // P1-20 修复: mammoth 已经提取出 144K 字符的纯文本时, 还要跑 LibreOffice + PDF + gm
-  // 生成图片 (用于"双视图"), LibreOffice 经常 30s+ 把整个 Node 事件循环卡死,
-  // 导致 kb_list / kb_stats 全部超时. 改为:
-  // 1. 文本够多 (>= 5K 字符) → 跳过图片生成, 完全不跑 LibreOffice
-  // 2. 文本稀疏 (扫描件 / 图文混排) → 保留图片生成, 但加 10s 硬超时保险
-  // 3. 用户可后续手动调 generatePageImages API 按需生成 (TODO)
-  const textLenForSkipDecision = mammothContent?.trim().length ?? 0;
-  const shouldGenerateImages = !!visionConfig && textLenForSkipDecision < 5000;
-  const imagePromise = (async (): Promise<{ images: Map<number, string>; pageCount: number } | null> => {
-    if (!shouldGenerateImages) {
-      return null;
-    }
-
-    // 硬超时 10s, 防止 LibreOffice 卡死把 Node 拖死
-    const timeoutPromise = new Promise<null>((resolve) => {
-      setTimeout(() => {
-        console.warn(`[doc-parser] Word: image generation timed out after 10s, skipping`);
-        resolve(null);
-      }, 10_000);
-    });
-
-    const workPromise = (async (): Promise<{ images: Map<number, string>; pageCount: number } | null> => {
-      try {
-        const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
-        const pdfPath = convertToPDF(filePath, tempDir);
-        // @ts-expect-error - 第三方库无类型定义
-        const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-        const pdfParse = getPdfParse(pdfParseModule);
-        const pdfData = await pdfParse(safeReadFile(pdfPath));
-
-        const imageTempDir = resolve(tmpdir(), `raos-doc-img-${Date.now()}`);
-        mkdirSync(imageTempDir, { recursive: true });
-        const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
-
-        const images = new Map<number, string>();
-        for (const pageNum of successPages) {
-          const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-          images.set(pageNum, safeReadFile(imageFile).toString("base64"));
-        }
-
-      cleanupDir(tempDir);
-      cleanupDir(imageTempDir);
-      return { images, pageCount: pdfData.numpages };
-    } catch {
-      return null;
-    }
-  })();
-
-  // 实际等待 workPromise 完成或 10s 超时, 早返回的胜出
-  const result = await Promise.race([workPromise, timeoutPromise]);
-  return result;
-  })();
-
   if (mammothContent && mammothContent.trim().length > 0) {
-    if (shouldGenerateImages) {
-      console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars (sparse text), generating images with 10s timeout`);
-    } else {
-      console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars, skipping image generation (text sufficient)`);
-    }
+    console.log(`[doc-parser] Word: mammoth extracted ${mammothContent.length} chars, using text directly (no image generation)`);
     let content = mammothContent.length > 100000
       ? mammothContent.substring(0, 100000) + "\n...[内容已截断]"
       : mammothContent;
@@ -874,31 +793,17 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
       } catch { /* 保留 mammoth 原始输出 */ }
     }
 
-    // 不等待图片生成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
-    let pages: PageResult[] | undefined;
-    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
-    const imgResult = await Promise.race([
-      imagePromise,
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 1000))
-    ]);
-    if (imgResult) {
-      pages = Array.from({ length: imgResult.pageCount }, (_, i) => ({
-        page: i + 1,
-        content: "",
-        imageBase64: imgResult.images.get(i + 1),
-      }));
-    }
-
+    // 不再生成页面图片, pages 留空 (用户可以后续手动调 generatePageImages API 按需生成)
     return {
       success: true,
       format: "docx",
       content,
-      pages,
+      pages: undefined,
       metadata: { textLength: mammothContent.length, method: visionConfig ? "mammoth+llm-format" : "mammoth" },
     };
   }
 
-  // Step 3: mammoth 失败 → 视觉 OCR 回退
+  // Step 2: mammoth 完全失败 → 视觉 OCR 回退 (扫描件 / 纯图片 docx)
   if (visionConfig) {
     try {
       console.log(`[doc-parser] Word: mammoth failed, falling back to vision OCR`);
@@ -920,6 +825,8 @@ async function parseWord(filePath: string, visionConfig: VisionModelConfig | nul
  */
 async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | null): Promise<DocParseResult> {
   // Step 1: 从 PPTX XML 提取文本（主路径，极快）
+  // P1-22 设计变更: 跟 parseWord 一致, 文本能抽出来就不生成图片.
+  //   PPT 包含图但有标题/正文, 文本就够 KB 检索, 不需要走 30s+ 的 LibreOffice 图像生成
   let extractedPages: PageResult[] | null = null;
   try {
     const JSZip = (await import("jszip")).default;
@@ -936,11 +843,8 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
 
     if (slideFiles.length > 0) {
       extractedPages = [];
-      let hasImages = false;
       for (let i = 0; i < slideFiles.length; i++) {
         const xml = await zip.files[slideFiles[i]].async("text");
-        // 检测幻灯片是否包含图片（<a:blip> 或 <p:pic>）
-        if (/<a:blip|<p:pic/.test(xml)) hasImages = true;
         const texts: string[] = [];
         const regex = /<a:t>([\s\S]*?)<\/a:t>/g;
         let match;
@@ -950,69 +854,26 @@ async function parsePPTX(filePath: string, visionConfig: VisionModelConfig | nul
         }
         extractedPages.push({ page: i + 1, content: texts.join("\n") || "(空白页)" });
       }
-      // PPT 包含图片时，保留文本提取结果，不强制使用视觉 OCR（避免超时）
-      if (hasImages && visionConfig) {
-        console.log(`[doc-parser] PPT: contains images, using text extraction (avoiding vision OCR timeout)`);
-        // 不强制走视觉 OCR 路径，保留文本提取结果
-      }
     }
   } catch {
     extractedPages = null;
   }
 
-   // Step 2: 后台生成页面图片（LibreOffice → PDF → gm）
-  const imagePromise = (async (): Promise<Map<number, string>> => {
-    try {
-      const tempDir = resolve(tmpdir(), `raos-doc-${Date.now()}`);
-      const pdfPath = convertToPDF(filePath, tempDir);
-      // @ts-expect-error - 第三方库无类型定义
-      const pdfParseModule = await import("pdf-parse/lib/pdf-parse.js");
-      const pdfParse = getPdfParse(pdfParseModule);
-      const pdfData = await pdfParse(safeReadFile(pdfPath));
-      
-      const imageTempDir = resolve(tmpdir(), `raos-ppt-img-${Date.now()}`);
-      mkdirSync(imageTempDir, { recursive: true });
-      const successPages = await generatePageImages(pdfPath, pdfData.numpages, imageTempDir);
-      
-      const images = new Map<number, string>();
-      for (const pageNum of successPages) {
-        const imageFile = join(imageTempDir, `page.${pageNum}.png`);
-        images.set(pageNum, safeReadFile(imageFile).toString("base64"));
-      }
-      
-      cleanupDir(tempDir);
-      cleanupDir(imageTempDir);
-      return images;
-    } catch {
-      return new Map();
-    }
-  })();
-
   if (extractedPages && extractedPages.length > 0) {
-    console.log(`[doc-parser] PPT: extracted ${extractedPages.length} slides, generating images in background`);
-
-    // 不等待图片生成，直接返回文本内容（图片可以在后台生成但不阻塞主流程）
-    // 使用 setTimeout 来避免长时间等待，如果图片在 1 秒内没生成好就放弃
-    const images = await Promise.race([
-      imagePromise,
-      new Promise<Map<number, string>>(resolve => setTimeout(() => resolve(new Map()), 1000))
-    ]);
-    for (const p of extractedPages) {
-      const img = images.get(p.page);
-      if (img) p.imageBase64 = img;
-    }
+    console.log(`[doc-parser] PPT: extracted ${extractedPages.length} slides, using text directly (no image generation)`);
 
     const fullContent = extractedPages.map((p) => `### 第 ${p.page} 页\n\n${p.content}`).join("\n\n---\n\n");
     return {
       success: true,
       format: "pptx",
       content: fullContent,
-      pages: extractedPages,
+      // 不再生成页面图片, pages 留空 (避免 30s+ 的 libreOffice 路径)
+      pages: extractedPages.map((p) => ({ page: p.page, content: p.content })),
       metadata: { slideCount: extractedPages.length, method: "zip-xml-extract" },
     };
   }
 
-  // Step 3: 文本提取失败 → 视觉 OCR 回退
+  // Step 2: 文本提取失败 → 视觉 OCR 回退 (罕见的纯图片 PPT)
   if (visionConfig) {
     try {
       console.log(`[doc-parser] PPT: text extraction failed, falling back to vision OCR`);
