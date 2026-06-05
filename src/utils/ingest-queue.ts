@@ -33,7 +33,10 @@ export class IngestQueue {
 
   constructor(opts?: { concurrency?: number; timeoutMs?: number }) {
     this.concurrency = opts?.concurrency ?? 1;
-    this.timeoutMs = opts?.timeoutMs ?? 300_000; // 5 分钟
+    // P1-21 修复: 之前 5 分钟太短, 用户的 73MB 真实 docx 解析+向量化经常超 5min
+    // 撞到 IngestQueue 超时直接 kill, 但 route 的 try/catch 之前没接 (a70372b 之后才补)
+    // 提到 15 分钟, 给大文件留出空间. Engine 自己的 10min 超时是另一道保险.
+    this.timeoutMs = opts?.timeoutMs ?? 900_000; // 15 分钟
     // 每 30 秒检查一次 running 状态，兜底恢复
     this.heartbeatTimer = setInterval(() => this.heartbeat(), 30_000);
   }

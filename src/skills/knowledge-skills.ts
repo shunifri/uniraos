@@ -2308,6 +2308,10 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
 
           // 使用 parseDocument 统一解析（支持视觉 OCR + 自动标签提取，传入已有标签）
           const parseResult = await parseDocument(fullPath, globalVisionConfig, existingTags);
+          // P1-21 修复: 解析完成后立即更新进度到 30%, 让前端看到进度条在动 (之前 5% 一直卡到结束)
+          if (placeholderDocId) {
+            await kb.updateParsingStatus(placeholderDocId, { parsingProgress: 30 });
+          }
           if (parseResult.success) {
             console.log(`[kb_ingest] 本地解析成功，内容长度: ${parseResult.content.length}, 页数: ${parseResult.pages?.length}`);
             content = parseResult.content;
@@ -2378,6 +2382,10 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
             skipEmbedding: (params.skipEmbedding as boolean) ?? false,
           });
           console.log(`[kb_ingest] 知识库 ingest 完成，docId: ${result.docId}, chunkCount: ${result.chunkCount}, totalTokens: ${result.totalTokens}, 是否更新: ${result.updated}`);
+          // P1-21 修复: 知识库 ingest 完成 → 60% (已分块, 正在向量化)
+          if (_placeholderDocId) {
+            await kb.updateParsingStatus(_placeholderDocId, { parsingProgress: 60 });
+          }
 
           const action = result.updated ? "更新" : "导入";
 

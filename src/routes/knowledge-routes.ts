@@ -60,26 +60,45 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
           async () => {
             await requestContext.run({ userId }, async () => {
               const kb2 = getKnowledgeBase(userId);
-              const result = await engine.execute("kb_ingest", {
-                name,
-                path,
-                tags: tags || [],
-                owner: userId,
-                skipEmbedding: true,
-                _placeholderDocId: docId,
-                collectionId,
-              });
-              if (result.success) {
-                const resultDocId = (result.data as any).docId;
-                if (resultDocId) {
-                  await engine.execute("kb_vectorize", { docId: resultDocId, owner: userId });
-                }
-              } else {
-                console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
-                await kb2.updateParsingStatus(docId, {
-                  parsingStatus: 'failed',
-                  parsingProgress: 0,
+              try {
+                const result = await engine.execute("kb_ingest", {
+                  name,
+                  path,
+                  tags: tags || [],
+                  owner: userId,
+                  skipEmbedding: true,
+                  _placeholderDocId: docId,
+                  collectionId,
                 });
+                if (result.success) {
+                  const resultDocId = (result.data as any).docId;
+                  if (resultDocId) {
+                    // P1-21 修复: 解析成功 → 进度跳到 60% (解析完成, 正在向量化)
+                    await kb2.updateParsingStatus(docId, { parsingProgress: 60 });
+                    await engine.execute("kb_vectorize", { docId: resultDocId, owner: userId });
+                    // 向量化完成 → 90%
+                    await kb2.updateParsingStatus(docId, { parsingProgress: 90 });
+                  }
+                } else {
+                  console.error(`[kb_ingest] Async ingest failed for placeholder ${docId}:`, (result as any).error);
+                  await kb2.updateParsingStatus(docId, {
+                    parsingStatus: 'failed',
+                    parsingProgress: 0,
+                  });
+                }
+              } catch (err) {
+                // P1-21 修复: engine.execute 在 IngestQueue 5min 超时时 THROW (不是返回 success:false),
+                // 之前的代码只检查 result.success, 异常会跳过 else 分支, 导致 DB 里
+                // parsingStatus 永远停留在 5%. 现在用 try/catch 兜底, 一定更新状态.
+                console.error(`[kb_ingest] Async ingest threw for placeholder ${docId}:`, err);
+                try {
+                  await kb2.updateParsingStatus(docId, {
+                    parsingStatus: 'failed',
+                    parsingProgress: 0,
+                  });
+                } catch (statusErr) {
+                  console.error(`[kb_ingest] Failed to update parsing status to 'failed':`, statusErr);
+                }
               }
             });
           },
