@@ -67,14 +67,26 @@ ${message}`;
     if (!appId) return undefined;
     try {
       let row: any;
+      // P1-23 修复: 之前硬性要求 status="applied", draft 状态的设计拿不到 systemPrompt
+      // (脚本测试或刚保存还没"应用"时, 角色设定完全失效)
+      // 放宽: draft + applied 都支持
       if (isMySQL()) {
         const adapter = await getMySQLAdapter();
-        const rows = await adapter.query("SELECT name, design_json FROM app_designs WHERE id = ? AND status = ?", [appId, "applied"]);
+        const rows = await adapter.query(
+          "SELECT name, design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
+          [appId],
+        );
         row = rows[0];
       } else {
-        row = getDb().prepare("SELECT name, design_json FROM app_designs WHERE id = ? AND status = ?").get(appId, "applied");
+        row = getDb().prepare(
+          "SELECT name, design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
+        ).get(appId);
       }
-      if (!row) return undefined;
+      if (!row) {
+        console.warn(`[loadAppSystemPrompt] app_design not found or status invalid: appId=${appId}`);
+        return undefined;
+      }
+      console.log(`[loadAppSystemPrompt] appId=${appId} status=${row.status} loading prompt...`);
       const design = typeof row.design_json === "string" ? JSON.parse(row.design_json) : row.design_json;
       const appName = row.name || "";
       const appDesc = design?.description || "";
@@ -157,11 +169,17 @@ ${message}`;
         }
       }
 
-      if (parts.length === 0) return undefined;
+      if (parts.length === 0) {
+        console.warn(`[loadAppSystemPrompt] appId=${appId} design has no systemPrompt/kb/forms/skills — nothing to inject`);
+        return undefined;
+      }
       parts.push("【角色锁定】以上是你的唯一身份和职责。禁止以通用 AI 助手身份自我介绍，禁止提及与当前应用无关的能力（如数据图表、文档解析、网页抓取等）。所有回复必须严格围绕以上应用设定展开，直接回应用户问题即可。");
       parts.push("请严格按照以上应用设定来回答用户问题。");
-      return parts.join("\n");
-    } catch {
+      const finalPrompt = parts.join("\n");
+      console.log(`[loadAppSystemPrompt] appId=${appId} → ${finalPrompt.length} chars, sections: ${parts.length - 2}`);
+      return finalPrompt;
+    } catch (err) {
+      console.error(`[loadAppSystemPrompt] error loading appId=${appId}:`, err);
       return undefined;
     }
   }
@@ -227,6 +245,7 @@ ${message}`;
         const mergedRoleConfig = appSystemPrompt
           ? { ...roleAgentConfig, systemPrompt: appSystemPrompt }
           : roleAgentConfig;
+        console.log(`[agent-routes] /agent/chat/run appId=${appId} appPrompt=${appSystemPrompt ? appSystemPrompt.length + ' chars' : 'NONE (using default)'} role=${req.body?.role ?? 'default'}`);
         const result = await orchestrator.run({ message: enrichedMsg, userId, roleAgentConfig: mergedRoleConfig });
         res.json({ success: true, ...result });
       } catch (err) {

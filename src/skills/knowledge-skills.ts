@@ -2800,18 +2800,32 @@ async function getAppCollectionIds(): Promise<string[]> {
   if (!appId) return [];
   try {
     let row: any;
+    // P1-23 修复: 之前硬性要求 status="applied", draft 状态的设计拿不到 KB 集合
+    // (脚本测试阶段或刚保存还没点"应用"时, KB 自动注入完全失效)
+    // 放宽: 只要设计存在就读取, draft + applied 都支持
     if (isMySQL()) {
       const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT design_json FROM app_designs WHERE id = ? AND status = ?", [appId, "applied"]);
+      const rows = await adapter.query(
+        "SELECT design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
+        [appId],
+      );
       row = rows[0];
     } else {
-      row = getDb().prepare("SELECT design_json FROM app_designs WHERE id = ? AND status = ?").get(appId, "applied");
+      row = getDb().prepare(
+        "SELECT design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
+      ).get(appId);
     }
-    if (!row) return [];
+    if (!row) {
+      console.warn(`[getAppCollectionIds] app_design not found or status invalid: appId=${appId}`);
+      return [];
+    }
     const design = typeof row.design_json === "string" ? JSON.parse(row.design_json) : row.design_json;
     const kbs = design?.components?.knowledgeBases ?? [];
-    return kbs.filter((k: any) => k.collectionId).map((k: any) => k.collectionId as string);
-  } catch {
+    const ids = kbs.filter((k: any) => k.collectionId).map((k: any) => k.collectionId as string);
+    console.log(`[getAppCollectionIds] appId=${appId} status=${row.status} → ${ids.length} collection(s): ${ids.join(", ") || "(none)"}`);
+    return ids;
+  } catch (err) {
+    console.error(`[getAppCollectionIds] error:`, err);
     return [];
   }
 }
