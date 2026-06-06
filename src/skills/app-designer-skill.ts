@@ -36,11 +36,28 @@ interface DesignSkill {
 interface DesignFormField {
   name: string;
   title: string;
-  type: "string" | "number" | "boolean" | "select" | "date" | "textarea" | "email" | "phone";
+  // P1-25: 之前只 8 个 enum (string/number/boolean/select/date/textarea/email/phone),
+  // form-engine 实际支持 18 个 widget, 缺 radio/checkbox/password/dateRange/dateTimeRange/
+  //   timePicker/userPicker/deptPicker/fileUploader/array/group/table.
+  // 用户在应用设计器里想用这些组件但找不到选项, "应用创建时这些组件没生成".
+  // 完整化枚举, widgetMap 同步扩.
+  type:
+    | "string" | "number" | "boolean" | "select" | "date" | "textarea" | "email" | "phone"
+    | "radio" | "checkbox" | "password"
+    | "dateRange" | "dateTimeRange" | "timePicker"
+    | "userPicker" | "deptPicker" | "fileUploader"
+    | "array" | "group" | "table";
   required?: boolean;
   options?: string[];
   defaultValue?: unknown;
   placeholder?: string;
+  // group/array/table 等复杂组件可能需要子字段或列定义
+  items?: any;
+  fields?: DesignFormField[];
+  columns?: any[];
+  // fileUploader 可能需要限制类型
+  accept?: string;
+  maxSize?: number;
 }
 
 interface DesignForm {
@@ -124,7 +141,7 @@ interface ApplyResult {
   type: "skill" | "form" | "workflow" | "knowledgeBase";
   key: string;
   name: string;
-  status: "created" | "exists" | "failed" | "skipped";
+  status: "created" | "exists" | "updated" | "failed" | "skipped";
   id?: string;
   message?: string;
   error?: string;
@@ -463,7 +480,35 @@ export class AppDesignerService {
             if (existing?.id) formKeyToId.set(form.key, existing.id);
             results.push({ type: "form", key: form.key, name: form.name, status: "exists" });
           } else {
-            results.push({ type: "form", key: form.key, name: form.name, status: "failed", error: `表单 "${form.key}" 已存在但 schema 不匹配，请先删除旧表单或修改设计` });
+            // P1-26 修复: 之前 schema 不匹配直接 fail, 让用户得手动删旧表单.
+            // 用户实际工作流: 改设计 → apply → 期望立即生效. 改为自动 updateFormDefinition.
+            // 已有的 form_instances 数据由 form-service 的 syncFormInstanceIndexes 自动适配.
+            try {
+              const { updateFormDefinition } = await import("../services/form-service.js");
+              await updateFormDefinition(existing.id, {
+                name: form.name,
+                description: form.description,
+                schemaJson: designedSchema,
+              } as any, ownerId);
+              createdFormKeys.add(form.key);
+              if (existing?.id) formKeyToId.set(form.key, existing.id);
+              results.push({
+                type: "form",
+                key: form.key,
+                name: form.name,
+                status: "updated",  // 新加的状态: 已更新 schema
+                message: `表单 schema 已更新以匹配新设计`,
+              });
+            } catch (updateErr: any) {
+              const uMsg = updateErr instanceof Error ? updateErr.message : String(updateErr);
+              results.push({
+                type: "form",
+                key: form.key,
+                name: form.name,
+                status: "failed",
+                error: `表单 "${form.key}" 已存在但 schema 不匹配, 自动 update 失败: ${uMsg}. 请先删除旧表单或手动修改设计`,
+              });
+            }
           }
         } else {
           results.push({ type: "form", key: form.key, name: form.name, status: "failed", error: msg });
@@ -924,6 +969,10 @@ ${newRequirement}
     const properties: Record<string, any> = {};
     const required: string[] = [];
 
+    // P1-25: widgetMap 扩到 18 个, 覆盖 form-engine 全部已注册组件
+    // (componentRegistry.ts: input/textarea/number/password/select/radio/checkbox/switch/
+    //   datePicker/dateRange/dateTimeRange/timePicker/userPicker/deptPicker/
+    //   fileUploader/array/group/table)
     const widgetMap: Record<string, string> = {
       string: "input",
       number: "number",
@@ -933,6 +982,26 @@ ${newRequirement}
       textarea: "textarea",
       email: "input",
       phone: "input",
+      radio: "radio",
+      checkbox: "checkbox",
+      password: "password",
+      dateRange: "dateRange",
+      dateTimeRange: "dateTimeRange",
+      timePicker: "timePicker",
+      userPicker: "userPicker",
+      deptPicker: "deptPicker",
+      fileUploader: "fileUploader",
+      array: "array",
+      group: "group",
+      table: "table",
+    };
+
+    // JSON Schema type 映射: 部分 widget 不是 string/number/boolean (比如 array/object)
+    const jsonTypeMap: Record<string, string> = {
+      array: "array",
+      group: "object",
+      table: "array",
+      fileUploader: "string",  // 文件上传存 URL 字符串
     };
 
     for (const field of form.fields) {
@@ -940,8 +1009,14 @@ ${newRequirement}
       if (!/^[a-zA-Z0-9_]+$/.test(field.name)) {
         throw new Error(`表单 "${form.key}" 的字段名 "${field.name}" 非法，只允许字母、数字、下划线`);
       }
+      // JSON Schema type 推断
+      const jsonType = jsonTypeMap[field.type] ?? (
+        field.type === "number" ? "number" :
+        field.type === "boolean" ? "boolean" :
+        "string"
+      );
       const prop: any = {
-        type: field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string",
+        type: jsonType,
         title: field.title,
       };
 
@@ -957,12 +1032,67 @@ ${newRequirement}
       if (field.placeholder) prop["ui:placeholder"] = field.placeholder;
 
       // 选项使用 x-dataSource（form-engine 标准），同时保留 enum 作为后备
+      // radio/checkbox/select 都用 options.
+      // P1-27 修复: 之前 field.options.map((opt: string) => ({ label: opt, value: opt }))
+      //   假设 opt 是 string. 但 app_designer prompt 生成的 designJson 里 options 是
+      //   {label, value} 对象数组. 这样写会导致嵌套:
+      //     x-dataSource.options[0] = {label: {label:"X",value:"Y"}, value: {label:"X",value:"Y"}}
+      //   渲染时 opt.label 是对象, React 抛 "Objects are not valid as a React child".
+      // 修法: 判断 opt 是 string 还是 {label, value} 对象, 分别处理.
       if (field.options && field.options.length > 0) {
-        prop.enum = field.options;
+        const normalizedOptions = field.options.map((opt: any) => {
+          if (typeof opt === "string") {
+            return { label: opt, value: opt };
+          }
+          // 已经是 {label, value} 对象
+          if (opt && typeof opt === "object" && "label" in opt && "value" in opt) {
+            return { label: String(opt.label), value: opt.value };
+          }
+          // 兜底: 强制转字符串
+          return { label: String(opt), value: String(opt) };
+        });
+        prop.enum = normalizedOptions.map((o) => o.value);  // enum 用 value 数组 (string[])
         prop["x-dataSource"] = {
           type: "static",
-          options: field.options.map((opt: string) => ({ label: opt, value: opt })),
+          options: normalizedOptions,
         };
+      }
+
+      // fileUploader 限制
+      if (field.type === "fileUploader") {
+        if (field.accept) prop["ui:accept"] = field.accept;
+        if (field.maxSize !== undefined) prop["ui:maxSize"] = field.maxSize;
+      }
+
+      // array/group/table 复杂组件: items/fields/columns
+      if (field.type === "array" && field.items) {
+        prop.items = field.items;
+      }
+      if (field.type === "group" && field.fields) {
+        prop.properties = {};
+        // 递归子字段
+        for (const sub of field.fields) {
+          prop.properties[sub.name] = { type: "string", title: sub.title };
+          if (sub.options) {
+            // P1-27: 同样修复嵌套 opt 对象问题
+            const normalizedSubOptions = sub.options.map((opt: any) =>
+              typeof opt === "string"
+                ? { label: opt, value: opt }
+                : { label: String(opt.label), value: opt.value }
+            );
+            prop.properties[sub.name].enum = normalizedSubOptions.map((o) => o.value);
+            prop.properties[sub.name]["x-dataSource"] = {
+              type: "static",
+              options: normalizedSubOptions,
+            };
+          }
+        }
+      }
+      if (field.type === "table" && field.columns) {
+        prop.items = { type: "object", properties: {} };
+        for (const col of field.columns) {
+          prop.items.properties[col.name || col.dataIndex] = { type: col.type || "string", title: col.title };
+        }
       }
 
       if (field.defaultValue !== undefined) prop.default = field.defaultValue;
@@ -1236,16 +1366,26 @@ export function registerAppDesignerSkill(
                 return { success: false, error: new Error("update 操作需要提供 designId 和 requirement 参数") };
               }
               const record = await service.updateDesign({ designId, requirement, ownerId: userId });
+              // P1-26 修复: 之前 update 后不调 apply, 用户改完设计看 form 列表无变化
+              // (因为 design_json 更新了, 但 form_definitions 表没动).
+              // 现在 update 完成后自动 apply, 真实同步 form/workflow/skill 到对应表.
+              const applyResult = await service.applyDesign(designId, userId, engine);
               const display = service.formatForDisplay(record);
+              const formResult = applyResult.results.filter((r) => r.type === "form");
+              const updatedForms = formResult.filter((r) => r.status === "updated").length;
+              const createdForms = formResult.filter((r) => r.status === "created").length;
+              const failedForms = formResult.filter((r) => r.status === "failed").length;
               return {
                 success: true,
                 data: {
                   designId: record.id,
                   name: record.name,
                   version: record.version,
+                  status: applyResult.record.status,
                   preview: display.text,
                   structured: display.structured,
-                  message: `✅ 应用方案已更新至 v${record.version}。\n设计 ID: ${record.id}\n变更已保存，请使用 preview 查看更新后的详情。\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
+                  applySummary: applyResult.results,
+                  message: `✅ 应用方案已更新至 v${record.version} 并自动部署。\n设计 ID: ${record.id}\n表单变更: 新增 ${createdForms} | 更新 ${updatedForms} | 失败 ${failedForms}\n\n<app-design-card data-design-id="${record.id}" data-name="${record.name}" data-version="${record.version}" data-action="update" />`,
                 },
               };
             }
