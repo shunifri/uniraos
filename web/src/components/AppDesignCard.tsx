@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, Button, Tag, Space, Spin, Empty, Collapse, Descriptions, message, Modal, Input, Select } from "antd";
 import {
   ThunderboltOutlined,
@@ -94,6 +95,7 @@ const typeLabels: Record<string, string> = {
 };
 
 const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
+  const navigate = useNavigate();
   const designId = props["data-design-id"];
   const name = props["data-name"];
   const version = props["data-version"];
@@ -253,101 +255,123 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
 
       {expanded && (
         <div style={{ marginTop: 12 }}>
-          <Collapse ghost size="small">
-            {d.components.skills.length > 0 && (
-              <Collapse.Panel header={`Skills (${d.components.skills.length})`} key="skills">
-                {d.components.skills.map((s) => (
-                  <div key={s.name} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
-                    <div style={{ fontWeight: 500 }}>{s.name}</div>
-                    <div style={{ fontSize: 12, color: "#666" }}>{s.description}</div>
-                    {s.logic && (
-                      <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>逻辑: {s.logic.slice(0, 100)}...</div>
-                    )}
-                  </div>
-                ))}
-              </Collapse.Panel>
-            )}
-
-            {d.components.forms.length > 0 && (
-              <Collapse.Panel header={`表单 (${d.components.forms.length})`} key="forms">
-                {d.components.forms.map((f) => (
-                  <div key={f.key} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
-                    <div style={{ fontWeight: 500 }}>
-                      {f.name}{" "}
-                      <Button
-                        size="small"
-                        type="link"
-                        icon={<EditOutlined />}
-                        onClick={() => {
-                          window.open(`/forms/designer?key=${encodeURIComponent(f.key)}`, "_blank");
-                        }}
-                      >
-                        设计
-                      </Button>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#666" }}>
-                      字段: {f.fields.map((field) => `${field.title}(${field.type}${field.required ? "*" : ""})`).join(", ")}
-                    </div>
-                  </div>
-                ))}
-              </Collapse.Panel>
-            )}
-
-            {d.components.workflows.length > 0 && (
-              <Collapse.Panel header={`工作流 (${d.components.workflows.length})`} key="workflows">
-                {d.components.workflows.map((w) => (
-                  <div key={w.key} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
-                    <div style={{ fontWeight: 500 }}>
-                      {w.name}{" "}
-                      <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => window.open(`/workflow/designer/${encodeURIComponent(w.key)}`, "_blank")}>
-                        查看
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </Collapse.Panel>
-            )}
-
-            {d.components.knowledgeBases.length > 0 && (
-              <Collapse.Panel header={`知识库 (${d.components.knowledgeBases.length})`} key="kb">
-                {d.components.knowledgeBases.map((k) => (
-                  <div key={k.name} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
-                    <div style={{ fontWeight: 500 }}>
-                      {k.name}{" "}
-                      {k.collectionId ? (
-                        <Button size="small" type="link" icon={<LinkOutlined />} onClick={() => window.open(`/knowledge?collectionId=${encodeURIComponent(k.collectionId || "")}`, "_blank")}>
-                          去上传
-                        </Button>
-                      ) : (
-                        <Button
-                          size="small"
-                          type="link"
-                          icon={<PlusOutlined />}
-                          loading={creatingKb === k.name}
-                          onClick={() => handleCreateKbCollection(k.name)}
-                        >
-                          创建分类
-                        </Button>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#666" }}>文档类型: {k.documentTypes.join(", ")}</div>
-                    {k.collectionId && <div style={{ fontSize: 11, color: "#999" }}>集合 ID: {k.collectionId}</div>}
-                  </div>
-                ))}
-              </Collapse.Panel>
-            )}
-
-            {d.relationships && d.relationships.length > 0 && (
-              <Collapse.Panel header={`组件关联 (${d.relationships.length})`} key="rels">
-                {d.relationships.map((r, i) => (
-                  <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
-                    {r.from} → {r.to} <Tag>{r.type}</Tag>
-                    {r.description && <span style={{ color: "#999" }}> ({r.description})</span>}
-                  </div>
-                ))}
-              </Collapse.Panel>
-            )}
-          </Collapse>
+          <Collapse
+            ghost
+            size="small"
+            // P1-35: 之前用 <Collapse.Panel children> 旧 API, antd 5 deprecation 警告.
+            // 改用 items API 一次过, 5 个 panel 全列出, empty panel 用 collapsible="disabled" 隐藏.
+            items={[
+              ...(d.components.skills.length > 0 ? [{
+                key: "skills",
+                label: `Skills (${d.components.skills.length})`,
+                children: (
+                  <>
+                    {d.components.skills.map((s) => (
+                      <div key={s.name} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
+                        <div style={{ fontWeight: 500 }}>{s.name}</div>
+                        <div style={{ fontSize: 12, color: "#666" }}>{s.description}</div>
+                        {s.logic && (
+                          <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>逻辑: {s.logic.slice(0, 100)}...</div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                ),
+              }] : []),
+              ...(d.components.forms.length > 0 ? [{
+                key: "forms",
+                label: `表单 (${d.components.forms.length})`,
+                children: (
+                  <>
+                    {d.components.forms.map((f) => (
+                      <div key={f.key} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
+                        <div style={{ fontWeight: 500 }}>
+                          {f.name}{" "}
+                          <Button
+                            size="small"
+                            type="link"
+                            icon={<EditOutlined />}
+                            onClick={() => {
+                              window.open(`/forms/designer?key=${encodeURIComponent(f.key)}`, "_blank");
+                            }}
+                          >
+                            设计
+                          </Button>
+                        </div>
+                        <div style={{ fontSize: 12, color: "#666" }}>
+                          字段: {f.fields.map((field) => `${field.title}(${field.type}${field.required ? "*" : ""})`).join(", ")}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                ),
+              }] : []),
+              ...(d.components.workflows.length > 0 ? [{
+                key: "workflows",
+                label: `工作流 (${d.components.workflows.length})`,
+                children: (
+                  <>
+                    {d.components.workflows.map((w) => (
+                      <div key={w.key} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
+                        <div style={{ fontWeight: 500 }}>
+                          {w.name}{" "}
+                          <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => window.open(`/workflow/designer/${encodeURIComponent(w.key)}`, "_blank")}>
+                            查看
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                ),
+              }] : []),
+              ...(d.components.knowledgeBases.length > 0 ? [{
+                key: "kb",
+                label: `知识库 (${d.components.knowledgeBases.length})`,
+                children: (
+                  <>
+                    {d.components.knowledgeBases.map((k) => (
+                      <div key={k.name} style={{ marginBottom: 8, padding: 8, background: "#f5f5f5", borderRadius: 6 }}>
+                        <div style={{ fontWeight: 500 }}>
+                          {k.name}{" "}
+                          {k.collectionId ? (
+                            <Button size="small" type="link" icon={<LinkOutlined />} onClick={() => window.open(`/knowledge?collectionId=${encodeURIComponent(k.collectionId || "")}`, "_blank")}>
+                              去上传
+                            </Button>
+                          ) : (
+                            <Button
+                              size="small"
+                              type="link"
+                              icon={<PlusOutlined />}
+                              loading={creatingKb === k.name}
+                              onClick={() => handleCreateKbCollection(k.name)}
+                            >
+                              创建分类
+                            </Button>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#666" }}>文档类型: {k.documentTypes.join(", ")}</div>
+                        {k.collectionId && <div style={{ fontSize: 11, color: "#999" }}>集合 ID: {k.collectionId}</div>}
+                      </div>
+                    ))}
+                  </>
+                ),
+              }] : []),
+              ...(d.relationships && d.relationships.length > 0 ? [{
+                key: "rels",
+                label: `组件关联 (${d.relationships.length})`,
+                children: (
+                  <>
+                    {d.relationships.map((r, i) => (
+                      <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
+                        {r.from} → {r.to} <Tag>{r.type}</Tag>
+                        {r.description && <span style={{ color: "#999" }}> ({r.description})</span>}
+                      </div>
+                    ))}
+                  </>
+                ),
+              }] : []),
+            ]}
+          />
 
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #f0f0f0" }}>
             <Space wrap>
@@ -443,12 +467,25 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
         open={modifyOpen}
         onOk={() => {
           if (modifyInput.trim()) {
-            message.info("请在对话中直接说：帮我修改 design_xxx，" + modifyInput.trim());
+            // P1-32: 之前只是 message.info 提示用户去对话里再说一遍, 体验割裂.
+            // 改: 直接 navigate 到 /chat 带上 autoMessage 参数, ChatPage 自动填入 + 发送.
+            // 同时把 appId 也带上, ChatPage 加载该应用的 systemPrompt + KB collection.
+            const params = new URLSearchParams();
+            if (designId) params.set("appId", designId);
+            params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
+            const target = `/chat?${params.toString()}`;
+            if (window.parent !== window) {
+              // 嵌入场景: 通知父窗口跳转
+              window.parent.postMessage({ type: "RAOS_NAVIGATE", url: target }, window.location.origin);
+              message.success("修改意见已发送到对话窗口");
+            } else {
+              navigate(target);
+            }
           }
           setModifyOpen(false);
         }}
         onCancel={() => setModifyOpen(false)}
-        okText="确认"
+        okText="发送"
         cancelText="取消"
       >
         <Input
@@ -457,7 +494,16 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
           onChange={(e) => setModifyInput(e.target.value)}
           onPressEnter={() => {
             if (modifyInput.trim()) {
-              message.info("请在对话中直接说：帮我修改 design_xxx，" + modifyInput.trim());
+              const params = new URLSearchParams();
+              if (designId) params.set("appId", designId);
+              params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
+              const target = `/chat?${params.toString()}`;
+              if (window.parent !== window) {
+                window.parent.postMessage({ type: "RAOS_NAVIGATE", url: target }, window.location.origin);
+                message.success("修改意见已发送到对话窗口");
+              } else {
+                navigate(target);
+              }
             }
             setModifyOpen(false);
           }}
