@@ -140,6 +140,15 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
   if (updates.description !== undefined) { fields.push('description = ?'); params.push(updates.description); }
   if (updates.categoryId !== undefined) { fields.push('category_id = ?'); params.push(updates.categoryId); }
   if (updates.schemaJson !== undefined) { fields.push('schema_json = ?'); params.push(JSON.stringify(updates.schemaJson)); }
+  // P1-25: 支持 key 和 status 字段更新 (前端 FormDesigner 总是发 key, 之前 silently ignored)
+  if ((updates as any).key !== undefined) { fields.push('`key` = ?'); params.push((updates as any).key); }
+  if ((updates as any).status !== undefined) {
+    const validStatuses = ['draft', 'published', 'deprecated'];
+    if (!validStatuses.includes((updates as any).status)) {
+      throw new Error(`无效的 status: ${(updates as any).status}, 必须是 ${validStatuses.join('/')}`);
+    }
+    fields.push('status = ?'); params.push((updates as any).status);
+  }
   fields.push('updated_at = CURRENT_TIMESTAMP');
   params.push(id);
   const sql = `UPDATE form_definitions SET ${fields.join(', ')} WHERE id = ?`;

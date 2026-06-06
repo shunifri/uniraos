@@ -25,8 +25,10 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
 
 async function json<T = unknown>(res: Response): Promise<T> {
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error(err.message ?? res.statusText);
+    // 后端错误响应统一用 `error` 字段, 也兼容 `message` (xDataSource 错误返回 message)
+    const err = await res.json().catch(() => ({}));
+    const msg = err.error || err.message || res.statusText;
+    throw new Error(msg);
   }
   return res.json();
 }

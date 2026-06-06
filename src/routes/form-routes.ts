@@ -62,7 +62,10 @@ router.get('/form/definitions/:id', requireAuth, async (req, res) => {
 router.put('/form/definitions/:id', requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const allowed = ['name', 'description', 'categoryId', 'schemaJson'];
+    // P1-25: 之前 allowed = ['name','description','categoryId','schemaJson'] 漏了 'key'.
+    // 前端 FormDesigner.tsx 总是发 `key` 字段, 改 key 时被 silently ignored.
+    // 加上 'key' 和 'status' (publish/unpublish), 让前端能完整编辑表单元数据.
+    const allowed = ['name', 'description', 'categoryId', 'schemaJson', 'key', 'status'];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
