@@ -88,31 +88,43 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (validTexts.length !== texts.length) {
       console.warn(`[EmbeddingProvider] Filtered out ${texts.length - validTexts.length} invalid texts`);
     }
-    const response = await fetchWithTimeout(`${this.baseUrl}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: validTexts,
-      }),
-      timeoutMs: 60_000,
-    });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Embedding API error ${response.status}: ${errText}`);
+    // P1-24 修复: 某些 OpenAI 兼容 embedding API (如 Gitee AI Qwen3-Embedding-8B)
+    // 单次 batch 超过 25-30 会 400 "No schema matches, </input>" 错误。
+    // 按 BATCH_SIZE 切分串行调用, 避免单次请求过大。
+    const BATCH_SIZE = 25;
+    const allVectors: number[][] = [];
+    for (let i = 0; i < validTexts.length; i += BATCH_SIZE) {
+      const batch = validTexts.slice(i, i + BATCH_SIZE);
+      const response = await fetchWithTimeout(`${this.baseUrl}/embeddings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          input: batch,
+        }),
+        timeoutMs: 60_000,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Embedding API error ${response.status}: ${errText}`);
+      }
+
+      const data = (await response.json()) as {
+        data: Array<{ embedding: number[]; index: number }>;
+      };
+
+      const sorted = data.data.sort((a, b) => a.index - b.index);
+      for (const d of sorted) {
+        allVectors.push(d.embedding);
+      }
     }
 
-    const data = (await response.json()) as {
-      data: Array<{ embedding: number[]; index: number }>;
-    };
-
-    return data.data
-      .sort((a, b) => a.index - b.index)
-      .map((d) => d.embedding);
+    return allVectors;
   }
 
   /**
