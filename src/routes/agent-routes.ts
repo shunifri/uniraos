@@ -173,7 +173,11 @@ ${message}`;
         console.warn(`[loadAppSystemPrompt] appId=${appId} design has no systemPrompt/kb/forms/skills — nothing to inject`);
         return undefined;
       }
-      parts.push("【角色锁定】以上是你的唯一身份和职责。禁止以通用 AI 助手身份自我介绍，禁止提及与当前应用无关的能力（如数据图表、文档解析、网页抓取等）。所有回复必须严格围绕以上应用设定展开，直接回应用户问题即可。");
+      // P1-31: 之前"角色锁定"硬编码禁止"数据图表、文档解析、网页抓取",
+      // 导致 agent 即使查了 form_data_query 也只给文字分析, 不主动调 chart_generate 画图.
+      // 改: 1) 移除"数据图表"禁令; 2) 明确"用户要图表时优先 chart_generate".
+      parts.push("【角色锁定】以上是你的唯一身份和职责。禁止以通用 AI 助手身份自我介绍。所有回复必须严格围绕以上应用设定展开，直接回应用户问题即可。");
+      parts.push("【数据可视化指引】当用户要求对查询结果做分析/统计/对比时：1) 先用 form_data_query 拉数据 (queryType: list/count/group/stats); 2) **必须**用 chart_generate skill 把数据生成 ECharts 图表配置 (chartType: bar/pie/line 等), 不要只回文字表格; 3) 可以一次调多次 chart_generate 生成多张图. 除非用户明确说'不要图表只要文字', 否则默认图表化呈现.");
       parts.push("请严格按照以上应用设定来回答用户问题。");
       const finalPrompt = parts.join("\n");
       console.log(`[loadAppSystemPrompt] appId=${appId} → ${finalPrompt.length} chars, sections: ${parts.length - 2}`);
