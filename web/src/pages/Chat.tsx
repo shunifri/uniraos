@@ -322,6 +322,13 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
   const senderRef = useRef<any>(null);
   const attachmentsRef = useRef<AttachmentsRef>(null);
 
+  // P1-32 v3: URL ?autoMessage=... 自动填入输入框并发送.
+  // 修复链: v1 用 senderRef.current (永远 null, Sender 组件 lazy 渲染) → v2 用 activeConvId
+  // 依赖, 但 sendMessage 在 deps 里每次 render 变, effect 频繁重跑 + StrictMode 双调用导致 race.
+  // v3: 用 ref 保存 sendMessage 最新引用, deps 只有 activeConvId, 防 hooks 顺序问题.
+  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const autoMessageProcessedRef = useRef<string | null>(null);
+
   const setActiveConvId = (id: string | null) => {
     activeConvIdRef.current = id;
     _setActiveConvId(id);
@@ -330,63 +337,44 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
   useEffect(() => { loadConversations(); }, []);
 
   // P3 修复: 无论怎么打断 (刷新页面/切别的页面再回来), 都能接上 in-flight stream
-  // 核心思路: streamId 持久化在 user message 的 extra.streamId (后端 agent-routes 写入),
-  // 这里在 mount 后, conv 消息加载完时, 扫一遍最后一条 user message, 拿到 streamId 就重连.
+  // 关键改动: URL 续连 和 DB 续连 合并成 **一个** effect, 避免双 effect race (之前两个
+  // 都跑通 doRecovery, 各自创建 bubble, 用户看到重复回复). 优先级: URL ?stream=xxx > DB extra.streamId.
   // 用 ref 记录"已检查过哪些 conv", 避免每次 convStates 变化都重扫.
   const recoveryCheckedConvsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const convId = activeConvId; // 闭包当前值, deps 触发重跑
+    const convId = activeConvId;
     if (!convId) return;
     if (recoveryCheckedConvsRef.current.has(convId)) return;
     const state = convStates.get(convId);
-    if (!state || state.messages.length === 0) return; // 消息还没 load 完, 等下一次
-    // 标记为已检查, 避免后面再触发
+    if (!state) return;
+    if (state.messages.length === 0) return; // 消息还没 load 完, 等下一次
+    // 标记为已检查 (要在 doRecovery 前 add, 防止异步里 state 再变触发二次)
     recoveryCheckedConvsRef.current.add(convId);
 
-    // 从后往前找最后一条 user message
-    let lastUserIdx = -1;
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "user") { lastUserIdx = i; break; }
-    }
-    if (lastUserIdx < 0) return;
-    const lastUser = state.messages[lastUserIdx];
-    if (!lastUser.streamId) return; // 没有 streamId, 说明不是 in-flight, 是历史消息
+    // 1. 优先从 URL 找 streamId (硬刷场景)
+    const urlParams = new URLSearchParams(window.location.search);
+    let streamId = urlParams.get("stream") || undefined;
 
-    // 看 user 后面有没有 response (assistant / thinking / tool / user_confirm)
-    const hasResponse = state.messages.slice(lastUserIdx + 1).some(m =>
-      m.role === "assistant" || m.role === "thinking" || m.role === "tool" || m.role === "user_confirm"
-    );
-    if (hasResponse) return; // 已经接完了, 不用重连
+    // 2. URL 没有则从最后一条 user message 的 extra.streamId 找 (切页面场景)
+    if (!streamId) {
+      let lastUserIdx = -1;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i].role === "user") { lastUserIdx = i; break; }
+      }
+      if (lastUserIdx < 0) return;
+      const lastUser = state.messages[lastUserIdx];
+      if (!lastUser.streamId) return; // 没 streamId, 说明不是 in-flight, 是历史消息
+      // 看 user 后面有没有 response (assistant / thinking / tool / user_confirm)
+      const hasResponse = state.messages.slice(lastUserIdx + 1).some(m =>
+        m.role === "assistant" || m.role === "thinking" || m.role === "tool" || m.role === "user_confirm"
+      );
+      if (hasResponse) return; // 已经接完了, 不用重连
+      streamId = lastUser.streamId;
+    }
 
     // 还在 in-flight, 走 recovery
-    doRecovery(convId, lastUser.streamId);
-  }, [convStates, activeConvId]); // convStates 变 (消息加载完) 就触发一次
-
-  // Refresh recovery: reconnect to ongoing stream via URL streamId
-  // P2 修复: 之前 deps=[activeConvId], 切换对话也重连, 导致旧 conv 的 stream 事件写到新 conv
-  // 现在 deps=[], 只在 mount 时跑一次. 如果没找到 stream (activeConvId 还没设上), 用 setTimeout 等
-  const recoveryTriedRef = useRef(false);
-  useEffect(() => {
-    if (recoveryTriedRef.current) return;
-    const tryRecover = () => {
-      if (recoveryTriedRef.current) return;
-      const urlParams = new URLSearchParams(window.location.search);
-      const streamId = urlParams.get("stream");
-      if (!streamId) return false;
-      const convId = activeConvIdRef.current;
-      if (!convId) return false; // 还没选到对话, 等下一次
-      recoveryTriedRef.current = true;
-      // 走完整 recovery 流程 (见下面)
-      doRecovery(convId, streamId);
-      return true;
-    };
-    // 立即试一次, 如果 activeConvId 还没设, 1秒后再试
-    if (!tryRecover()) {
-      const timer = setTimeout(tryRecover, 1000);
-      return () => clearTimeout(timer);
-    }
-    // 已 recovery, 不再重试
-  }, []);
+    doRecovery(convId, streamId);
+  }, [convStates, activeConvId]);
 
   /** 从 URL ?stream=xxx 重连到对话 (refresh recovery) */
   function doRecovery(convId: string, streamId: string) {
@@ -610,8 +598,11 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
           const latest = convs[0];
           setActiveConvId(latest.id);
           loadMessages(latest.id);
-        } else if (embedded && !activeConvIdRef.current) {
-          // 嵌入场景下无历史对话，自动创建一个新对话，否则用户看不到输入框
+        } else if (!activeConvIdRef.current && (embedded || new URLSearchParams(window.location.search).has("autoMessage"))) {
+          // P1-34: 之前只有 embedded 模式才自动建对话. 普通 Chat 没历史对话时,
+          // 跳 /chat?autoMessage=... 会卡死, activeConvId 永远 null, autoMessage effect
+          // 永远等不到. 修: 任何模式 (embedded OR 有 autoMessage URL 参数) 都没历史对话时,
+          // 主动建一个新对话, 让 autoMessage effect 能拿到 convId.
           const id = await apiCreateConversation("新对话");
           if (id) {
             setActiveConvId(id);
@@ -897,6 +888,9 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
     async (text: string) => {
       if (!text.trim()) return;
 
+      // P1-32 v4: 同步 sendMessageRef 给 autoMessage effect 用
+      sendMessageRef.current = sendMessage;
+
       let convId = activeConvIdRef.current;
       if (!convId) {
         convId = await apiCreateConversation("新对话");
@@ -1080,6 +1074,10 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
                   chartOptions = r.data.charts.map((c: any) => c.option).filter(Boolean);
                 } else if (r.data?.message) {
                   summary = r.data.message;
+                } else if (Array.isArray(r.data)) {
+                  // P1-28: 之前 Array 走"对象"分支, JSON.stringify 后 slice(0,300) 显示
+                  // "[{\"docId\":\"...\",...}" 这种 JSON 字符串, 人类不可读且会撑爆 tool 框
+                  summary = `获取到 ${r.data.length} 条结果`;
                 } else if (r.data?.results && Array.isArray(r.data.results)) {
                   summary = `获取到 ${r.data.results.length} 条结果`;
                 } else if (typeof r.data === "string") {
@@ -1387,6 +1385,37 @@ export default function ChatPage({ embedded = false, defaultSkill: propDefaultSk
       messagesEndRef.current.scrollIntoView({ behavior: "auto" });
     }
   }, [activeState.messages, activeState.loading]);
+
+  // P1-32 v4: URL ?autoMessage=... 自动填入输入框并发送.
+  // 放在 useCallback (sendMessage 定义) 之后, 这样 effect 闭包能拿到 sendMessage.
+  // deps 接受 [activeConvId, sendMessage]: sendMessage 引用变化 effect 重跑, 但
+  // autoMessageProcessedRef 保证 setInputValue + sendMessage 只触发一次.
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const autoMessage = urlParams.get("autoMessage");
+    console.log("[P1-32 autoMessage effect v5] autoMessage=", autoMessage, "activeConvId=", activeConvId, "processedRef=", autoMessageProcessedRef.current);
+    if (!autoMessage) return;
+    if (autoMessageProcessedRef.current === autoMessage) return;
+    if (!activeConvId) return;
+
+    autoMessageProcessedRef.current = autoMessage;
+    console.log("[P1-32 autoMessage effect v5] firing sendMessage NOW, text=", autoMessage);
+
+    // P1-36: 之前用 setTimeout(100ms) + cleanup clearTimeout, React 18 StrictMode dev 双跑
+    //   会让 cleanup 取消 setTimeout, "firing sendMessage" log 永远不出现.
+    //   修: 不再 setTimeout, 直接同步调. activeConvId 已经有值, sendMessage 不会 race.
+    setInputValue(autoMessage);
+    sendMessage(autoMessage);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("autoMessage");
+      window.history.replaceState({}, "", url.toString());
+    } catch (e) {
+      // ignore
+    }
+    // 注意: 不再 return cleanup, 故意让 effect 重复跑 (虽然没副作用, 因 ref 已 set),
+    //   但这样不会有 setTimeout 被错误取消的风险.
+  }, [activeConvId, sendMessage]);
 
   // 是否有附件正在解析中
   const hasParsingAttachments = activeState.attachments.some((a) => a.status === "uploading");

@@ -168,10 +168,12 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
     const summary = msg.content && msg.content !== "完成" && msg.content !== "失败" ? msg.content : "";
 
     return (
-      <div style={{ marginLeft: 46, animation: 'fade-in-up 0.3s ease-out' }}>
+      // P1-28: 加 maxWidth: '100%' 防止 tool 框内容超出父气泡 (尤其 embed 场景)
+      <div style={{ marginLeft: 46, maxWidth: '100%', overflow: 'hidden', animation: 'fade-in-up 0.3s ease-out' }}>
         <Collapse
           ghost
           size="small"
+          style={{ maxWidth: '100%' }}
           expandIcon={({ isActive }) => (
             <span style={{ transition: 'transform 0.3s', display: 'inline-block', transform: isActive ? 'rotate(90deg)' : 'rotate(0deg)' }}>
               <RightOutlined style={{ fontSize: 10, color: '#94A3B8' }} />
@@ -180,14 +182,18 @@ export default function MessageBubble({ msg, confirmedCards, mdPreviews, onViewK
           items={[{
             key: "tool",
             label: (
-              <Flex align="center" gap={10} style={{ padding: '2px 0', overflow: 'hidden', minWidth: 0 }}>
+              <Flex align="center" gap={10} style={{ padding: '2px 0', overflow: 'hidden', minWidth: 0, maxWidth: '100%' }}>
                 <span style={{ color: isRunning ? '#667eea' : msg.isError ? '#EF4444' : '#64748B', fontSize: 15, flexShrink: 0 }}>
                   {isRunning ? <Spin indicator={<LoadingOutlined spin />} size="small" /> : toolIcon}
                 </span>
                 <Text style={{ fontSize: 14, color: '#334155', fontWeight: 500, flexShrink: 0 }}>{toolLabel}</Text>
                 {summary && (
-                  <Text style={{ fontSize: 13, color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
-                    {summary.length > 60 ? summary.slice(0, 60) + "..." : summary}
+                  <Text
+                    ellipsis
+                    style={{ fontSize: 13, color: '#94A3B8', minWidth: 0, flex: 1 }}
+                    title={summary}  // hover 提示完整内容
+                  >
+                    {summary}
                   </Text>
                 )}
               </Flex>
