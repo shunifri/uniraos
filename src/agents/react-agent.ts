@@ -35,7 +35,9 @@ export class ReactAgent implements Agent {
     this.name = `react:${profile.role}`;
     this.profile = profile;
     this.deps = deps;
-    this.maxIterations = opts?.maxIterations ?? 15;
+    // P1-29: 默认 maxIterations 15 不够多 query 数据分析任务 (用户真实场景跑了 15 次 tool 正好 hitMax).
+    // 提到 30, 给 LLM 足够空间先 batch 查数据再总结.
+    this.maxIterations = opts?.maxIterations ?? 30;
     this.skillAccessService = opts?.skillAccessService ?? new SkillAccessServiceImpl(deps.registry);
   }
 
@@ -290,8 +292,41 @@ export class ReactAgent implements Agent {
       }
     }
 
+    // P1-29: 之前 hitMax 时直接用 lastMsg.content (空字符串) 返回, 用户看不到任何总结.
+    // 真实场景: 最后一轮 LLM 只发 tool_call 没生成 content, 准备下轮总结但已经 hitMax 被截断.
+    // 修法: 强制调一次 final LLM, 移除 tools, 让它基于已收集的 tool_result 给出总结.
     const lastMsg = [...messages].reverse().find((m) => m.role === "assistant" && m.content);
-    yield { event: "agent_done", agentRole: this.profile.role, data: { response: lastMsg?.content ?? "[max iterations]" } };
+    if (!lastMsg?.content || !lastMsg.content.trim()) {
+      try {
+        const summaryMessages: Message[] = [
+          ...messages,
+          { role: "user", content: "你已用完所有迭代次数, 请直接基于已收集的工具结果给出最终分析/总结. 不要继续调用工具." },
+        ];
+        let summary = "";
+        if (this.deps.provider.chatStream) {
+          for await (const chunk of this.deps.provider.chatStream(summaryMessages, [], { deepThink: false })) {
+            if (chunk.type === "text_delta" && chunk.text) {
+              summary += chunk.text;
+              yield { event: "text_delta", agentRole: this.profile.role, data: { text: chunk.text } };
+            }
+          }
+        } else {
+          const r = await this.deps.provider.chat(summaryMessages, []);
+          summary = r.content ?? "";
+          if (summary) yield { event: "text_delta", agentRole: this.profile.role, data: { text: summary } };
+        }
+        if (summary) {
+          messages.push({ role: "assistant", content: summary });
+          yield { event: "agent_done", agentRole: this.profile.role, data: { response: summary } };
+          return;
+        }
+      } catch (err) {
+        // 总结失败, fallthrough 到老逻辑
+        console.warn("[react-agent] final summary failed:", err);
+      }
+    }
+
+    yield { event: "agent_done", agentRole: this.profile.role, data: { response: lastMsg?.content ?? "[max iterations] 已达到最大迭代次数, 请尝试简化问题或拆成多次对话." } };
   }
 
   private async getFilteredTools(): Promise<ToolDefinition[]> {
