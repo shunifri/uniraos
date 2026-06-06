@@ -236,6 +236,8 @@ export interface AgentDeps {
   registry: SkillRegistry;
   engine: ExecutionEngine;
   provider: LLMProvider;
+  /** P1-30: 传配置 (含 agent.maxIterations 等), 让子 agent 用用户设的值, 避免硬编码 */
+  config?: { maxIterations?: number; [key: string]: unknown };
 }
 
 export interface ExpertProfile {

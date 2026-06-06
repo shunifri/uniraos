@@ -76,7 +76,13 @@ export class TeamAgent implements Agent {
     // 如果 profile 有 allowedSkills，说明需要工具调用 → ReactAgent
     // 否则使用 SimpleAgent
     if (profile.allowedSkills.length > 0) {
-      return new ReactAgent(profile, this.deps, { maxIterations: 10 });
+      // P1-30: 之前硬编码 maxIterations: 10, 跟用户在 Config UI 设的 "最大迭代" 没关系.
+      // 改成: profile.maxIterations 优先, 再 fallback 到 this.deps.config.maxIterations, 最后 30.
+      // (orchestrator 走 roleConfig?.maxIterations ?? this.config.maxIterations, 这里对称.)
+      const cfgMaxIter = (this.deps as any).config?.maxIterations as number | undefined;
+      const profileMaxIter = (profile as any).maxIterations as number | undefined;
+      const maxIter = profileMaxIter ?? cfgMaxIter ?? 30;
+      return new ReactAgent(profile, this.deps, { maxIterations: maxIter });
     }
     return new SimpleAgent(profile, this.deps);
   }
