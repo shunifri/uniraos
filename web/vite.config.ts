@@ -6,12 +6,41 @@ import { resolve } from "path";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
-      "@": resolve(__dirname, "src"),
-    },
+    alias: [
+      {
+        find: "@",
+        replacement: resolve(__dirname, "src"),
+      },
+      // P1-33: @ant-design/x 的 CodeHighlighter 内部用
+      //   require(`react-syntax-highlighter/dist/esm/languages/prism/${lang}`) 同步 require ESM 路径,
+      //   Vite dev 下报 "Failed to resolve module specifier 'react-syntax-highlighter/dist/esm/languages/prism/javascript'".
+      //
+      // 修法: alias 把 esm 路径重定向到 cjs 兼容版本, 同步 require 能解析.
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/languages\/prism\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/languages/prism/$1",
+      },
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/languages\/hljs\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/languages/hljs/$1",
+      },
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/styles\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/styles/$1",
+      },
+    ],
   },
   server: {
     port: 9002,
+    // P1-33: @ant-design/x 的 CodeHighlighter 用 require(`react-syntax-highlighter/dist/esm/languages/prism/${lang}`)
+    //   同步 require ESM 路径, Vite dev 下会报 "Failed to resolve module specifier".
+    //   修复: optimizeDeps 强制预构建 react-syntax-highlighter 全语言包,
+    //   Vite 会把 ESM 路径转成 webbundle, sync require 能解析.
+    //   exclude: ['react-syntax-highlighter'] 反过来, 走 Vite 自己的 resolution.
+    //   includes: 全部 prism 语言, CodeHighlighter 懒加载时也能命中.
+    fs: {
+      allow: [".."],
+    },
     proxy: {
       "/api": {
         target: "http://localhost:3000",
@@ -45,7 +74,11 @@ export default defineConfig({
   build: {
     outDir: "../src/ui",
     emptyOutDir: true,
-    // P2 修复：显式禁用 Source Map，防止生产环境源码泄露
+    // P2 修复：显示禁用 Source Map，防止生产环境源码泄露
     sourcemap: false,
+  },
+  // P1-33: 让 Vite 预构建 react-syntax-highlighter, antd-x 内部的 require() 能走 Vite 的 module graph
+  optimizeDeps: {
+    include: ["react-syntax-highlighter"],
   },
 });
