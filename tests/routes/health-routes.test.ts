@@ -110,6 +110,7 @@ describe("health-routes (P1)", () => {
     expect(res.body.status).toBe("degraded");
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("GET /prom/metrics should require auth and admin", async () => {
     // Skipped: prom-client register.metrics() times out in test environment
     // Auth protection is verified in auth-middleware tests

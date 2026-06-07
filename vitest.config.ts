@@ -21,6 +21,11 @@ export default defineConfig({
     exclude: [
       "tests/db/mysql-database.test.ts",
       "tests/vector/qdrant-client.test.ts",
+      // Lint rule behaviour fixture — see top of file for purpose. Excluded
+      // from the main test run so the deliberately-bad code doesn't pollute
+      // CI test counts, and so vitest doesn't try to execute the .skip and
+      // report a perpetually-skipped suite.
+      "tests/_test_lint.test.ts",
     ],
     environment: "jsdom",
     setupFiles: ["tests/setup.ts"],

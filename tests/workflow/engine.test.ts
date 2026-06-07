@@ -381,6 +381,7 @@ describe("WorkflowEngine", () => {
       });
     });
 
+    // eslint-disable-next-line local/no-new-skip -- legacy FLAKY skip, see docs/migration-skip-to-todo.md
     it.skip("claims a pending task (FLAKY: async task creation race)", async () => {
       const start = await engine.startInstance("approval", "user1");
       const result = await engine.claimTask(start.task!.id, "user2");
@@ -389,6 +390,7 @@ describe("WorkflowEngine", () => {
       expect(result.task!.assignee).toBe("user2");
     });
 
+    // eslint-disable-next-line local/no-new-skip -- legacy FLAKY skip, see docs/migration-skip-to-todo.md
     it.skip("returns error for already claimed task (FLAKY: async task creation race)", async () => {
       const start = await engine.startInstance("approval", "user1");
       await engine.claimTask(start.task!.id, "user2");
@@ -410,6 +412,7 @@ describe("WorkflowEngine", () => {
       });
     });
 
+    // eslint-disable-next-line local/no-new-skip -- legacy FLAKY skip, see docs/migration-skip-to-todo.md
     it.skip("transfers task to another user (FLAKY: async task creation race)", async () => {
       const start = await engine.startInstance("approval", "user1");
       const result = await engine.transferTask(start.task!.id, "user3", "handover");
@@ -431,6 +434,7 @@ describe("WorkflowEngine", () => {
       });
     });
 
+    // eslint-disable-next-line local/no-new-skip -- legacy FLAKY skip, see docs/migration-skip-to-todo.md
     it.skip("cancels running instance and tasks (FLAKY: async race)", async () => {
       const start = await engine.startInstance("approval", "user1");
       const result = await engine.cancelInstance(start.instance!.id, "cancelled by user");

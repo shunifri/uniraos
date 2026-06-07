@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
 describe.skip("Worker Process", () => {
   const handlers: Record<string, Array<(...args: unknown[]) => void>> = {};
   let originalProcessOn: typeof process.on;

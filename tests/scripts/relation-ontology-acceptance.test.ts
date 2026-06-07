@@ -41,7 +41,10 @@ describe("inferEdgeTypeFromLabel (#5 Relation Ontology)", () => {
 });
 
 describe("check-acceptance-rate.ts (#7 alerting)", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("DRY_RUN 模式：e2e — 跳过 (npx tsx 启动慢，单测已覆盖 helper)", () => {});
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("ACCEPTANCE_THRESHOLD=1.0 → ALERT: e2e — 跳过", () => {});
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("低 volume 不告警: e2e — 跳过", () => {});
 });

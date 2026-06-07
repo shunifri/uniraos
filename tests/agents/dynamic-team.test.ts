@@ -60,6 +60,7 @@ describe("Dynamic Team Formation", () => {
     orchestrator = new Orchestrator(deps, { autoStrategy: true, maxIterations: 15 });
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   describe.skip("analyzeTaskRequirements", () => {
     // TODO: analyzeTaskRequirements method not yet implemented on Orchestrator
     it("should detect coding tasks", () => {
@@ -103,6 +104,7 @@ describe("Dynamic Team Formation", () => {
     });
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   describe.skip("formTeam", () => {
     // TODO: formTeam method not yet implemented on Orchestrator
     it("should select coder + reviewer for coding tasks", () => {
@@ -187,6 +189,7 @@ describe("Dynamic Team Formation", () => {
     });
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   describe.skip("runTeamStream", () => {
     // TODO: team_formed event not yet emitted in runStream
     it("should emit team_formed event with correct members", async () => {
