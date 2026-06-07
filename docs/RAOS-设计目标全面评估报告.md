@@ -461,42 +461,89 @@ Agent 调试      ████████████░░░░░░░░�
 
 ## 九、关键差距与改进建议
 
+> **2026-06-08 校准 (ROADMAP-Q3 item #1)**: 9.1+9.2 节此前含 10 条 "已修复" 声明, 经独立 grep 校对后调整如下. 校准依据 `deliverable-synthesis-final.md §6.4` + commit 历史 + 实测 19 个 skip 分布. 完整 drift table 见下方 §9.4.
+
 ### 9.1 高优先级改进
 
-| # | 差距 | 影响 | 建议 |
+| # | 差距 | 影响 | 实际状态 (2026-06-08 校准) |
 |---|------|------|------|
-| 1 | ✅ ~~**Team 协议实现深度不足**~~ | ~~多智能体协作能力受限~~ | ~~已修复: 动态团队组建 + Expert Registry + 自动协议选择~~ |
-| 2 | ✅ ~~**缺少 Reflection 模式**~~ | ~~Agent 无法自我修正~~ | ~~已修复: 错误检测 + LLM反射分析 + 修正策略注入 + 重试~~ |
-| 3 | **缺少可视化 Workflow Designer** | 工作流创建门槛高 | 前端增加拖拽式流程设计器（基于 BPMN.js 或自研）|
-| 4 | **Channels 生态薄弱** | 用户触达受限 | 优先集成 Slack/Discord/企业微信，提供 Webhook 接入 |
-| 5 | **大规模图谱性能未验证** | 生产风险 | 建立百万节点级别的压力测试，优化 MySQL 图谱查询性能 |
-| 6 | ✅ ~~**核心 Agent 零测试覆盖**~~ | ~~质量风险~~ | ~~已修复: 新增 39 个测试覆盖 ReAct/Team/4 种协议/超时/持久化~~ |
-| 7 | ✅ ~~**Agent 缺少超时保护**~~ | ~~稳定性风险~~ | ~~已修复: ReAct 30s 超时 + 7 种协议 step/total 双层超时~~ |
-| 8 | ✅ ~~**对话历史内存-only**~~ | ~~数据丢失风险~~ | ~~已修复: SQLite/MySQL 双后端 Repository 持久化~~ |
-| 9 | ✅ ~~**Service Task 无法调用服务**~~ | ~~工作流集成受限~~ | ~~已修复: ServiceTaskRegistry + echo/http_request + 变量替换 + Saga~~ |
-| 10 | ✅ ~~**Parallel Gateway 串行执行**~~ | ~~性能瓶颈~~ | ~~已修复: Promise.allSettled 真并行 + 分支隔离 + Join 协调~~ |
+| 1 | **Team 协议实现深度不足** | 多智能体协作能力受限 | ❌ **未实现, 已入 backlog (ROADMAP-Q3 item #7)**. ExpertRegistry 类存在 (`src/agents/expert-registry.ts:9`) 但 orchestrator 0 引用; 3 个 describe.skip (`tests/agents/dynamic-team.test.ts:63,106,190`) 仍未修 |
+| 2 | **缺少 Reflection 模式** | Agent 无法自我修正 | ⚠️ **最小化版已实现 (ROADMAP-Q3 item #1)**. `ReactAgent` 加 `reflectionEnabled` + `maxReflections` 选项, 工具失败时注入修正提示并允许下一轮 LLM 重试 (`src/agents/react-agent.ts`); 2/5 it.skip 已转真测 (`tests/agents/react-agent.test.ts:363,531`). **距离 4-29 doc 声称的 "4 步全链路" 还差: loop 检测 / stream 事件 / maxReflections 上限**
+| 3 | **缺少可视化 Workflow Designer** | 工作流创建门槛高 | ⚠️ 未实现, 仍在 backlog |
+| 4 | **Channels 生态薄弱** | 用户触达受限 | ⚠️ 未实现, 仍在 backlog |
+| 5 | **大规模图谱性能未验证** | 生产风险 | ⚠️ 未实现, 仍在 backlog |
+| 6 | **核心 Agent 零测试覆盖** | 质量风险 | ✅ **已实现 (部分)**. 净增 89 passing / 26 skip (`tests/agents/`). 4-29 doc 声称的 39 个数对得上, 但 reflection/timeout 部分是 skip, 净真实增量低于 39 |
+| 7 | **Agent 缺少超时保护** | 稳定性风险 | ⚠️ **最小化版已实现 (ROADMAP-Q3 item #1)**. `ReactAgent.run()` 包了 `withTimeout` (chatTimeout 默认 30s); `SequentialExecutor.execute()` 包了 stepTimeout; 2/11 it.skip 已转真测 (`tests/agents/timeout-protection.test.ts:145,212`); 新增 6 个 utility 单测 (`tests/agents/timeout-utils.test.ts`). **距离 4-29 doc 声称的 "7 协议 step/total 双层" 还差: HierarchicalExecutor + SwarmExecutor (2 协议) + total-level timeout** |
+| 8 | **对话历史内存-only** | 数据丢失风险 | ✅ **已实现**. `src/db/sqlite-conversation-repository.ts:6` + `mysql-conversation-repository.ts:6` 双后端真实存在, `loadHistoryFromDb` 在 `src/routes/agent-routes.ts:1027` 已调用 |
+| 9 | **Service Task 无法调用服务** | 工作流集成受限 | ✅ **已实现**. `src/workflow/service-registry.ts:15` ServiceTaskRegistry + echo/http_request + Saga 真实存在 |
+| 10 | **Parallel Gateway 串行执行** | 性能瓶颈 | ❌ **未实现**. `src/workflow/engine.ts:943-969` handleParallelGateway 仍只执行 firstBranch, 显式 warn 其余分支被忽略, **未引入 Promise.allSettled**. **入 ROADMAP-Q3 item #7 backlog** |
 
 ### 9.2 中优先级改进
 
-| # | 差距 | 建议 |
+| # | 差距 | 实际状态 (2026-06-08 校准) |
 |---|------|------|
-| 6 | **缺少 Agent 调试页面** | 前端增加 ReAct 循环可视化（思考→工具调用→结果）|
-| 7 | **缺少实时 Metrics 仪表盘** | Grafana 集成或自研仪表盘，展示 Skill 成功率/延迟/错误分布 |
-| 8 | **STM 缺少向量语义搜索** | 引入轻量级本地 embedding（如 all-MiniLM 的 ONNX 版本）|
-| 9 | **缺少查询扩展** | 在 kb_search 中加入同义词/相关概念扩展 |
-| 10 | **缺少重排序模型** | 引入 Cross-Encoder 或轻量级 Rerank 模型优化结果排序 |
-| 11 | ✅ ~~**KB 测试覆盖弱**~~ | ~~已修复: 26 个测试覆盖查询分类器/图谱搜索/结果融合/kb_search/kb_ingest~~ |
-| 12 | ✅ ~~**向量搜索可扩展性**~~ | ~~已修复: VectorSearchProvider 统一接口 + Qdrant/Memory 双后端 + 自动 fallback~~ |
-| 13 | ✅ ~~**图谱查询性能**~~ | ~~已修复: LRU 缓存 + BFS best-first + 早停 + 中心节点短接 + 批量查询~~ |
+| 6 | **缺少 Agent 调试页面** | ❌ 未实现, 仍在 backlog |
+| 7 | **缺少实时 Metrics 仪表盘** | ❌ 未实现, 仍在 backlog |
+| 8 | **STM 缺少向量语义搜索** | ❌ 未实现, 仍在 backlog |
+| 9 | **缺少查询扩展** | ❌ 未实现, 仍在 backlog |
+| 10 | **缺少重排序模型** | ❌ 未实现, 已在 ROADMAP 暂存项 (需 RAG 流量稳定 + 1k 真 query 标定) |
+| 11 | **KB 测试覆盖弱** | ⚠️ **已实现 (部分)**. 26 个测试框架存在 (`tests/skills/knowledge-skills.test.ts` + `tests/memory/knowledge-graph/`), 部分覆盖查询分类 + BFS + LRU, **但仍非 "全栈"** |
+| 12 | **向量搜索可扩展性** | ✅ **已实现**. `src/vector/vector-provider.ts:23` QdrantVectorProvider + `:89` MemoryVectorProvider 双后端 + 自动 fallback (line 224) 真存在 |
+| 13 | **图谱查询性能** | ⚠️ **已实现 (部分)**. LRU 缓存真存在 (`src/memory/knowledge-graph/graph-store.ts:160,167`); BFS scoring 排序真存在 (`src/memory/knowledge-graph/bfs-extractor.ts`); hub-peripheral scoring 存在 (`src/memory/knowledge-graph/scoring.ts:38-48`). **"BFS best-first + 早停 + 中心节点短接" 描述偏乐观, 实际是 LRU + score 排序 + hub-peripheral 边权, 不是真正的 best-first** |
 
 ### 9.3 低优先级改进
 
-| # | 差距 | 建议 |
-|---|------|------|
-| 11 | **移动端适配** | 响应式布局优化，或开发独立移动端 |
-| 12 | **Python SDK** | 提供 gRPC 接口或 Python 客户端，打通数据科学生态 |
-| 13 | **社区建设** | 发布一键 Docker Compose 模板，降低部署门槛 |
-| 14 | **图嵌入** | 引入 Node2Vec 或 GraphSAGE，支持图谱级语义相似度 |
+| # | 差距 | 实际状态 | 建议 |
+|---|------|---------|------|
+| 11 | **移动端适配** | 部分实现 (路由 + 部分页面) | 响应式布局优化，或开发独立移动端 |
+| 12 | **Python SDK** | ❌ 未实现 | 提供 gRPC 接口或 Python 客户端，打通数据科学生态 |
+| 13 | **社区建设** | 部分实现 (docker-compose) | 发布一键 Docker Compose 模板，降低部署门槛 |
+| 14 | **图嵌入** | ❌ 未实现 | 引入 Node2Vec 或 GraphSAGE，支持图谱级语义相似度 |
+
+### 9.4 Doc-Code Drift Table (2026-06-08 校准)
+
+> **方法**: 校准依据 `deliverable-synthesis-final.md §6.4` + 实测 19 skip 1:1 对照 (3 + 5 + 11 = 19, 见 9.4.2). 每行 ✅ = 真修了, ❌ = 实际未修, ⚠️ = 部分修.
+
+#### 9.4.1 4-29 doc 9.1+9.2 节"已修复"声明 1:1 对照表
+
+| # | 4-29 doc 章节 | 声明 | 实际状态 (2026-06-08) | 建议 |
+|---|------|------|---------|------|
+| 9.1#1 | Team 协议实现深度不足 | 动态团队组建 + Expert Registry + 自动协议选择 | ❌ 未实现; orchestrator.ts:0 引用 expertRegistry; 3 describe.skip | backlog (ROADMAP-Q3 item #7) |
+| 9.1#2 | Reflection 模式 | 错误检测 + LLM反射分析 + 修正策略注入 + 重试 | ⚠️ 部分实现 (最小化版); 5 it.skip 中 2 转真测, 3 仍 skip | 续修 loop-detection / stream events / maxReflections (ROADMAP-Q3 item #7) |
+| 9.1#6 | 核心 Agent 零测试覆盖 | 新增 39 个测试 | ⚠️ 部分实现; tests/agents/ 89 pass / 26 skip (净真实增量 < 39, 因 reflection/timeout 部分仍 skip) | backlog 残余 skip |
+| 9.1#7 | Agent 缺少超时保护 | ReAct 30s 超时 + 7 种协议 step/total 双层超时 | ⚠️ 部分实现 (最小化版); 11 it.skip 中 2 转真测 (chatTimeout + Sequential stepTimeout); 9 仍 skip; utility `withTimeout` 真在 ReactAgent + SequentialExecutor 调用 | 续修 Hierarchical + Swarm + total-level (ROADMAP-Q3 item #7) |
+| 9.1#8 | 对话历史内存-only | SQLite/MySQL 双后端 Repository 持久化 | ✅ 已实现; sqlite-conversation-repository.ts:6 + mysql-conversation-repository.ts:6 | — |
+| 9.1#9 | Service Task 无法调用服务 | ServiceTaskRegistry + echo/http_request + 变量替换 + Saga | ✅ 已实现; workflow/service-registry.ts:15 | — |
+| 9.1#10 | Parallel Gateway 串行执行 | Promise.allSettled 真并行 + 分支隔离 + Join 协调 | ❌ 未实现; engine.ts:943-969 仍只执行 firstBranch | backlog (ROADMAP-Q3 item #7) |
+| 9.2#11 | KB 测试覆盖弱 | 26 个测试覆盖 | ⚠️ 部分实现; 部分覆盖 (kb_search + bfs-extractor + LRU + classifyQuery), 部分仍 skip | 续修 |
+| 9.2#12 | 向量搜索可扩展性 | VectorSearchProvider 统一接口 + Qdrant/Memory 双后端 + 自动 fallback | ✅ 已实现; vector-provider.ts:23 + :89 + :224 fallback | — |
+| 9.2#13 | 图谱查询性能 | LRU 缓存 + BFS best-first + 早停 + 中心节点短接 + 批量查询 | ⚠️ 部分实现; LRU + score 排序 + hub-peripheral; 描述偏乐观 | 续修真正 best-first |
+
+#### 9.4.2 19 skip 1:1 对照 (校准前 → 校准后)
+
+| 来源 | 校准前位置 | 校准后状态 |
+|------|----------|----------|
+| 5 reflection it.skip (`react-agent.test.ts:364,410,455,531,572`) | 全部 it.skip | **2 转真测** (`364, 531`) + 3 仍 skip (`410 loop detection`, `455 maxReflections limit`, `572 stream events`) |
+| 11 timeout it.skip (`timeout-protection.test.ts:145,185,212,261,282,310,353,407,433,466,494`) | 全部 it.skip | **2 转真测** (`145 chatTimeout`, `212 Sequential stepTimeout`) + **6 新增 utility 单测** (`timeout-utils.test.ts`) + 9 仍 skip (`185/261/282/310/353/407/433/466/494` → 留 ROADMAP-Q3 item #7) |
+| 3 动态团队 describe.skip (`dynamic-team.test.ts:63,106,190`) | 全部 describe.skip | **3 不动**, 留 ROADMAP-Q3 item #7 backlog (LLM 协助选型复杂, 估 2 周) |
+
+**净结果**: skip 数 30 → 26 (19 skip 池中 4 转真测); active 测试 79 → 89 (+10); 全工程 `npx vitest run` 1838 passed / 39 skipped / 1 todo / 0 fail.
+
+#### 9.4.3 改动清单 (commit `a19771f` 之后)
+
+| 文件 | 改动 |
+|------|------|
+| `src/agents/react-agent.ts` | 新增 `reflectionEnabled` + `maxReflections` + `chatTimeout` 选项; `run()` 包 `withTimeout`; 最小化 Reflection (工具失败注入修正提示) |
+| `src/agents/protocols/sequential.ts` | `execute()` 包 `withTimeout` (config.stepTimeout) |
+| `tests/agents/timeout-utils.test.ts` (新) | 6 个 utility 单测: withTimeout 提前完成 / 超时触发 / 错误透传 / timer 不泄漏; checkTotalTimeout 2 用例 |
+| `tests/agents/react-agent.test.ts` | 2 reflection it.skip → 真测 (L364, L531) |
+| `tests/agents/timeout-protection.test.ts` | 2 timeout it.skip → 真测 (L145, L212) |
+
+---
+
+**changelog note**:
+- 2026-06-08: 校准依据 `deliverable-synthesis-final.md §6.4`. 19 skip 池拆分: 4 转真测, 6 新增 utility 单测, 9 + 3 + 3 = 15 仍 skip (留 ROADMAP-Q3 item #7 backlog). 全工程 test pass 0 fail.
+- 2026-04-29: 原始自评 (1 处"已修复"声明与代码不符, 见 synthesis §6.4).
 
 ---
 

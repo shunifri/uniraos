@@ -142,8 +142,8 @@ const mockDeps = (provider: LLMProvider) => ({
 });
 
 describe("ReactAgent Timeout Protection", () => {
-  it.skip("should return timeout error when chat() exceeds chatTimeout", async () => {
-    // TODO: chatTimeout not yet implemented in ReactAgent
+  it("should return timeout error when chat() exceeds chatTimeout", async () => {
+    // ROADMAP-Q3 item #1: 4-29 doc 9.1#7 "Agent 缺少超时保护" → ReactAgent.run() 包了 withTimeout
     const provider = new DelayedMockProvider(200);
     const agent = new ReactAgent(
       {
@@ -182,6 +182,7 @@ describe("ReactAgent Timeout Protection", () => {
     expect(result.metadata.timedOut).toBeUndefined();
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should yield error event in runStream when chat fallback times out", async () => {
     // TODO: chatTimeout not yet implemented in ReactAgent
     const provider = new DelayedMockProvider(200);
@@ -209,8 +210,8 @@ describe("ReactAgent Timeout Protection", () => {
 });
 
 describe("SequentialExecutor Timeout Protection", () => {
-  it.skip("should return timeout error when a step exceeds stepTimeout", async () => {
-    // TODO: stepTimeout not yet implemented in SequentialExecutor
+  it("should return timeout error when a step exceeds stepTimeout", async () => {
+    // ROADMAP-Q3 item #1: 4-29 doc 9.1#7 "7 种协议 step/total 双层超时" → SequentialExecutor 包了 withTimeout
     const executor = new SequentialExecutor();
     const config: TeamConfig = {
       members: [
@@ -258,6 +259,7 @@ describe("SequentialExecutor Timeout Protection", () => {
 });
 
 describe("HierarchicalExecutor Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should return timeout error when manager decide exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in HierarchicalExecutor
     const provider = new DelayedMockProvider(200);
@@ -279,6 +281,7 @@ describe("HierarchicalExecutor Timeout Protection", () => {
     expect(result.metadata.timedOut).toBe(true);
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should return timeout error when sub-agent execution exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in HierarchicalExecutor
     const provider = new FastMockProvider(
@@ -307,6 +310,7 @@ describe("HierarchicalExecutor Timeout Protection", () => {
 });
 
 describe("SwarmExecutor Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should return timeout error when agent run exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in SwarmExecutor
     const provider = new FastMockProvider("no handoff");
@@ -350,6 +354,7 @@ describe("SwarmExecutor Timeout Protection", () => {
 });
 
 describe("SequentialExecutor Stream Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should yield error event in executeStream when total timeout is exceeded", async () => {
     // TODO: totalTimeout not yet implemented in SequentialExecutor
     const executor = new SequentialExecutor();
@@ -404,6 +409,7 @@ describe("SequentialExecutor Stream Timeout Protection", () => {
 });
 
 describe("HierarchicalExecutor Stream Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should yield error event in executeStream when manager decide exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in HierarchicalExecutor
     const provider = new DelayedMockProvider(200);
@@ -430,6 +436,7 @@ describe("HierarchicalExecutor Stream Timeout Protection", () => {
     expect(errorEvent!.data.timedOut).toBe(true);
   });
 
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should yield error event in executeStream when sub-agent exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in HierarchicalExecutor
     const provider = new FastMockProvider(
@@ -463,6 +470,7 @@ describe("HierarchicalExecutor Stream Timeout Protection", () => {
 });
 
 describe("SwarmExecutor Stream Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should yield error event in executeStream when agent exceeds stepTimeout", async () => {
     // TODO: stepTimeout not yet implemented in SwarmExecutor
     const provider = new FastMockProvider("no handoff");
@@ -491,6 +499,7 @@ describe("SwarmExecutor Stream Timeout Protection", () => {
 });
 
 describe("Protocol Total Timeout Protection", () => {
+  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
   it.skip("should trigger total timeout when cumulative time exceeds totalTimeout", async () => {
     // TODO: totalTimeout not yet implemented in protocol executors
     const executor = new SequentialExecutor();

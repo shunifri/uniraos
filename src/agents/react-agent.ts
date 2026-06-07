@@ -18,6 +18,26 @@ import type {
   AgentStreamEvent,
   AgentStep,
 } from "./types.js";
+import { withTimeout } from "./timeout-utils.js";
+import { AgentTimeoutError } from "../utils/errors.js";
+
+/**
+ * ReactAgent 配置项
+ *
+ * ROADMAP-Q3 item #1 (2026-06-08):
+ *   - 新增 reflectionEnabled / maxReflections 最小化 Reflection 实现
+ *   - 新增 chatTimeout 最小化超时保护 (委托给 timeout-utils.ts:withTimeout)
+ */
+export interface ReactAgentOptions {
+  maxIterations?: number;
+  skillAccessService?: SkillAccessService;
+  /** 启用 Reflection: 工具调用失败时, 让 LLM 反思并注入修正提示后重试 (默认 false) */
+  reflectionEnabled?: boolean;
+  /** Reflection 最大重试次数 (默认 2) */
+  maxReflections?: number;
+  /** 单次 LLM chat() 调用超时毫秒 (0 = 不超时, 默认 30000) */
+  chatTimeout?: number;
+}
 
 export class ReactAgent implements Agent {
   readonly name: string;
@@ -26,11 +46,14 @@ export class ReactAgent implements Agent {
   private deps: AgentDeps;
   private maxIterations: number;
   private skillAccessService: SkillAccessService;
+  private reflectionEnabled: boolean;
+  private maxReflections: number;
+  private chatTimeoutMs: number;
 
   constructor(
     profile: AgentProfile,
     deps: AgentDeps,
-    opts?: { maxIterations?: number; skillAccessService?: SkillAccessService },
+    opts?: ReactAgentOptions,
   ) {
     this.name = `react:${profile.role}`;
     this.profile = profile;
@@ -39,6 +62,9 @@ export class ReactAgent implements Agent {
     // 提到 30, 给 LLM 足够空间先 batch 查数据再总结.
     this.maxIterations = opts?.maxIterations ?? 30;
     this.skillAccessService = opts?.skillAccessService ?? new SkillAccessServiceImpl(deps.registry);
+    this.reflectionEnabled = opts?.reflectionEnabled ?? false;
+    this.maxReflections = opts?.maxReflections ?? 2;
+    this.chatTimeoutMs = opts?.chatTimeout ?? 30_000;
   }
 
   async run(input: AgentInput): Promise<AgentOutput> {
@@ -50,11 +76,38 @@ export class ReactAgent implements Agent {
 
     let iterations = 0;
     let hitMax = false;
+    let reflectionCount = 0;
+    let timedOut = false;
 
     while (iterations < this.maxIterations) {
       iterations++;
 
-      const response = await this.deps.provider.chat(messages, tools, chatOptions);
+      // ROADMAP-Q3 item #1: chatTimeout 通过 withTimeout 包住 LLM chat() 调用
+      let response;
+      try {
+        response = this.chatTimeoutMs > 0
+          ? await withTimeout(
+              this.deps.provider.chat(messages, tools, chatOptions),
+              this.chatTimeoutMs,
+              `react-agent chat (iter ${iterations})`,
+            )
+          : await this.deps.provider.chat(messages, tools, chatOptions);
+      } catch (err) {
+        if (err instanceof AgentTimeoutError) {
+          timedOut = true;
+          const timeoutMsg = `[chat timed out: ${err.message}]`;
+          steps.push({
+            agentRole: this.profile.role,
+            type: "response",
+            content: timeoutMsg,
+            timestamp: Date.now(),
+          });
+          // 把超时消息也 push 进 messages, 这样下面的 lastMsg 查找能拿到它作为最终 response.
+          messages.push({ role: "assistant", content: timeoutMsg });
+          break;
+        }
+        throw err;
+      }
 
       if (response.content) {
         steps.push({
@@ -84,11 +137,11 @@ export class ReactAgent implements Agent {
           timestamp: Date.now(),
         });
 
+        const params = toolCall.arguments.params
+          ? (toolCall.arguments.params as Record<string, unknown>)
+          : toolCall.arguments;
         let result: Record<string, unknown>;
         try {
-          const params = toolCall.arguments.params
-            ? (toolCall.arguments.params as Record<string, unknown>)
-            : toolCall.arguments;
           const execResult = await this.deps.engine.execute(toolCall.name, params);
           result = {
             success: execResult.success,
@@ -115,6 +168,21 @@ export class ReactAgent implements Agent {
           content: JSON.stringify(result, null, 2),
           toolCallId: toolCall.id,
         });
+
+        // ROADMAP-Q3 item #1: 最小化 Reflection — 工具失败时, 让 LLM 反思并注入修正提示.
+        // 限制: 仅修复 tool 错误 (不修复 LLM 输出异常), 仅在 reflectionEnabled=true 时启用,
+        //       同一调用最多反思 maxReflections 次 (本轮 tool result 已加入, 重置循环让 LLM 看到提示).
+        if (
+          this.reflectionEnabled &&
+          reflectionCount < this.maxReflections &&
+          result.success === false
+        ) {
+          reflectionCount++;
+          const reflectionPrompt =
+            `上一次工具调用失败: ${toolCall.name}(${JSON.stringify(params)}) → ${result.error ?? "unknown error"}。` +
+            `请基于错误信息调整参数或换用其他工具后再试。`;
+          messages.push({ role: "system", content: `[Reflection] ${reflectionPrompt}` });
+        }
       }
 
       if (iterations >= this.maxIterations) hitMax = true;
@@ -123,15 +191,19 @@ export class ReactAgent implements Agent {
     const lastMsg = [...messages].reverse().find((m) => m.role === "assistant" && m.content);
     const response = lastMsg?.content ?? "[ReAct Agent reached max iterations]";
 
+    const metadata: Record<string, unknown> = {
+      duration: Date.now() - startTime,
+      hitMaxIterations: hitMax,
+      reflectionCount,
+    };
+    if (timedOut) metadata.timedOut = true;
+
     return {
       response,
       level: "react",
       steps,
       iterations,
-      metadata: {
-        duration: Date.now() - startTime,
-        hitMaxIterations: hitMax,
-      },
+      metadata,
     };
   }
 
