@@ -5,7 +5,7 @@
 # 支持多架构构建 (amd64/arm64) 和集群部署
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 # 华为云 SWR 配置（从环境变量读取，禁止硬编码）
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-north-4.myhuaweicloud.com}"

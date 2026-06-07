@@ -74,11 +74,9 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server-loader.cjs ./server-loader.cjs
 COPY --from=builder /app/worker-loader.cjs ./worker-loader.cjs
 
-# 设置权限（保留目录所有权设置，但暂不切换用户以避免 volume 权限问题）
+# 设置权限 + 切换到非 root 用户
 RUN chown -R raos:raos /app
-
-# 注：暂以 root 运行，避免 /app/.raos volume 挂载后权限不足
-# USER raos
+USER raos
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1

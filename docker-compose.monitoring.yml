@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Prometheus - Metrics collection
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.51.0
     container_name: raos-prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -21,11 +21,11 @@ services:
 
   # Grafana - Visualization
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.1
     container_name: raos-grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER is required}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
@@ -41,7 +41,7 @@ services:
 
   # Node Exporter - System metrics
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.7.0
     container_name: raos-node-exporter
     volumes:
       - /proc:/host/proc:ro
@@ -60,7 +60,7 @@ services:
 
   # Redis Exporter
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: oliver006/redis_exporter:v1.58.0
     container_name: raos-redis-exporter
     environment:
       - REDIS_ADDR=redis://redis:6379
@@ -72,10 +72,10 @@ services:
 
   # MySQL Exporter
   mysql-exporter:
-    image: prom/mysqld-exporter:latest
+    image: prom/mysqld-exporter:v0.15.1
     container_name: raos-mysql-exporter
     environment:
-      - DATA_SOURCE_NAME=root:${MYSQL_ROOT_PASSWORD:-rootpassword}@(mysql-primary:3306)/
+      - DATA_SOURCE_NAME=root:${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}@(mysql-primary:3306)/
     ports:
       - "9104:9104"
     networks:
@@ -84,7 +84,7 @@ services:
 
   # Jaeger - Distributed tracing
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.55
     container_name: raos-jaeger
     environment:
       - COLLECTOR_OTLP_ENABLED=true

@@ -8,15 +8,17 @@
 #   version: 镜像版本号 (默认: latest)
 # =============================================================================
 
-set -e
+set -euo pipefail
 
-# 配置
-SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
-SWR_ORG="kavin"
+# 配置 — 全部可通过环境变量覆盖, 避免硬编码
+SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-north-4.myhuaweicloud.com}"
+SWR_ORG="${SWR_ORG:-kavin}"
+SWR_USERNAME="${SWR_USERNAME:?必须设置 SWR_USERNAME (华为云 SWR 用户名)}"
+SWR_PASSWORD="${SWR_PASSWORD:?必须设置 SWR_PASSWORD (华为云 SWR 密码, 用 read -s 交互输入或从 .env 读)}"
 MODE=${1:-standalone}
 VERSION=${2:-latest}
-QDRANT_VERSION="v1.9.0"
-PROJECT_NAME="raos"
+QDRANT_VERSION="${QDRANT_VERSION:-v1.9.0}"
+PROJECT_NAME="${PROJECT_NAME:-raos}"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -60,10 +62,11 @@ RAOS 部署脚本
 EOF
 }
 
-# 登录华为云 SWR
+# 登录华为云 SWR — 凭据必须来自环境变量, 不再硬编码
 login_swr() {
-    log_info "登录华为云 SWR..."
-    docker login -u cn-north-4@HPUATFLDVQ30DWEOVMBZ -p c047c1f5ca9490b8fa37d139a10a81f94edd2c148067fd11b912118dbcf9afa3 ${SWR_REGISTRY} 2>/dev/null || {
+    log_info "登录华为云 SWR (${SWR_REGISTRY})..."
+    # --password-stdin 避免密码出现在 ps 输出
+    printf '%s' "${SWR_PASSWORD}" | docker login -u "${SWR_USERNAME}" --password-stdin "${SWR_REGISTRY}" 2>/dev/null || {
         log_error "登录失败"
         exit 1
     }
@@ -153,29 +156,30 @@ deploy_local() {
     log_info "=========================="
     log_info "开始本地开发部署"
     log_info "=========================="
-    
+
     # 检查本地依赖
     check_local_deps
-    
-    # 启动基础设施
+
+    # 启动基础设施 (用 docker-compose.dev.yml — 替代原本不存在的 docker-compose.infra.yml)
     log_info "启动基础设施 (Docker)..."
-    docker-compose -f docker-compose.infra.yml up -d 2>/dev/null || {
-        log_warn "基础设施 compose 不存在，使用本地服务"
-    }
-    
+    if [[ -f "docker-compose.dev.yml" ]]; then
+        docker-compose -f docker-compose.dev.yml up -d
+    else
+        log_warn "docker-compose.dev.yml 不存在, 跳过基础设施, 使用本地服务"
+    fi
+
     # 安装依赖
     log_info "安装依赖..."
     npm install
-    
+
     # 启动后端
     log_info "启动后端服务..."
     npm run dev &
-    
+
     # 启动前端
     log_info "启动前端服务..."
-    cd web && npm install && npm run dev &
-    cd ..
-    
+    (cd web && npm install && npm run dev) &
+
     log_info "=========================="
     log_info "本地开发环境已启动"
     log_info "=========================="
@@ -188,6 +192,18 @@ deploy_local() {
 
 # 生成分部署配置
 generate_compose_config() {
+    # 所有密码/secret 必须从环境变量读, 没有默认值 (避免生产误用默认值)
+    local mysql_root_pw="${MYSQL_ROOT_PASSWORD:?必须设置 MYSQL_ROOT_PASSWORD}"
+    local mysql_user_pw="${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}"
+    local rabbitmq_pw="${RABBITMQ_PASSWORD:?必须设置 RABBITMQ_PASSWORD}"
+    local jwt_secret="${JWT_SECRET:?必须设置 JWT_SECRET (建议 32+ 随机字符)}"
+
+    # 拒绝不安全的默认 secret
+    if [[ "${jwt_secret}" == "change-this-secret" || "${jwt_secret}" == "__REPLACE_IN_PRODUCTION__" || ${#jwt_secret} -lt 16 ]]; then
+        log_error "JWT_SECRET 不安全: 不能用占位符 / 必须 >= 16 字符"
+        exit 1
+    fi
+
     cat > docker-compose.deploy.yml << EOF
 version: '3.8'
 
@@ -195,10 +211,10 @@ services:
   mysql:
     image: ${SWR_REGISTRY}/${SWR_ORG}/mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_PASSWORD: ${mysql_root_pw}
       MYSQL_DATABASE: raos
       MYSQL_USER: raos
-      MYSQL_PASSWORD: raospassword
+      MYSQL_PASSWORD: ${mysql_user_pw}
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
@@ -217,7 +233,7 @@ services:
     image: ${SWR_REGISTRY}/${SWR_ORG}/rabbitmq:3.12-management-alpine
     environment:
       RABBITMQ_DEFAULT_USER: raos
-      RABBITMQ_DEFAULT_PASS: raospassword
+      RABBITMQ_DEFAULT_PASS: ${rabbitmq_pw}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -240,8 +256,8 @@ services:
       - MYSQL_PRIMARY_HOST=mysql
       - REDIS_HOSTS=redis:6379
       - QDRANT_HOST=qdrant
-      - RABBITMQ_URL=amqp://raos:raospassword@rabbitmq:5672
-      - JWT_SECRET=change-this-secret
+      - RABBITMQ_URL=amqp://raos:${rabbitmq_pw}@rabbitmq:5672
+      - JWT_SECRET=${jwt_secret}
     ports:
       - "3000:3000"
     depends_on:
@@ -284,11 +300,13 @@ generate_swarm_config() {
     log_info "生成集群配置: docker-compose.swarm.deploy.yml"
 }
 
-# 创建密钥
+# 创建 Docker Secrets — swarm 模式专用, 凭据必须从 env 读
 create_secrets() {
     log_info "创建 Docker Secrets..."
-    echo "raospassword" | docker secret create mysql_password - 2>/dev/null || true
-    echo "jwtsecret" | docker secret create jwt_secret - 2>/dev/null || true
+    local mysql_pw="${MYSQL_PASSWORD:?swarm 模式必须设置 MYSQL_PASSWORD}"
+    local jwt_sec="${JWT_SECRET:?swarm 模式必须设置 JWT_SECRET}"
+    printf '%s' "${mysql_pw}" | docker secret create mysql_password - 2>/dev/null || true
+    printf '%s' "${jwt_sec}" | docker secret create jwt_secret - 2>/dev/null || true
 }
 
 # 检查本地依赖
@@ -299,17 +317,21 @@ check_local_deps() {
     log_info "依赖检查通过"
 }
 
-# 健康检查
+# 健康检查 — 超时算失败 (非 0 exit), 避免误报"成功"
 check_health() {
-    log_info "健康检查..."
-    for i in {1..30}; do
-        if curl -s http://localhost:3000/health >/dev/null 2>&1; then
+    local max_attempts="${HEALTH_CHECK_MAX_ATTEMPTS:-30}"
+    local sleep_seconds="${HEALTH_CHECK_INTERVAL:-2}"
+    log_info "健康检查 (最多 ${max_attempts} 次, 间隔 ${sleep_seconds}s)..."
+    local i
+    for ((i = 1; i <= max_attempts; i++)); do
+        if curl -fsS http://localhost:3000/health >/dev/null 2>&1; then
             log_info "后端服务就绪"
             return 0
         fi
-        sleep 2
+        sleep "${sleep_seconds}"
     done
-    log_warn "健康检查超时，服务可能仍在启动中"
+    log_error "健康检查超时 (${max_attempts} 次 × ${sleep_seconds}s) — 服务未就绪, 请查 docker logs"
+    return 1
 }
 
 # 显示访问地址
@@ -323,12 +345,15 @@ show_endpoints() {
 }
 
 # 主函数
+GENERATED_COMPOSE=""
 main() {
     case "$MODE" in
         standalone)
+            GENERATED_COMPOSE="docker-compose.deploy.yml"
             deploy_standalone
             ;;
         cluster)
+            GENERATED_COMPOSE="docker-compose.swarm.deploy.yml"
             deploy_cluster
             ;;
         local)
@@ -344,5 +369,16 @@ main() {
             ;;
     esac
 }
+
+# 清理临时生成的 compose 配置文件 (避免泄漏 secrets 到 git)
+cleanup() {
+    local exit_code=$?
+    if [[ -n "${GENERATED_COMPOSE}" && -f "${GENERATED_COMPOSE}" ]]; then
+        log_info "清理临时文件: ${GENERATED_COMPOSE}"
+        rm -f "${GENERATED_COMPOSE}" 2>/dev/null || true
+    fi
+    exit "${exit_code}"
+}
+trap cleanup EXIT
 
 main

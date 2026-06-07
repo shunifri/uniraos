@@ -5,7 +5,7 @@
 # 使用方法: sudo ./scripts/push-base-images.sh [版本号]
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
 SWR_ORG="kavin"

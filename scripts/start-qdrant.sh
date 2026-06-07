@@ -2,7 +2,7 @@
 
 # Qdrant 启动脚本
 
-set -e
+set -euo pipefail
 
 QDRANT_VERSION="v1.9.0"
 QDRANT_PORT=6333

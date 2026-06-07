@@ -5,7 +5,7 @@
 # 避免 Docker Hub 网络问题
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
 SWR_ORG="kavin"

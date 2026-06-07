@@ -33,7 +33,8 @@ case $TYPE in
     MYSQL_PASSWORD="${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}"
     MYSQL_DATABASE="${MYSQL_DATABASE:-raos}"
     echo "Restoring MySQL from $FILE..."
-    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$FILE"
+    # 用 MYSQL_PWD env 传密码, 避免 ps 看到明文 (mysql client 8 也支持 stdin --defaults-extra-file, 但 MYSQL_PWD 兼容老版本)
+    MYSQL_PWD="$MYSQL_PASSWORD" mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$FILE"
     echo "MySQL restore completed."
     ;;
   sqlite)

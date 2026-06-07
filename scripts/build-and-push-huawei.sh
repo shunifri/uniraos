@@ -7,7 +7,7 @@
 # 使用方法: sudo ./scripts/build-and-push-huawei.sh [版本号]
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 # 检查是否使用 sudo
 if [ "$EUID" -ne 0 ]; then 

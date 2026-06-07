@@ -2,7 +2,7 @@
 
 # RAOS 本地开发环境快速启动脚本
 
-set -e
+set -euo pipefail
 
 echo "=== RAOS 本地环境启动 ==="
 

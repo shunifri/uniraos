@@ -5,7 +5,7 @@
 # 从 Docker Hub 拉取并推送到华为云，避免网络问题
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SWR_REGISTRY="swr.cn-north-4.myhuaweicloud.com"
 SWR_ORG="kavin"
