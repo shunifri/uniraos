@@ -3,6 +3,9 @@
  *
  * 管理者拆解任务、指派给专家、审查结果、合并最终输出。
  * 适合：复杂项目管理、多级合规审查、强质量管控任务。
+ *
+ * ROADMAP-Q3 item #7 (2026-06-08): 加 stepTimeout (managerDecide + sub-agent) + totalTimeout 双层超时.
+ * 超时返回 '[HIERARCHICAL 超时] phase X 超过 Yms' 并标记 metadata.timedOut=true.
  */
 import type { LLMProvider, Message } from "../../llm/types.js";
 import type {
@@ -17,6 +20,8 @@ import type {
   TeamConfig,
 } from "../types.js";
 import { parseManagerDecisionJson } from "./parse-helpers.js";
+import { withTimeout, checkTotalTimeout } from "../timeout-utils.js";
+import { AgentTimeoutError } from "../../utils/errors.js";
 
 interface TaskAssignment {
   agentRole: string;
@@ -48,6 +53,8 @@ export class HierarchicalExecutor implements ProtocolExecutor {
     const allSteps: AgentStep[] = [];
     const agents: string[] = [];
     const maxRounds = config.maxRounds ?? 5;
+    const stepTimeoutMs = config.stepTimeout ?? 0;
+    const totalTimeoutMs = config.totalTimeout ?? 0;
 
     const managerProfile = config.manager ?? {
       role: "项目经理",
@@ -64,16 +71,96 @@ export class HierarchicalExecutor implements ProtocolExecutor {
 
     const results = new Map<string, string>();
     let totalIterations = 0;
+    let timedOut = false;
+    let timedOutPhase: string | undefined;
+    let timedOutMs: number | undefined;
+
+    /**
+     * ROADMAP-Q3 item #7: 超时检查辅助. totalTimeoutMs > 0 时每次关键阶段前调用.
+     * 返回 AgentOutput 表示应立即终止并返回.
+     */
+    const checkTotal = (): AgentOutput | null => {
+      if (totalTimeoutMs <= 0) return null;
+      try {
+        checkTotalTimeout(startTime, totalTimeoutMs);
+        return null;
+      } catch (err) {
+        if (err instanceof AgentTimeoutError) {
+          timedOut = true;
+          timedOutPhase = "total";
+          timedOutMs = totalTimeoutMs;
+          const msg = `[HIERARCHICAL 超时] total execution 超过 ${totalTimeoutMs}ms`;
+          allSteps.push({
+            agentRole: managerProfile.role,
+            type: "response",
+            content: msg,
+            timestamp: Date.now(),
+          });
+          return {
+            response: msg,
+            level: "team",
+            protocol: "HIERARCHICAL" as Protocol,
+            steps: allSteps,
+            agents,
+            iterations: totalIterations,
+            metadata: {
+              duration: Date.now() - startTime,
+              rounds: 0,
+              timedOut: true,
+              timedOutPhase: "total",
+              timedOutMs,
+            },
+          };
+        }
+        throw err;
+      }
+    };
 
     for (let round = 0; round < maxRounds; round++) {
-      // 管理者决策
-      const decision = await this.managerDecide(
-        managerProfile,
-        input.message,
-        config.members,
-        results,
-        round,
-      );
+      // ROADMAP-Q3 item #7: totalTimeout 检查
+      const early = checkTotal();
+      if (early) return early;
+
+      // 管理者决策 (包 stepTimeout)
+      let decision: ManagerDecision;
+      try {
+        decision = stepTimeoutMs > 0
+          ? await withTimeout(
+              this.managerDecide(managerProfile, input.message, config.members, results, round),
+              stepTimeoutMs,
+              `HIERARCHICAL manager decide (round ${round + 1})`,
+            )
+          : await this.managerDecide(managerProfile, input.message, config.members, results, round);
+      } catch (err) {
+        if (err instanceof AgentTimeoutError) {
+          timedOut = true;
+          timedOutPhase = "managerDecide";
+          timedOutMs = stepTimeoutMs;
+          const msg = `[HIERARCHICAL 超时] phase managerDecide (round ${round + 1}) 超过 ${stepTimeoutMs}ms`;
+          allSteps.push({
+            agentRole: managerProfile.role,
+            type: "response",
+            content: msg,
+            timestamp: Date.now(),
+          });
+          return {
+            response: msg,
+            level: "team",
+            protocol: "HIERARCHICAL" as Protocol,
+            steps: allSteps,
+            agents,
+            iterations: totalIterations,
+            metadata: {
+              duration: Date.now() - startTime,
+              rounds: round + 1,
+              timedOut: true,
+              timedOutPhase: "managerDecide",
+              timedOutMs,
+            },
+          };
+        }
+        throw err;
+      }
 
       allSteps.push({
         agentRole: managerProfile.role,
@@ -110,10 +197,52 @@ export class HierarchicalExecutor implements ProtocolExecutor {
             timestamp: Date.now(),
           });
 
-          const result = await agent.run({
-            message: assignment.task,
-            context: { ...input.context, managerInstruction: assignment.task },
-          });
+          // ROADMAP-Q3 item #7: sub-agent 包 stepTimeout
+          let result: AgentOutput;
+          try {
+            result = stepTimeoutMs > 0
+              ? await withTimeout(
+                  agent.run({
+                    message: assignment.task,
+                    context: { ...input.context, managerInstruction: assignment.task },
+                  }),
+                  stepTimeoutMs,
+                  `HIERARCHICAL sub-agent ${assignment.agentRole}`,
+                )
+              : await agent.run({
+                  message: assignment.task,
+                  context: { ...input.context, managerInstruction: assignment.task },
+                });
+          } catch (err) {
+            if (err instanceof AgentTimeoutError) {
+              timedOut = true;
+              timedOutPhase = `sub-agent:${assignment.agentRole}`;
+              timedOutMs = stepTimeoutMs;
+              const msg = `[HIERARCHICAL 超时] phase sub-agent:${assignment.agentRole} 超过 ${stepTimeoutMs}ms`;
+              allSteps.push({
+                agentRole: managerProfile.role,
+                type: "response",
+                content: msg,
+                timestamp: Date.now(),
+              });
+              return {
+                response: msg,
+                level: "team",
+                protocol: "HIERARCHICAL" as Protocol,
+                steps: allSteps,
+                agents,
+                iterations: totalIterations,
+                metadata: {
+                  duration: Date.now() - startTime,
+                  rounds: round + 1,
+                  timedOut: true,
+                  timedOutPhase: `sub-agent:${assignment.agentRole}`,
+                  timedOutMs,
+                },
+              };
+            }
+            throw err;
+          }
 
           allSteps.push(...result.steps);
           totalIterations += result.iterations;
@@ -127,10 +256,52 @@ export class HierarchicalExecutor implements ProtocolExecutor {
           const agent = agentFactory(profile);
           const prevResult = results.get(decision.revision.agentRole) ?? "";
 
-          const result = await agent.run({
-            message: `请根据以下反馈修改你的输出：\n\n反馈：${decision.revision.feedback}\n\n你之前的输出：${prevResult}`,
-            context: input.context,
-          });
+          // ROADMAP-Q3 item #7: revise sub-agent 也包 stepTimeout
+          let result: AgentOutput;
+          try {
+            result = stepTimeoutMs > 0
+              ? await withTimeout(
+                  agent.run({
+                    message: `请根据以下反馈修改你的输出：\n\n反馈：${decision.revision.feedback}\n\n你之前的输出：${prevResult}`,
+                    context: input.context,
+                  }),
+                  stepTimeoutMs,
+                  `HIERARCHICAL revise ${decision.revision.agentRole}`,
+                )
+              : await agent.run({
+                  message: `请根据以下反馈修改你的输出：\n\n反馈：${decision.revision.feedback}\n\n你之前的输出：${prevResult}`,
+                  context: input.context,
+                });
+          } catch (err) {
+            if (err instanceof AgentTimeoutError) {
+              timedOut = true;
+              timedOutPhase = `revise:${decision.revision.agentRole}`;
+              timedOutMs = stepTimeoutMs;
+              const msg = `[HIERARCHICAL 超时] phase revise:${decision.revision.agentRole} 超过 ${stepTimeoutMs}ms`;
+              allSteps.push({
+                agentRole: managerProfile.role,
+                type: "response",
+                content: msg,
+                timestamp: Date.now(),
+              });
+              return {
+                response: msg,
+                level: "team",
+                protocol: "HIERARCHICAL" as Protocol,
+                steps: allSteps,
+                agents,
+                iterations: totalIterations,
+                metadata: {
+                  duration: Date.now() - startTime,
+                  rounds: round + 1,
+                  timedOut: true,
+                  timedOutPhase: `revise:${decision.revision.agentRole}`,
+                  timedOutMs,
+                },
+              };
+            }
+            throw err;
+          }
 
           allSteps.push(...result.steps);
           totalIterations += result.iterations;

@@ -19,6 +19,7 @@ import type {
   AgentStep,
 } from "./types.js";
 import { withTimeout } from "./timeout-utils.js";
+import { detectLoop } from "./reflection-utils.js";
 import { AgentTimeoutError } from "../utils/errors.js";
 
 /**
@@ -78,6 +79,7 @@ export class ReactAgent implements Agent {
     let hitMax = false;
     let reflectionCount = 0;
     let timedOut = false;
+    let loopDetected = false;
 
     while (iterations < this.maxIterations) {
       iterations++;
@@ -183,8 +185,25 @@ export class ReactAgent implements Agent {
             `请基于错误信息调整参数或换用其他工具后再试。`;
           messages.push({ role: "system", content: `[Reflection] ${reflectionPrompt}` });
         }
+
+        // ROADMAP-Q3 item #7: Reflection loop-detection — 检测同一 tool_call / response
+        // 连续 3 次触发, 终止循环防止 reflection 自身陷入死循环.
+        if (this.reflectionEnabled && detectLoop(messages)) {
+          const loopMsg = `[Loop detected, 终止 reflection] 已连续 ${3} 次相同操作, 强制结束循环.`;
+          steps.push({
+            agentRole: this.profile.role,
+            type: "response",
+            content: loopMsg,
+            timestamp: Date.now(),
+          });
+          messages.push({ role: "assistant", content: loopMsg });
+          hitMax = true; // 借用 hitMax flag 触发外层 break, 同时让 metadata 反映
+          loopDetected = true; // 让外层 while 也 break
+          break;
+        }
       }
 
+      if (loopDetected) break;
       if (iterations >= this.maxIterations) hitMax = true;
     }
 
@@ -197,6 +216,7 @@ export class ReactAgent implements Agent {
       reflectionCount,
     };
     if (timedOut) metadata.timedOut = true;
+    if (loopDetected) metadata.loopDetected = true;
 
     return {
       response,

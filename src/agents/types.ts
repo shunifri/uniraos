@@ -143,6 +143,15 @@ export interface TeamConfig {
   pipelineSteps?: string[];
   /** 最大轮次 */
   maxRounds?: number;
+  /**
+   * 单步超时毫秒 (0 = 不超时)
+   *
+   * ROADMAP-Q3 item #7 (2026-06-08): Hierarchical / Sequential / Swarm 协议统一支持.
+   * 7 协议双层超时: step (单步) + total (整协议累计).
+   */
+  stepTimeout?: number;
+  /** 整协议累计超时毫秒 (0 = 不超时) */
+  totalTimeout?: number;
 }
 
 // ===== 策略配置 =====

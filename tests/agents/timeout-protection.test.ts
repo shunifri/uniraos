@@ -259,9 +259,8 @@ describe("SequentialExecutor Timeout Protection", () => {
 });
 
 describe("HierarchicalExecutor Timeout Protection", () => {
-  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
-  it.skip("should return timeout error when manager decide exceeds stepTimeout", async () => {
-    // TODO: stepTimeout not yet implemented in HierarchicalExecutor
+  // ROADMAP-Q3 item #7 (2026-06-08): Hierarchical stepTimeout 已实装, 摘 4-29 doc 9.1#2 虚标.
+  it("should return timeout error when manager decide exceeds stepTimeout", async () => {
     const provider = new DelayedMockProvider(200);
     const executor = new HierarchicalExecutor(provider);
     const config: TeamConfig = {
@@ -278,12 +277,13 @@ describe("HierarchicalExecutor Timeout Protection", () => {
     );
 
     expect(result.response).toContain("HIERARCHICAL 超时");
+    expect(result.response).toContain("managerDecide");
     expect(result.metadata.timedOut).toBe(true);
+    expect(result.metadata.timedOutPhase).toBe("managerDecide");
+    expect(result.metadata.timedOutMs).toBe(50);
   });
 
-  // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
-  it.skip("should return timeout error when sub-agent execution exceeds stepTimeout", async () => {
-    // TODO: stepTimeout not yet implemented in HierarchicalExecutor
+  it("should return timeout error when sub-agent execution exceeds stepTimeout", async () => {
     const provider = new FastMockProvider(
       JSON.stringify({
         decision: "assign",
@@ -305,6 +305,60 @@ describe("HierarchicalExecutor Timeout Protection", () => {
     );
 
     expect(result.response).toContain("HIERARCHICAL 超时");
+    expect(result.response).toContain("sub-agent:Worker");
+    expect(result.metadata.timedOut).toBe(true);
+    expect(result.metadata.timedOutPhase).toBe("sub-agent:Worker");
+  });
+
+  it("should complete when within stepTimeout (no timeout triggered)", async () => {
+    const provider = new FastMockProvider(
+      JSON.stringify({
+        decision: "complete",
+        summary: "All done quickly",
+      }),
+    );
+    const executor = new HierarchicalExecutor(provider);
+    const config: TeamConfig = {
+      members: [
+        { role: "Worker", personality: "W", expertise: ["w"], allowedSkills: [] },
+      ],
+      stepTimeout: 500,
+    };
+
+    const result = await executor.execute(
+      { message: "test" },
+      config,
+      () => createFastAgent("worker result"),
+    );
+
+    expect(result.response).toBe("All done quickly");
+    expect(result.metadata.timedOut).toBeUndefined();
+  });
+
+  it("should trigger totalTimeout when cumulative time exceeds limit", async () => {
+    const provider = new FastMockProvider(
+      JSON.stringify({
+        decision: "assign",
+        assignments: [{ agent: "Worker", task: "do work" }],
+      }),
+    );
+    const executor = new HierarchicalExecutor(provider);
+    const config: TeamConfig = {
+      members: [
+        { role: "Worker", personality: "W", expertise: ["w"], allowedSkills: [] },
+      ],
+      stepTimeout: 5000,
+      totalTimeout: 80, // 总超时 80ms, managerDecide 单步 200ms 必超时
+    };
+
+    const result = await executor.execute(
+      { message: "test" },
+      config,
+      () => createDelayedAgent(200, "worker result"),
+    );
+
+    expect(result.response).toContain("HIERARCHICAL 超时");
+    // 优先被 stepTimeout 命中 (managerDecide 比 totalTimeout 先到)
     expect(result.metadata.timedOut).toBe(true);
   });
 });

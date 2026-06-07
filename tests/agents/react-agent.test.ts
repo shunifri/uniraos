@@ -404,11 +404,11 @@ describe("reflection", () => {
       expect(secondCallMessages.some((m) => m.role === "system" && m.content?.includes("Reflection"))).toBe(true);
     });
 
-    // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
-    it.skip("should detect loop and trigger reflection after same tool called 3 times", async () => {
-      // TODO: reflection feature not yet implemented in ReactAgent
+    // ROADMAP-Q3 item #7 (2026-06-08): Reflection loop-detection 已实装, 摘 4-29 doc 9.1#2 虚标.
+    it("should detect loop and trigger reflection after same tool called 3 times", async () => {
       const agent = new ReactAgent(mockProfile, deps, { reflectionEnabled: true });
 
+      // 3 次相同 tool_call → 第 3 次后 detectLoop 触发 break.
       vi.mocked(deps.provider.chat)
         .mockResolvedValueOnce({
           content: "Try 1",
@@ -424,16 +424,6 @@ describe("reflection", () => {
           content: "Try 3",
           toolCalls: [{ id: "tc3", name: "test_skill", arguments: { query: "same" } }],
           finishReason: "tool_calls",
-        })
-        .mockResolvedValueOnce({
-          content: "You are stuck in a loop. Try a different approach.",
-          toolCalls: [],
-          finishReason: "stop",
-        })
-        .mockResolvedValueOnce({
-          content: "All done",
-          toolCalls: [],
-          finishReason: "stop",
         });
 
       vi.mocked(deps.engine.execute).mockResolvedValue({
@@ -445,9 +435,13 @@ describe("reflection", () => {
 
       const result = await agent.run({ message: "Task" });
 
-      expect(result.response).toBe("All done");
+      // 期望: 检测到 loop, 终止 reflection, 返回标记了 loop 的响应.
+      expect(result.response).toContain("Loop detected");
       expect(deps.engine.execute).toHaveBeenCalledTimes(3);
-      expect(deps.provider.chat).toHaveBeenCalledTimes(5);
+      // provider.chat 只调用 3 次 (loop 在第 3 次 tool_call 之后检测, 不再调第 4 次 chat 总结).
+      expect(deps.provider.chat).toHaveBeenCalledTimes(3);
+      expect(result.metadata.loopDetected).toBe(true);
+      expect(result.metadata.hitMaxIterations).toBe(true);
     });
 
     // eslint-disable-next-line local/no-new-skip -- legacy skip, see docs/migration-skip-to-todo.md
