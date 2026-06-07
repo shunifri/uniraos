@@ -96,7 +96,7 @@ services:
   # 队列消费者服务 (可独立扩展)
   # ===========================================================================
   workers:
-    image: swr.cn-north-4.myhuaweicloud.com/raos/raos-backend:latest
+    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:latest
     command: npm run worker:start
     deploy:
       mode: replicated

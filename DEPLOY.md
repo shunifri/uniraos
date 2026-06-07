@@ -6,6 +6,18 @@
 - 4C8G 以上服务器（生产建议 8C16G）
 - 20GB+ 可用磁盘空间
 
+## 重要提示：生产环境必须使用预编译镜像（bytenode 字节码保护）
+
+> ⚠️ **生产环境只能走"拉镜像"模式, 不能走"本地 build"**
+>
+> Backend Dockerfile 的构建产物是 bytenode 字节码 (`.jsc`), **不是可读的 JavaScript 源码**。
+> 这是源代码保护设计, 但也意味着:
+> - 生产容器里**没有可读代码**, `docker exec raos-backend cat ...` 看到的是字节码
+> - 任何 hotfix、debug、配置调整都必须重新 `build-and-push` 一次, **不能进容器改文件**
+> - build 模式**仅供本地开发/测试**使用, 不要在生产服务器上跑
+>
+> 推送流程: 开发机 build → 推到 SWR → 生产服务器 pull → restart
+
 ## 目录结构
 
 ```

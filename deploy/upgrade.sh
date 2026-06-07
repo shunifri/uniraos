@@ -81,7 +81,7 @@ fi
 # 加载环境变量
 # =============================================================================
 if [[ ! -f "$ENV_FILE" ]]; then
-  log_error "未找到 .env 文件，请先运行 deploy.sh 进行初始部署"
+  log_error "未找到 .env 文件，请先运行 deploy/deploy.sh 进行初始部署"
   exit 1
 fi
 
@@ -102,7 +102,7 @@ log_info "检查当前部署状态..."
 
 # 检查服务是否运行
 if ! $COMPOSE_CMD -f "$COMPOSE_FILE" ps | grep -q "raos-backend"; then
-  log_error "RAOS 服务未运行，请先执行 deploy.sh 部署"
+  log_error "RAOS 服务未运行，请先执行 deploy/deploy.sh 部署"
   exit 1
 fi
 

@@ -502,7 +502,10 @@ function step_quick_download() {
 
   log_info "正在下载必要配置文件..."
 
-  local base_url="https://raw.githubusercontent.com/your-org/raos/main"
+  # quick mode 下载配置文件 — 默认从 upstream 主仓库拉
+  # 用了自己 fork 的话, 设 GIT_RAW_BASE_URL 覆盖, 例如:
+  #   export GIT_RAW_BASE_URL="https://raw.githubusercontent.com/your-org/raos/main"
+  local base_url="${GIT_RAW_BASE_URL:-https://raw.githubusercontent.com/liuzheng/raos/main}"
   local files=(
     "docker-compose.yml"
     ".env.example"

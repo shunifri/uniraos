@@ -16,7 +16,7 @@ SWR_PASSWORD="${SWR_PASSWORD:?错误：SWR_PASSWORD 环境变量未设置}"
 # 镜像标签
 VERSION=${1:-latest}
 BACKEND_IMAGE="${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-backend:${VERSION}"
-FRONTEND_IMAGE="${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-raos-frontend:${VERSION}"
+FRONTEND_IMAGE="${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-frontend:${VERSION}"
 
 echo "=============================================="
 echo "RAOS 华为云 SWR 镜像构建推送"
@@ -74,8 +74,8 @@ docker buildx build \
     --file docker/frontend/Dockerfile \
     --tag "${FRONTEND_IMAGE}" \
     --push \
-    --cache-from "type=registry,ref=${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-raos-frontend:cache" \
-    --cache-to "type=registry,ref=${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-raos-frontend:cache,mode=max" \
+    --cache-from "type=registry,ref=${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-frontend:cache" \
+    --cache-to "type=registry,ref=${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-frontend:cache,mode=max" \
     .
 echo "✅ 前端镜像推送成功"
 echo ""
@@ -94,8 +94,8 @@ echo ""
 echo "[6/6] 生成集群部署配置..."
 
 # 更新 docker-compose.yml 镜像标签
-sed -i.bak "s|swr.cn-north-4.myhuaweicloud.com/raos/raos-backend:.*|${BACKEND_IMAGE}|g" docker-compose.swarm.yml 2>/dev/null || true
-sed -i.bak "s|swr.cn-north-4.myhuaweicloud.com/raos/raos-raos-frontend:.*|${FRONTEND_IMAGE}|g" docker-compose.swarm.yml 2>/dev/null || true
+sed -i.bak "s|swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:.*|${BACKEND_IMAGE}|g" docker-compose.swarm.yml 2>/dev/null || true
+sed -i.bak "s|swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:.*|${FRONTEND_IMAGE}|g" docker-compose.swarm.yml 2>/dev/null || true
 
 echo "✅ 部署配置已更新"
 echo ""
