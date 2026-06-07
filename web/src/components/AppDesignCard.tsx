@@ -5,8 +5,8 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { Card, Button, Tag, Space, Spin, Empty, Collapse, Descriptions, message, Modal, Input, Select } from "antd";
+import { useEmbedNavigate } from "@/hooks/useEmbedNavigate";
 import {
   ThunderboltOutlined,
   FormOutlined,
@@ -95,8 +95,10 @@ const typeLabels: Record<string, string> = {
 };
 
 const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
-  const navigate = useNavigate();
-  const designId = props["data-design-id"];
+ // ROADMAP-Q3 item #2:嵌入场景下走带 ACK匹配的 postMessage +3s fallback
+ // (非嵌入场景内部走 react-router 的 navigate())
+ const embedNavigate = useEmbedNavigate({ debug: false });
+ const designId = props["data-design-id"];
   const name = props["data-name"];
   const version = props["data-version"];
   const action = props["data-action"];
@@ -463,53 +465,45 @@ const AppDesignCard: React.FC<AppDesignCardProps> = (props) => {
       )}
     </Card>
       <Modal
-        title="提出修改意见"
-        open={modifyOpen}
-        onOk={() => {
-          if (modifyInput.trim()) {
-            // P1-32: 之前只是 message.info 提示用户去对话里再说一遍, 体验割裂.
-            // 改: 直接 navigate 到 /chat 带上 autoMessage 参数, ChatPage 自动填入 + 发送.
-            // 同时把 appId 也带上, ChatPage 加载该应用的 systemPrompt + KB collection.
-            const params = new URLSearchParams();
-            if (designId) params.set("appId", designId);
-            params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
-            const target = `/chat?${params.toString()}`;
-            if (window.parent !== window) {
-              // 嵌入场景: 通知父窗口跳转
-              window.parent.postMessage({ type: "RAOS_NAVIGATE", url: target }, window.location.origin);
-              message.success("修改意见已发送到对话窗口");
-            } else {
-              navigate(target);
-            }
-          }
-          setModifyOpen(false);
-        }}
-        onCancel={() => setModifyOpen(false)}
-        okText="发送"
-        cancelText="取消"
-      >
-        <Input
-          placeholder="请输入修改意见"
-          value={modifyInput}
-          onChange={(e) => setModifyInput(e.target.value)}
-          onPressEnter={() => {
-            if (modifyInput.trim()) {
-              const params = new URLSearchParams();
-              if (designId) params.set("appId", designId);
-              params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
-              const target = `/chat?${params.toString()}`;
-              if (window.parent !== window) {
-                window.parent.postMessage({ type: "RAOS_NAVIGATE", url: target }, window.location.origin);
-                message.success("修改意见已发送到对话窗口");
-              } else {
-                navigate(target);
-              }
-            }
-            setModifyOpen(false);
-          }}
-          autoFocus
-        />
-      </Modal>
+ title="提出修改意见"
+ open={modifyOpen}
+ onOk={() => {
+ if (modifyInput.trim()) {
+ // P1-32:之前只是 message.info提示用户去对话里再说一遍,体验割裂.
+ //改: 直接 navigate 到 /chat带上 autoMessage 参数, ChatPage 自动填入 +发送.
+ // 同时把 appId 也带上, ChatPage加载该应用的 systemPrompt + KB collection.
+ // ROADMAP-Q3 item #2:嵌入场景下走 embedNavigate, 内置 requestId + ACK +3s fallback
+ const params = new URLSearchParams();
+ if (designId) params.set("appId", designId);
+ params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
+ const target = `/chat?${params.toString()}`;
+ embedNavigate(target, { source: "AppDesignCard" });
+ message.success("修改意见已发送到对话窗口");
+ }
+ setModifyOpen(false);
+ }}
+ onCancel={() => setModifyOpen(false)}
+ okText="发送"
+ cancelText="取消"
+ >
+ <Input
+ placeholder="请输入修改意见"
+ value={modifyInput}
+ onChange={(e) => setModifyInput(e.target.value)}
+ onPressEnter={() => {
+ if (modifyInput.trim()) {
+ const params = new URLSearchParams();
+ if (designId) params.set("appId", designId);
+ params.set("autoMessage", designId ? `帮我修改 ${designId}：${modifyInput.trim()}` : modifyInput.trim());
+ const target = `/chat?${params.toString()}`;
+ embedNavigate(target, { source: "AppDesignCard" });
+ message.success("修改意见已发送到对话窗口");
+ }
+ setModifyOpen(false);
+ }}
+ autoFocus
+ />
+ </Modal>
 
       <Modal
         title="编辑角色设定（系统提示词）"
