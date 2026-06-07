@@ -1,12 +1,16 @@
 # =============================================================================
 # RAOS Frontend Dockerfile
 # 多阶段构建，生产环境使用 Nginx
+#
+# 多架构 build: builder 阶段用 BUILDPLATFORM (只 build, 不需要 target arch),
+#               runtime 阶段用 TARGETPLATFORM (让 buildx 选 amd64/arm64 对应的 nginx alpine)
+# 不要用 @sha256: 锁住单架构 digest — 那样 multi-arch build 会失败
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 阶段 1: 构建
 # -----------------------------------------------------------------------------
-FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -33,7 +37,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # 阶段 2: 生产运行 (Nginx)
 # -----------------------------------------------------------------------------
-FROM nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
+FROM --platform=$TARGETPLATFORM nginx:1.25-alpine
 
 # 安装安全更新
 RUN apk update && apk upgrade && rm -rf /var/cache/apk/*

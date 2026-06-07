@@ -902,6 +902,8 @@ function step_deploy() {
   echo ""
   if $BUILD_LOCAL; then
     log_info "正在本地构建镜像（这可能需要几分钟）..."
+    log_warn "本地 build 模式只构建当前 host 架构, 镜像不能直接推到生产 (生产服务器架构可能不同)"
+    log_warn "如需多架构镜像推到 SWR, 请用 ./scripts/build-and-push.sh"
     if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" build --no-cache; then
       log_error "镜像构建失败，请检查上方构建日志"
       echo "  常见原因:"

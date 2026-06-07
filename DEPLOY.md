@@ -18,6 +18,27 @@
 >
 > 推送流程: 开发机 build → 推到 SWR → 生产服务器 pull → restart
 
+## 重要提示：Mac Apple Silicon (M1/M2/M3) 构建多架构镜像
+
+> ⚠️ **Mac Apple Silicon 推镜像到生产 (CentOS/amd64) 必须用 `./scripts/build-and-push.sh`**
+>
+> 我们的 `scripts/build-and-push.sh` 默认走 buildx + multi-arch manifest list:
+> - 同时构建 `linux/amd64` (CentOS/RHEL) 和 `linux/arm64` (鲲鹏/飞腾/Apple Silicon)
+> - push 到 SWR 的镜像是一个 **manifest list**, 生产 `docker pull` 时 Docker daemon 自动选匹配架构
+>
+> 常见踩坑:
+>
+> 1. **不要再用 `./scripts/build-and-push-huawei.sh`** — 该脚本已删除 (用 `docker build` 单架构, Mac M1 push arm64 only, CentOS 拉不到)
+> 2. **不要在 Dockerfile 里写 `FROM xxx@sha256:...`** — sha256 是单架构 digest, 会导致 multi-arch build 失败
+> 3. 第一次跑 buildx 会下载 buildkit image (~500MB) + qemu emulation, Mac M1 build 一次大约 10-20min
+> 4. 如要单架构快速 build (只 build 当前 host arch): `SWR_PLATFORMS=linux/arm64 ./scripts/build-and-push.sh v1.0.0`
+>
+> 验证多架构镜像:
+> ```bash
+> docker buildx imagetools inspect swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:v1.0.0
+> # 应该看到 ManifestList, 含 linux/amd64 + linux/arm64 两个 entry
+> ```
+
 ## 目录结构
 
 ```

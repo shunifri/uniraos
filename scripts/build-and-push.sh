@@ -1,17 +1,33 @@
 #!/bin/bash
 
 # =============================================================================
-# RAOS 华为云 SWR 镜像构建推送脚本
-# 支持多架构构建 (amd64/arm64) 和集群部署
+# RAOS 镜像构建推送脚本 (华为云 SWR / 任何兼容 Docker Registry v2 的仓库)
+#
+# 多架构 build: 默认 linux/amd64,linux/arm64 (CentOS + 国产 arm 服务器 + Mac M-series)
+# 单架构: SWR_PLATFORMS=linux/amd64 ./scripts/build-and-push.sh v1.0.0
+#
+# 前置:
+#   1. SWR_USERNAME / SWR_PASSWORD env var (CI 走 secret, 本地用 export)
+#   2. Docker buildx + qemu emulation (macOS Docker Desktop 自带, Linux 需 apt install qemu-user-static)
+#
+# 注意:
+#   - Backend Dockerfile 是 bytenode 字节码, 镜像里**没有可读 JS**, 不能进容器改代码
+#   - 第一次 buildx build 会下载 buildkit image (~500MB), 后续会缓存
+#   - 多架构 build 在 Mac Apple Silicon 上用 qemu emulation, 慢 (10-20min)
 # =============================================================================
 
 set -euo pipefail
 
 # 华为云 SWR 配置（从环境变量读取，禁止硬编码）
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-north-4.myhuaweicloud.com}"
-SWR_NAMESPACE="${SWR_NAMESPACE:-raos}"
+SWR_NAMESPACE="${SWR_NAMESPACE:-kavin}"  # 默认 kavin (跟 docker-compose.yml / swarm.yml 一致)
 SWR_USERNAME="${SWR_USERNAME:?错误：SWR_USERNAME 环境变量未设置}"
 SWR_PASSWORD="${SWR_PASSWORD:?错误：SWR_PASSWORD 环境变量未设置}"
+
+# 多架构平台 — 默认 amd64 + arm64
+# 单架构: SWR_PLATFORMS=linux/amd64 ./scripts/build-and-push.sh v1.0.0
+# 不带 v8 的: SWR_PLATFORMS=linux/amd64/v8 (跟 buildx 完整语法一致)
+SWR_PLATFORMS="${SWR_PLATFORMS:-linux/amd64,linux/arm64}"
 
 # 镜像标签
 VERSION=${1:-latest}
@@ -19,8 +35,10 @@ BACKEND_IMAGE="${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-backend:${VERSION}"
 FRONTEND_IMAGE="${SWR_REGISTRY}/${SWR_NAMESPACE}/raos-frontend:${VERSION}"
 
 echo "=============================================="
-echo "RAOS 华为云 SWR 镜像构建推送"
+echo "RAOS 镜像构建推送"
 echo "=============================================="
+echo "仓库: ${SWR_REGISTRY}/${SWR_NAMESPACE}"
+echo "平台: ${SWR_PLATFORMS}"
 echo "版本: ${VERSION}"
 echo "后端镜像: ${BACKEND_IMAGE}"
 echo "前端镜像: ${FRONTEND_IMAGE}"
@@ -53,9 +71,9 @@ echo ""
 # -----------------------------------------------------------------------------
 # 3. 构建并推送后端镜像
 # -----------------------------------------------------------------------------
-echo "[3/6] 构建后端镜像..."
+echo "[3/6] 构建后端镜像 (平台: ${SWR_PLATFORMS})..."
 docker buildx build \
-    --platform linux/amd64,linux/arm64 \
+    --platform "${SWR_PLATFORMS}" \
     --file docker/backend/Dockerfile \
     --tag "${BACKEND_IMAGE}" \
     --push \
@@ -68,9 +86,9 @@ echo ""
 # -----------------------------------------------------------------------------
 # 4. 构建并推送前端镜像
 # -----------------------------------------------------------------------------
-echo "[4/6] 构建前端镜像..."
+echo "[4/6] 构建前端镜像 (平台: ${SWR_PLATFORMS})..."
 docker buildx build \
-    --platform linux/amd64,linux/arm64 \
+    --platform "${SWR_PLATFORMS}" \
     --file docker/frontend/Dockerfile \
     --tag "${FRONTEND_IMAGE}" \
     --push \

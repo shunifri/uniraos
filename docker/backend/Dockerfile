@@ -3,10 +3,19 @@
 # 多阶段构建：bytenode 字节码保护 + 华为云 SWR
 # =============================================================================
 
+# =============================================================================
+# 多架构 build: 每个 stage 用 --platform=$TARGETPLATFORM
+# 不要用 @sha256: 锁住单架构 digest — 那样 multi-arch build 会失败
+#
+# 为什么不用 $BUILDPLATFORM 加速: backend 有 native deps (better-sqlite3, sharp),
+# 装 deps 时需要 target arch 的 prebuilt binary, 跨 arch copy 会挂
+# 镜像版本: alpine 标签会跟随 node upstream 更新, 如需严格 pin 用具体 tag (e.g. 20.18.0-alpine)
+# =============================================================================
+
 # -----------------------------------------------------------------------------
 # 阶段 1: 依赖安装
 # -----------------------------------------------------------------------------
-FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS dependencies
+FROM --platform=$TARGETPLATFORM node:20-alpine AS dependencies
 
 WORKDIR /app
 
@@ -26,7 +35,7 @@ RUN npm ci --only=production && \
 # -----------------------------------------------------------------------------
 # 阶段 2: 构建 + bytenode 编译
 # -----------------------------------------------------------------------------
-FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS builder
+FROM --platform=$TARGETPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -54,7 +63,7 @@ RUN node scripts/build-bytenode.cjs
 # -----------------------------------------------------------------------------
 # 阶段 3: 生产运行
 # -----------------------------------------------------------------------------
-FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS production
+FROM --platform=$TARGETPLATFORM node:20-alpine AS production
 
 RUN apk update && apk upgrade && apk add --no-cache curl && rm -rf /var/cache/apk/*
 
