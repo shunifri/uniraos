@@ -5,12 +5,14 @@
 # 多架构 build: builder 阶段用 BUILDPLATFORM (只 build, 不需要 target arch),
 #               runtime 阶段用 TARGETPLATFORM (让 buildx 选 amd64/arm64 对应的 nginx alpine)
 # 不要用 @sha256: 锁住单架构 digest — 那样 multi-arch build 会失败
+#
+# Base image 走国内 mirror (docker.m.daocloud.io), 跟 backend Dockerfile 一致
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 阶段 1: 构建
 # -----------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+FROM --platform=$BUILDPLATFORM docker.m.daocloud.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -37,7 +39,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # 阶段 2: 生产运行 (Nginx)
 # -----------------------------------------------------------------------------
-FROM --platform=$TARGETPLATFORM nginx:1.25-alpine
+FROM --platform=$TARGETPLATFORM docker.m.daocloud.io/library/nginx:1.25-alpine
 
 # 安装安全更新
 RUN apk update && apk upgrade && rm -rf /var/cache/apk/*

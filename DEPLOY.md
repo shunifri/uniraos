@@ -39,6 +39,19 @@
 > # 应该看到 ManifestList, 含 linux/amd64 + linux/arm64 两个 entry
 > ```
 
+## Base image mirror 配置 (国内网络环境)
+
+> 💡 Dockerfile 里的 `node:20-alpine` 和 `nginx:1.25-alpine` 已经改成走 `docker.m.daocloud.io/library/*` mirror
+>
+> 验证: 你的网络如果能跑通以下命令, build 就能用:
+> ```bash
+> docker pull docker.m.daocloud.io/library/node:20-alpine
+> docker pull docker.m.daocloud.io/library/nginx:1.25-alpine
+> ```
+>
+> 跑不通的: 编辑 `docker/backend/Dockerfile` + `docker/frontend/Dockerfile`,
+> 把 `docker.m.daocloud.io/library/` 前缀替换成你们团队可用的 mirror (e.g. `swr.cn-north-4.myhuaweicloud.com/kavin/library/`), 保留 `--platform=$TARGETPLATFORM` 不动
+
 ## 目录结构
 
 ```

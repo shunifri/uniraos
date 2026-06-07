@@ -9,13 +9,15 @@
 #
 # 为什么不用 $BUILDPLATFORM 加速: backend 有 native deps (better-sqlite3, sharp),
 # 装 deps 时需要 target arch 的 prebuilt binary, 跨 arch copy 会挂
+#
+# Base image 走国内 mirror (docker.m.daocloud.io), 跟华为云 SWR 团队一致, 避 docker hub 网络
 # 镜像版本: alpine 标签会跟随 node upstream 更新, 如需严格 pin 用具体 tag (e.g. 20.18.0-alpine)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 阶段 1: 依赖安装
 # -----------------------------------------------------------------------------
-FROM --platform=$TARGETPLATFORM node:20-alpine AS dependencies
+FROM --platform=$TARGETPLATFORM docker.m.daocloud.io/library/node:20-alpine AS dependencies
 
 WORKDIR /app
 
@@ -35,7 +37,7 @@ RUN npm ci --only=production && \
 # -----------------------------------------------------------------------------
 # 阶段 2: 构建 + bytenode 编译
 # -----------------------------------------------------------------------------
-FROM --platform=$TARGETPLATFORM node:20-alpine AS builder
+FROM --platform=$TARGETPLATFORM docker.m.daocloud.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -63,7 +65,7 @@ RUN node scripts/build-bytenode.cjs
 # -----------------------------------------------------------------------------
 # 阶段 3: 生产运行
 # -----------------------------------------------------------------------------
-FROM --platform=$TARGETPLATFORM node:20-alpine AS production
+FROM --platform=$TARGETPLATFORM docker.m.daocloud.io/library/node:20-alpine AS production
 
 RUN apk update && apk upgrade && apk add --no-cache curl && rm -rf /var/cache/apk/*
 
