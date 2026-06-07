@@ -170,7 +170,7 @@ services:
       - "7474:7474"
       - "7687:7687"
     environment:
-      NEO4J_AUTH: ${NEO4J_AUTH:?NEO4J_AUTH is required (格式: neo4j/<password>)}
+      NEO4J_AUTH: "${NEO4J_AUTH:?NEO4J_AUTH is required (格式: neo4j/<password>)}"
       NEO4J_dbms_memory_pagecache_size: ${NEO4J_PAGE_CACHE:-512M}
       NEO4J_dbms_memory_heap_initial__size: ${NEO4J_HEAP_INIT:-512M}
       NEO4J_dbms_memory_heap_max__size: ${NEO4J_HEAP_MAX:-1G}
