@@ -52,3 +52,17 @@ groups:
         annotations:
           summary: "RAOS health check degraded"
           description: "Health check is reporting degraded status"
+
+      # Q3 W3 Item #8: WAL 定期 compact 自动化 (cron + 监控)
+      # 触发条件: WAL 文件 > 200MB 持续 5 分钟.
+      # 应对: 跑 `npm run wal:compact -- --apply` 归档已完成 entry.
+      # 阈值 200MB = 2x 100MB truncate 兜底 (file-wal-store.ts:85), 留 buffer.
+      # 镜像: src/monitoring/alerts.ts WAL_SIZE_HIGH (TS 形状, 单测覆盖).
+      - alert: WAL_SIZE_HIGH
+        expr: wal_active_size_bytes > 209715200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAOS WAL file size is high"
+          description: "Active WAL file is {{ $value | humanize }}B (>200MB) for 5+ minutes. Run `npm run wal:compact -- --apply` to archive completed entries. If unchecked, P1-20 truncate fallback at 100MB will start dropping history."

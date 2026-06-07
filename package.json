@@ -23,7 +23,9 @@
     "format": "prettier --write \"src/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit && cd web && tsc --noEmit",
-    "security-audit": "npm audit --audit-level=moderate"
+    "security-audit": "npm audit --audit-level=moderate",
+    "wal:compact": "tsx scripts/wal-compact.ts --apply",
+    "wal:compact:dry-run": "tsx scripts/wal-compact.ts --dry-run"
   },
   "keywords": [
     "agent",

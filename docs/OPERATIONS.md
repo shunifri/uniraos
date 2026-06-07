@@ -207,6 +207,44 @@ LIMIT 10;
 - exit 0 = OK, exit 1 = ALERT, exit 2 = script error
 - 干跑：`DRY_RUN=1 npx tsx scripts/check-acceptance-rate.ts`
 
+### 3.5 WAL 定期 compact (Q3 W3 Item #8)
+
+**背景**：P1-20 在 `src/wal/file-wal-store.ts:85` 加了 100MB 截断兜底（保留最后 10000 行）。截断会直接丢历史 entry。Q3 W3 把"截断"升级成"归档"——定期把已完成的 entry 抽出写到 `data/wal/archive/`，active 文件瘦身。
+
+**指标**：
+- `wal_active_size_bytes` (gauge, label: path) — 当前 active WAL 字节数
+- 暴露在 `GET /prom/metrics`（需 admin auth）
+
+**告警**：
+- `WAL_SIZE_HIGH` (`monitoring/prometheus/alert-rules.yml` + `src/monitoring/alerts.ts`): `wal_active_size_bytes > 209715200` (200MB) 持续 5 分钟
+- 阈值 200MB = 2x 100MB truncate 兜底, 留 buffer
+- 应对: 跑 `npm run wal:compact` 归档已完成 entry
+
+**手动 compact**：
+```bash
+# Dry-run (默认, 不真改)
+npx tsx scripts/wal-compact.ts
+# 或 npm script
+npm run wal:compact:dry-run
+
+# 真跑 (归档 + 截断)
+npm run wal:compact
+
+# 自定义阈值
+npx tsx scripts/wal-compact.ts --threshold=80 --apply
+```
+
+**自动化 cron** (运维手动配, Q3 W3 不强加):
+```cron
+# 每天凌晨 3 点跑一次, WAL>50MB 时自动归档
+0 3 * * * cd /opt/raos && /usr/bin/npm run wal:compact >> /var/log/raos/wal-compact.log 2>&1
+```
+
+**回滚 / 手动恢复**：
+- archive 文件位置: `data/wal/archive/YYYY-MM-DD/wal-{ISO}.jsonl` (JSONL, 一行一个 entry, `op:"append"`)
+- 可以用 `cat archive.jsonl >> .raos/wal.jsonl` 把归档内容追加回 active WAL
+- pending entry 永远在 active WAL 里, archive 操作不会动它们
+
 ---
 
 ## 4. 性能基准
