@@ -47,22 +47,58 @@ interface RealTuple {
   query: string;
   nodeId: string;
   nodeLabel: string;
+  source?: "real" | "synthetic";
 }
 
 const args = process.argv.slice(2);
-const useLlm = args.includes("--llm");
-const outIdx = args.indexOf("--out");
-let outFile = path.resolve("ground_truth.json");
-if (outIdx !== -1 && outIdx + 1 < args.length) outFile = path.resolve(args[outIdx + 1]);
-const synthIdx = args.indexOf("--synthetic");
-let synthCount = 200;
-if (synthIdx !== -1 && synthIdx + 1 < args.length) synthCount = parseInt(args[synthIdx + 1], 10);
-const userIdIdx = args.indexOf("--user");
-let targetUser: string | null = null;
-if (userIdIdx !== -1 && userIdIdx + 1 < args.length) targetUser = args[userIdIdx + 1];
-const limitIdx = args.indexOf("--limit");
-let realLimit = 1000;
-if (limitIdx !== -1 && limitIdx + 1 < args.length) realLimit = parseInt(args[limitIdx + 1], 10);
+
+// Helper: parse a flag with optional "=value" syntax (--foo bar OR --foo=bar).
+// Returns the value (or default if not present). For boolean flags pass defaultVal.
+function getFlag(flag: string, defaultVal: string | null = null): string | null {
+  // form 1: --flag value
+  const idx = args.indexOf(flag);
+  if (idx !== -1 && idx + 1 < args.length) return args[idx + 1];
+  // form 2: --flag=value
+  for (const a of args) {
+    if (a.startsWith(flag + "=")) return a.slice(flag.length + 1);
+  }
+  return defaultVal;
+}
+function hasFlag(flag: string): boolean {
+  return args.includes(flag) || args.some((a) => a.startsWith(flag + "="));
+}
+function getIntFlag(flag: string, defaultVal: number): number {
+  const v = getFlag(flag, null);
+  if (v === null) return defaultVal;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : defaultVal;
+}
+
+const useLlm = hasFlag("--llm");
+const outFile = path.resolve(getFlag("--out", "ground_truth.json")!);
+const synthCount = getIntFlag("--synthetic", 200);
+const targetUser = getFlag("--user", null);
+const realLimit = getIntFlag("--limit", 1000);
+// --n=N: total target tuple count (real + synthetic). Default 1000 per ROADMAP-Q3 item #6.
+const totalN = getIntFlag("--n", 1000);
+// --seed=N: deterministic seed for synthetic generation. Default 42.
+const seed = getIntFlag("--seed", 42);
+// --summary=PATH: write a summary JSON (recall/RMSE/stage dist) here. Default null (don't write).
+const summaryArg = getFlag("--summary", null);
+const summaryFile = summaryArg ? path.resolve(summaryArg) : null;
+
+// Mulberry32 — small deterministic PRNG so synthetic generation is reproducible
+// across runs (lets verifier reproduce recall/RMSE numbers).
+function makeRng(s: number) {
+  let a = s >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 const LLM_SCORE_PROMPT = `你是 KG v2 检索质量评估员。给 query 和候选节点打分（0-1）：
 
@@ -222,17 +258,29 @@ async function collectRealTuples(
       const firstLine = lines[0].toLowerCase();
       const hasHeader = firstLine.includes("query") || firstLine.includes("node") || firstLine.includes("label");
       const dataLines = hasHeader ? lines.slice(1) : lines;
+      // Optional 4th column = "source" label (real/synthetic) for downstream decision-maker visibility.
+      // 3-col CSV (legacy) is still accepted — source defaults to "real" for the CSV path.
+      let hasSourceColumn = false;
+      if (hasHeader) {
+        const headerCols = lines[0].split(",").map((c) => c.trim().toLowerCase());
+        hasSourceColumn = headerCols.includes("source");
+      }
       for (const line of dataLines) {
         const parts = line.split(",").map((p) => p.trim().replace(/^["']|["']$/g, ""));
         if (parts.length >= 2) {
+          const explicitSource = hasSourceColumn && parts.length >= 4 ? parts[3] : "";
+          // Default to "real" for CSV (hand-curated). Override to "synthetic" if explicit.
+          const source: "real" | "synthetic" =
+            explicitSource === "synthetic" ? "synthetic" : "real";
           tuples.push({
             query: parts[0],
             nodeId: parts[1] || `csv-${tuples.length}`,
             nodeLabel: parts[2] ?? parts[1] ?? parts[0], // fallback to query or nodeId
+            source,
           });
         }
       }
-      console.log(`[calibrate-real] CSV: read ${tuples.length} rows from ${absPath}`);
+      console.log(`[calibrate-real] CSV: read ${tuples.length} rows from ${absPath} (source column: ${hasSourceColumn})`);
     }
   }
 
@@ -292,32 +340,44 @@ async function collectRealTuples(
 
 /**
  * 步骤 2: Fallback——从 kb_graph_nodes 生成 synthetic (query, node) 对
- * 每个 node label 拆成词，挑一些作为"用户 query"
+ * 每个 node label 拆成词，挑一些作为"假设的 query"。Deterministic via injected rng.
  */
 async function collectSyntheticTuples(
   adapter: MySQLAdapter,
   owner: string,
-  count: number
+  count: number,
+  rng: () => number
 ): Promise<RealTuple[]> {
   console.log(`[calibrate-real] generating ${count} synthetic tuples from kb_graph_nodes...`);
 
+  // Fetch more than count so we have buffer for short labels. Deterministic ordering via id.
   const nodes = await adapter.query<{ id: string; label: string; type: string }>(
-    `SELECT id, label, type FROM kb_graph_nodes WHERE owner_id = ? AND label IS NOT NULL LIMIT ?`,
-    [owner, count]
+    `SELECT id, label, type FROM kb_graph_nodes
+     WHERE owner_id = ? AND label IS NOT NULL AND LENGTH(label) >= 3
+     ORDER BY id
+     LIMIT ?`,
+    [owner, count * 3]
   );
 
   const tuples: RealTuple[] = [];
   for (const node of nodes) {
+    if (tuples.length >= count) break;
     if (!node.label) continue;
-    // 把 label 拆成"假设的 query"——取第一个 token 作为短 query
-    const tokens = node.label.split(/[\s_]+/).filter((t) => t.length > 0);
+    // 把 label 拆成"假设的 query"
+    const tokens = node.label.split(/[\s_:：·,，.。/\\\-]+/).filter((t) => t.length > 0);
     if (tokens.length === 0) continue;
-    // 60% 单 token query, 40% 多 token query
-    if (tokens.length === 1 || Math.random() < 0.6) {
-      tuples.push({ query: tokens[0], nodeId: node.id, nodeLabel: node.label });
+    // Deterministic split: 60% single token, 40% multi-token (using rng for repeatability)
+    if (tokens.length === 1 || rng() < 0.6) {
+      // 单 token — pick the longest non-trivial token for meaningful queries
+      const cand = tokens.filter((t) => t.length >= 2).sort((a, b) => b.length - a.length)[0] ?? tokens[0];
+      if (cand.length < 2) continue;
+      tuples.push({ query: cand, nodeId: node.id, nodeLabel: node.label, source: "synthetic" });
     } else {
-      const slice = tokens.slice(0, Math.min(3, tokens.length)).join(" ");
-      tuples.push({ query: slice, nodeId: node.id, nodeLabel: node.label });
+      // 多 token — pick 2-3 contiguous tokens
+      const take = 2 + Math.floor(rng() * 2);
+      const slice = tokens.slice(0, Math.min(take, tokens.length)).join(" ");
+      if (slice.length < 2) continue;
+      tuples.push({ query: slice, nodeId: node.id, nodeLabel: node.label, source: "synthetic" });
     }
   }
   return tuples;
@@ -411,7 +471,7 @@ async function scoreTuples(
       query: t.query,
       nodeId: t.nodeId,
       nodeLabel: t.nodeLabel,
-      source: "real", // 标记是"从图谱真实数据"生成的，不是纯合成
+      source: t.source ?? "real", // 保留 source：CSV 显式传入的 (real/synthetic) 优先
     });
   }
   return points;
@@ -445,21 +505,24 @@ async function main() {
 
   // 步骤 1: 收集真实 tuples
   // 解析 --data CSV 路径（如果有）
-  const dataIdx = args.indexOf("--data");
-  let csvPath: string | null = null;
-  if (dataIdx !== -1 && dataIdx + 1 < args.length) {
-    csvPath = args[dataIdx + 1];
-  }
+  const csvPath = getFlag("--data", null);
+
+  // Mulberry32 seeded RNG — synthetic generation is reproducible across runs
+  const rng = makeRng(seed);
 
   let tuples = await collectRealTuples(adapter, realLimit, csvPath);
   console.log(`[calibrate-real] collected ${tuples.length} real tuples`);
 
-  // 步骤 2: Fallback 到 synthetic（如果没真实数据）
-  if (tuples.length < 50) {
-    console.log(`[calibrate-real] insufficient real data (${tuples.length} < 50), supplementing with synthetic tuples`);
-    const synth = await collectSyntheticTuples(adapter, owner, synthCount);
+  // 步骤 2: 补到 --n 条 (real + synthetic = --n)
+  // 行为: 如果 real 已 >= totalN, 直接用 real (无 synthetic). 否则补到 totalN.
+  if (tuples.length < totalN) {
+    const need = totalN - tuples.length;
+    console.log(`[calibrate-real] supplementing with ${need} synthetic tuples (target --n=${totalN})`);
+    const synth = await collectSyntheticTuples(adapter, owner, need, rng);
     tuples = tuples.concat(synth);
     console.log(`[calibrate-real] total after synthetic supplement: ${tuples.length}`);
+  } else {
+    console.log(`[calibrate-real] real data already meets --n=${totalN} (have ${tuples.length}), skipping synthetic`);
   }
 
   if (tuples.length === 0) {
@@ -516,24 +579,46 @@ async function main() {
   }
 
   // 阶段分布：multi-stage fallback 救了多少 raw=0
-  const stageCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 0: 0 };
+  const stageCounts: Record<string, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
   let rescuedCount = 0;
   for (const p of points) {
     const s = (p.stage ?? 0) as 0 | 1 | 2 | 3 | 4;
-    stageCounts[s] = (stageCounts[s] ?? 0) + 1;
+    stageCounts[String(s)] = (stageCounts[String(s)] ?? 0) + 1;
     if (s >= 2 && p.productionScore > 0) rescuedCount++;
   }
 
+  // source 分布
+  const sourceCounts: Record<string, number> = { real: 0, synthetic: 0 };
+  for (const p of points) {
+    const src = p.source ?? "real";
+    sourceCounts[src] = (sourceCounts[src] ?? 0) + 1;
+  }
+
+  // 召回指标 (binary): 已知 ground truth node label, 是否在 hits 列表里
+  //  因为我们已经从 hits 里拿了 productionScore, 这步隐式完成
+  //  "rescued by fallback" = 之前 raw=0 但 production score > 0 (i.e., 多 stage 救回)
+  //  92.9% baseline 就是这个数字
+  const recallPct = (rescuedCount / points.length) * 100;
+  const totalRawZero = points.filter((p) => p.raw === 0).length;
+  const rescuedFromRawZero = points.filter((p) => p.raw === 0 && p.productionScore > 0).length;
+  const rawZeroRescueRate = totalRawZero > 0 ? (rescuedFromRawZero / totalRawZero) * 100 : 0;
+
   console.log(`\n[calibrate-real] ===== RESULTS =====`);
   console.log(`  data points: ${points.length}`);
-  console.log(`  score mode:  ${useLlm && points.length > 0 && points[0].source === "real" ? "llm" : "heuristic"}`);
+  console.log(`  score mode:  ${useLlm ? "llm" : "heuristic"}`);
+  console.log(`  source distribution:`);
+  for (const [src, cnt] of Object.entries(sourceCounts)) {
+    if (cnt === 0) continue;
+    console.log(`    ${src.padEnd(10)}: ${cnt} (${(cnt / points.length * 100).toFixed(1)}%)`);
+  }
   console.log(`  stage distribution:`);
   for (const [stage, count] of Object.entries(stageCounts)) {
     if (count === 0) continue;
     const label = stage === "0" ? "no match" : stage === "1" ? "FULLTEXT" : stage === "2" ? "exact/canonical" : stage === "3" ? "canonical" : "substring";
     console.log(`    stage ${stage.padStart(2)} (${label.padEnd(15)}): ${count}`);
   }
-  console.log(`  rescued by fallback: ${rescuedCount} / ${points.length} (${(rescuedCount / points.length * 100).toFixed(1)}%)`);
+  console.log(`  rescued by fallback: ${rescuedCount} / ${points.length} (${recallPct.toFixed(1)}%)`);
+  console.log(`  raw=0 count: ${totalRawZero} (rescued: ${rescuedFromRawZero} = ${rawZeroRescueRate.toFixed(1)}%)`);
   console.log(`  production RMSE (vs relevance): ${prodRmse.toFixed(4)}`);
 
   // 抽 10 个样本展示
@@ -548,6 +633,52 @@ async function main() {
     console.log(
       `  ${p.raw.toFixed(2).padStart(5)} | ${p.productionScore.toFixed(2).padStart(6)} | ${stageLabel.padStart(5)} | ${p.relevance.toFixed(2).padStart(9)} | ${q} → ${l}`
     );
+  }
+
+  // 步骤 7: 写 summary JSON (给 verifier 直接读)
+  if (summaryFile) {
+    const summary = {
+      generatedAt: new Date().toISOString(),
+      seed,
+      n: points.length,
+      nTarget: totalN,
+      scoreMode: useLlm ? "llm" : "heuristic",
+      sourceCounts,
+      stageCounts,
+      rescued: {
+        count: rescuedCount,
+        total: points.length,
+        recallPct: Number(recallPct.toFixed(2)),
+        rawZeroCount: totalRawZero,
+        rawZeroRescued: rescuedFromRawZero,
+        rawZeroRescueRatePct: Number(rawZeroRescueRate.toFixed(2)),
+      },
+      rmse: Number(prodRmse.toFixed(4)),
+      fulltextCalibration:
+        fulltextPoints.length > 0
+          ? (() => {
+              const ftPointsForCalib = fulltextPoints.map((p) => ({ raw: p.raw, relevance: p.relevance }));
+              const { k: bestK, rmse: bestRmse } = findBestK(ftPointsForCalib, 0.5, 5);
+              const currentFtRmse = rmse(ftPointsForCalib, 2);
+              return {
+                points: fulltextPoints.length,
+                currentK: 2,
+                currentRmse: Number(currentFtRmse.toFixed(4)),
+                bestK: Number(bestK.toFixed(2)),
+                bestRmse: Number(bestRmse.toFixed(4)),
+                improvementPct: Number((((currentFtRmse - bestRmse) / currentFtRmse) * 100).toFixed(2)),
+              };
+            })()
+          : null,
+      baseline: {
+        previousRecallPct: 92.9, // 上一轮 183-tuple run 的 rescued %
+        vsBaselineDelta: Number((recallPct - 92.9).toFixed(2)),
+      },
+    };
+    const summaryDir = path.dirname(summaryFile);
+    if (!fs.existsSync(summaryDir)) fs.mkdirSync(summaryDir, { recursive: true });
+    fs.writeFileSync(summaryFile, JSON.stringify(summary, null, 2));
+    console.log(`[calibrate-real] wrote summary to ${summaryFile}`);
   }
 
   await adapter.close?.();

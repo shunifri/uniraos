@@ -1,0 +1,102 @@
+{
+  "generatedAt": "2026-06-07T18:11:58.644Z",
+  "nRuns": 5,
+  "runSeeds": [
+    41,
+    42,
+    43,
+    44,
+    45
+  ],
+  "runStability": "all 5 runs identical (CSV is deterministic, DB queries are deterministic)",
+  "n": 1000,
+  "nTarget": 1000,
+  "scoreMode": "heuristic",
+  "sourceCounts": {
+    "real": 200,
+    "synthetic": 800
+  },
+  "stageCounts": {
+    "0": 105,
+    "1": 8,
+    "2": 713,
+    "3": 0,
+    "4": 174
+  },
+  "rescued": {
+    "count": 887,
+    "total": 1000,
+    "recallPct": 88.7,
+    "rawZeroCount": 690,
+    "rawZeroRescued": 588,
+    "rawZeroRescueRatePct": 85.22
+  },
+  "rmse": 0.4202,
+  "fulltextCalibration": {
+    "points": 1,
+    "currentK": 2,
+    "currentRmse": 0.1411,
+    "bestK": 1.3,
+    "bestRmse": 0.0052,
+    "improvementPct": 96.32
+  },
+  "baseline": {
+    "previousRecallPct": 92.9,
+    "previousSampleSize": 183,
+    "previousSource": "synthetic-only (tautological query=label, from commit 495bf19 docs/CALIBRATION-RUN.md \u00a7v2)",
+    "vsBaselineDelta": -4.2,
+    "interpretation": "N=1000 (200 real + 800 synthetic substring-matched) gives 88.7% vs the prior 183-tuple 92.9%. The 4.2pt drop is NOT a regression \u2014 it's the honest N=1000 baseline with diverse queries. The 92.9% was a small-sample optimistic ceiling from tautological query=label data. We recommend treating 88.7% as the new ROADMAP Q3 item #6 baseline (which kills the P2 backlog per the decision item)."
+  },
+  "perRunMetrics": [
+    {
+      "seed": 41,
+      "n": 1000,
+      "recallPct": 88.7,
+      "rmse": 0.4202,
+      "stage0": 105,
+      "stage1": 8,
+      "stage2": 713,
+      "stage4": 174
+    },
+    {
+      "seed": 42,
+      "n": 1000,
+      "recallPct": 88.7,
+      "rmse": 0.4202,
+      "stage0": 105,
+      "stage1": 8,
+      "stage2": 713,
+      "stage4": 174
+    },
+    {
+      "seed": 43,
+      "n": 1000,
+      "recallPct": 88.7,
+      "rmse": 0.4202,
+      "stage0": 105,
+      "stage1": 8,
+      "stage2": 713,
+      "stage4": 174
+    },
+    {
+      "seed": 44,
+      "n": 1000,
+      "recallPct": 88.7,
+      "rmse": 0.4202,
+      "stage0": 105,
+      "stage1": 8,
+      "stage2": 713,
+      "stage4": 174
+    },
+    {
+      "seed": 45,
+      "n": 1000,
+      "recallPct": 88.7,
+      "rmse": 0.4202,
+      "stage0": 105,
+      "stage1": 8,
+      "stage2": 713,
+      "stage4": 174
+    }
+  ]
+}
