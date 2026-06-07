@@ -28,6 +28,13 @@ export default defineConfig({
         find: /^react-syntax-highlighter\/dist\/esm\/styles\/(.+)$/,
         replacement: "react-syntax-highlighter/dist/cjs/styles/$1",
       },
+      // Q3 item #9: 显式重定向 bare `react-syntax-highlighter` 导入到 CJS 入口.
+      // 防止 antd-x 升级时 ESM 解析规则变动导致 dev 报错 (e.g. 子路径优化剔除).
+      // CJS index 导出与 ESM index 一致 (Light/LightAsync/Prism/PrismAsync/PrismAsyncLight/PrismLight/createElement/default).
+      {
+        find: "react-syntax-highlighter",
+        replacement: "react-syntax-highlighter/dist/cjs/index",
+      },
     ],
   },
   server: {
