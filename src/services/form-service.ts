@@ -1,5 +1,9 @@
 import { getDb, isMySQL } from '../db/database.js';
-import { countWorkflowFormBindingsByFormId, findWorkflowFormBindingsByFormIdOrKey } from './workflow-form-service.js';
+import {
+  countWorkflowFormBindingsByFormId,
+  findWorkflowFormBindingsByFormIdOrKey,
+  updateWorkflowFormBindingsFormIdByFormId,
+} from './workflow-form-service.js';
 
 async function getMySQLAdapter() {
   const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
@@ -134,6 +138,21 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
     const existing = await getFormDefinition(id);
     if (!existing || existing.created_by !== userId) throw new Error('表单定义不存在或无权限');
   }
+
+  // Q3 W2 Item #5: 检测 key 变更, 准备 cascade 同步 workflow_form_bindings.
+  // 先取出旧 key (用于 cascade 范围), 但不需要预先 lock, 因为后续在事务内完成.
+  const newKey = (updates as any).key;
+  let oldKey: string | undefined;
+  if (newKey !== undefined) {
+    const current = await getFormDefinition(id);
+    if (!current) throw new Error('表单定义不存在');
+    oldKey = current.key;
+    // 同值视为不变, 跳过 cascade
+    if (oldKey === newKey) {
+      // fall through, 但下面不调用 cascade
+    }
+  }
+
   const fields: string[] = [];
   const params: unknown[] = [];
   if (updates.name !== undefined) { fields.push('name = ?'); params.push(updates.name); }
@@ -141,7 +160,7 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
   if (updates.categoryId !== undefined) { fields.push('category_id = ?'); params.push(updates.categoryId); }
   if (updates.schemaJson !== undefined) { fields.push('schema_json = ?'); params.push(JSON.stringify(updates.schemaJson)); }
   // P1-25: 支持 key 和 status 字段更新 (前端 FormDesigner 总是发 key, 之前 silently ignored)
-  if ((updates as any).key !== undefined) { fields.push('`key` = ?'); params.push((updates as any).key); }
+  if (newKey !== undefined) { fields.push('`key` = ?'); params.push(newKey); }
   if ((updates as any).status !== undefined) {
     const validStatuses = ['draft', 'published', 'deprecated'];
     if (!validStatuses.includes((updates as any).status)) {
@@ -153,12 +172,37 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
   params.push(id);
   const sql = `UPDATE form_definitions SET ${fields.join(', ')} WHERE id = ?`;
 
+  // Q3 W2 Item #5: key 变更时, 必须在同一事务内同步更新 workflow_form_bindings.
+  // 任何一步失败 → 整体回滚, 避免 binding 引用旧 key 导致 404.
+  const keyChanged = newKey !== undefined && oldKey !== undefined && oldKey !== newKey;
+
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
-    await adapter.execute(sql, params);
+    if (keyChanged) {
+      // MySQL 事务必须在 transaction 回调内用 connection.execute(),
+      // adapter.execute() 走 primaryPool 会自动 commit, 不在事务里.
+      await adapter.transaction(async (connection) => {
+        await connection.execute(sql, params as any[]);
+        await connection.execute(
+          'UPDATE workflow_form_bindings SET form_id = ? WHERE form_id = ?',
+          [newKey, oldKey!] as any[]
+        );
+      });
+    } else {
+      await adapter.execute(sql, params);
+    }
   } else {
     const db = getDb();
-    db.prepare(sql).run(...params);
+    if (keyChanged) {
+      // better-sqlite3 同步事务, fn 抛错自动 ROLLBACK
+      const run = db.transaction(() => {
+        db.prepare(sql).run(...params);
+        updateWorkflowFormBindingsFormIdByFormIdSync(db, oldKey!, newKey);
+      });
+      run();
+    } else {
+      db.prepare(sql).run(...params);
+    }
   }
 
   // 若 schema 发生变更，后台异步同步数据库索引（不阻塞 API 响应）
@@ -169,6 +213,21 @@ export async function updateFormDefinition(id: string, updates: Partial<FormDefi
   }
 
   return getFormDefinition(id);
+}
+
+/**
+ * SQLite 同步版 cascade (供 better-sqlite3 transaction 闭包使用).
+ * MySQL 走 adapter.transaction() 异步路径, 用 updateWorkflowFormBindingsFormIdByFormId 即可.
+ */
+function updateWorkflowFormBindingsFormIdByFormIdSync(
+  db: import('better-sqlite3').Database,
+  oldValue: string,
+  newValue: string
+): number {
+  const result = db.prepare(
+    'UPDATE workflow_form_bindings SET form_id = ? WHERE form_id = ?'
+  ).run(newValue, oldValue);
+  return result.changes ?? 0;
 }
 
 export async function deleteFormDefinition(id: string, userId?: string) {

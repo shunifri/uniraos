@@ -197,3 +197,34 @@ export async function deleteWorkflowFormBindingsByFormId(formId: string) {
     db.prepare('DELETE FROM workflow_form_bindings WHERE form_id = ?').run(formId);
   }
 }
+
+/**
+ * Q3 W2 Item #5: FormDesigner 改 key 时 cascade 同步 workflow_form_bindings.
+ *
+ * 历史原因: workflow_form_bindings.form_id 既能存 form definition 的 UUID,
+ * 也能存 form key (字符串别名). 改 key 后, 用 key 作为 form_id 的 binding 找不到 form → 404.
+ *
+ * 这个函数只更新 form_id 字段 (从 oldValue → newValue).
+ * 调用方必须在事务内同时更新 form_definitions.key, 否则会破坏原子性.
+ *
+ * @returns 受影响的行数
+ */
+export async function updateWorkflowFormBindingsFormIdByFormId(
+  oldValue: string,
+  newValue: string
+): Promise<number> {
+  if (!oldValue || oldValue === newValue) return 0;
+  if (isMySQL()) {
+    const adapter = await getMySQLAdapter();
+    const result = await adapter.execute(
+      'UPDATE workflow_form_bindings SET form_id = ? WHERE form_id = ?',
+      [newValue, oldValue]
+    );
+    return (result as any)?.affectedRows ?? 0;
+  }
+  const db = getDb();
+  const result = db.prepare(
+    'UPDATE workflow_form_bindings SET form_id = ? WHERE form_id = ?'
+  ).run(newValue, oldValue);
+  return result.changes ?? 0;
+}
