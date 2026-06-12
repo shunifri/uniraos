@@ -86,7 +86,15 @@ COPY --from=builder /app/server-loader.cjs ./server-loader.cjs
 COPY --from=builder /app/worker-loader.cjs ./worker-loader.cjs
 
 # 设置权限 + 切换到非 root 用户
-RUN chown -R raos:raos /app
+# P2-3 修复: 预创建 .raos 子目录, 跟 src/utils/data-dirs.ts RUNTIME_DATA_DIRS 保持一致.
+# named volume 第一次挂载时是 root:root 0755, raos 启动后建子目录会 EACCES.
+# 镜像层先建好 + chown, 容器启动时 named volume mount 进这些 pre-existing dirs.
+RUN mkdir -p /app/.raos/audit \
+              /app/.raos/kb_images \
+              /app/.raos/ltm \
+              /app/.raos/calibration \
+              /app/.raos/workspace && \
+    chown -R raos:raos /app
 USER raos
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

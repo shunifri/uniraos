@@ -1,4 +1,5 @@
 import { join, resolve } from "path";
+import { ensureRuntimeDataDirs } from "../utils/data-dirs.js";
 import { SkillRegistry } from "../registry/index.js";
 import { ExecutionEngine, AsyncTaskManager, SkillAccessService, setGlobalExecutionEngine } from "../engine/index.js";
 import { WALManager } from "../wal/index.js";
@@ -80,6 +81,14 @@ export interface BootstrapResult {
 }
 
 export async function bootstrap(): Promise<BootstrapResult> {
+  // P2-3 修复: 先建 .raos 子目录, 防 Docker named volume mount 拿到的 root:root 父目录
+  // 导致 raos:1001 启动时 EACCES. 必须在所有 mkdirSync (ConfigManager / FileWALStore /
+  // createFileSink) 之前调.
+  const createdDirs = ensureRuntimeDataDirs();
+  if (createdDirs.length > 0) {
+    console.log(`[bootstrap] ensured runtime data dirs: ${createdDirs.length} created`);
+  }
+
   // 核心实例
   const registry = new SkillRegistry();
   initPermissionService(registry);
