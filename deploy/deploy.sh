@@ -758,26 +758,24 @@ function step_config() {
   echo ""
 
   # P2-3 修复: INITIAL_ADMIN_PASSWORD 交互 (首登密码)
-  # 同事反馈 admin 密码 hidden 鸡生蛋, 必须有这一步
+  # 同事反馈:
+  #   1) 自动生成 + 不显示 = 鸡生蛋
+  #   2) 手动 read_password 在非交互终端 (SSH / 自动化) 直接 EOF = 脚本中断
+  # 修法: 用 read_input (有 default, EOF fallback 到 generate_password), 自动生成必明文显示
   local admin_pass
   admin_pass=$(generate_password)
   echo -e "${CYAN}[Admin]${NC} 首次部署 admin 登录密码（>= 8 字符）"
   echo -e "   ${YELLOW}💡 提示: 此密码用于首次登录 RAOS 控制台 (admin 用户)${NC}"
-  echo -e "   ${YELLOW}   部署脚本会在 backend 启动 log 明文打印一次, 之后可以改${NC}"
-  echo -e "   ${YELLOW}   选择「跳过」将走随机 32 位密码, 需要 SQL 重置, 详见 DEPLOY-TROUBLESHOOT.md §1.5${NC}"
-  if confirm "使用自动生成的强密码?"; then
-    set_env_var "INITIAL_ADMIN_PASSWORD" "${admin_pass}"
-    log_ok "INITIAL_ADMIN_PASSWORD 已设置 (会显示在 deploy 完成后的提示中)"
-  else
-    local custom_admin
-    custom_admin=$(read_password "Admin 密码")
-    while [[ ${#custom_admin} -lt 8 ]]; do
-      log_warn "密码至少需要 8 个字符"
-      custom_admin=$(read_password "Admin 密码")
-    done
-    set_env_var "INITIAL_ADMIN_PASSWORD" "${custom_admin}"
-    log_ok "INITIAL_ADMIN_PASSWORD 已设置"
-  fi
+  echo -e "   ${YELLOW}   默认会生成一个 24 字符强密码, 你可以按回车接受或自己输入覆盖${NC}"
+  echo -e "   ${YELLOW}   部署完成时 step_finish 会明文显示这个密码 (deploy 是 dev tool, 总显示)${NC}"
+  local custom_admin
+  custom_admin=$(read_input "Admin 密码 (回车接受默认)" "$admin_pass")
+  while [[ ${#custom_admin} -lt 8 ]]; do
+    log_warn "密码至少需要 8 个字符 (或回车用默认)"
+    custom_admin=$(read_input "Admin 密码 (回车接受默认)" "$admin_pass")
+  done
+  set_env_var "INITIAL_ADMIN_PASSWORD" "${custom_admin}"
+  log_ok "INITIAL_ADMIN_PASSWORD 已设置 (长度 ${#custom_admin})"
   echo ""
 
   # LLM API Key
@@ -1032,24 +1030,21 @@ function step_deploy() {
     raos-backend raos-workers raos-frontend
   log_ok "应用服务已启动"
 
-  # P2-3 修复: 等 backend 起来后 grep admin 密码 (dev/staging 模式会明文打 log)
-  # 生产模式走 random + hidden, 见 DEPLOY-TROUBLESHOOT.md §1.5
-  if [[ -n "${INITIAL_ADMIN_PASSWORD:-}" && "${NODE_ENV:-production}" != "production" ]]; then
-    echo ""
-    log_info "等待 backend 启动 (最多 60s)..."
-    local bt_elapsed=0
-    while [ $bt_elapsed -lt 60 ]; do
-      if docker logs raos-backend 2>&1 | grep -q "ensured runtime data dirs"; then
-        break
-      fi
-      sleep 2
-      bt_elapsed=$((bt_elapsed + 2))
-    done
-    if docker logs raos-backend 2>&1 | grep -A6 "DEFAULT ADMIN" | grep -q "Password"; then
-      log_ok "Backend 已启动, admin 密码在 log 明文打印 (dev/staging 模式)"
-    else
-      log_warn "Backend 已启动但 admin 密码没明文打印 (production 模式 hidden)"
+  # P2-3 修复: 等 backend 起来后 grep admin 密码 (deploy 是 setup 阶段, 总打明文)
+  echo ""
+  log_info "等待 backend 启动 (最多 60s)..."
+  local bt_elapsed=0
+  while [ $bt_elapsed -lt 60 ]; do
+    if docker logs raos-backend 2>&1 | grep -q "ensured runtime data dirs"; then
+      break
     fi
+    sleep 2
+    bt_elapsed=$((bt_elapsed + 2))
+  done
+  if docker logs raos-backend 2>&1 | grep -A6 "Default admin account" | grep -q "Password:"; then
+    log_ok "Backend 已启动, admin 密码在 log 明文打印 (见下面 step_finish)"
+  else
+    log_warn "Backend 已启动但 admin 密码没明文打印 (可能 INITIAL_ADMIN_PASSWORD 未设, 走随机)"
   fi
 }
 
@@ -1137,9 +1132,19 @@ function step_finish() {
   echo "    📈 指标:     http://localhost:3000/metrics"
   echo ""
   echo -e "  ${BOLD}默认账号:${NC}"
-  echo -e "    ${YELLOW}admin / ${INITIAL_ADMIN_PASSWORD:-<未设, 见 DEPLOY-TROUBLESHOOT.md §1.5>}${NC}"
-  if [[ -n "${INITIAL_ADMIN_PASSWORD:-}" ]]; then
-    echo -e "    ${YELLOW}💡 上面是你在 step_config 输入的密码, 首次登录后请立即修改！${NC}"
+  # P2-3 修复: 显式打印 admin 密码 (deploy 是 dev tool, 总显示)
+  # 旧代码只回显 \${INITIAL_ADMIN_PASSWORD}, 但 production 模式代码故意 hidden
+  # 同事 2026-06-12 23:23 反馈: '自动生成看不到密码' = 鸡生蛋
+  # 改: deploy.sh step_finish **总**打印实际用的密码 (从 .env 读)
+  local actual_admin_pwd
+  if [[ -f "$ENV_FILE" ]]; then
+    actual_admin_pwd=$(grep "^INITIAL_ADMIN_PASSWORD=" "$ENV_FILE" | cut -d= -f2- | tr -d '\r\n')
+  fi
+  if [[ -n "$actual_admin_pwd" ]]; then
+    echo -e "    ${YELLOW}admin / ${actual_admin_pwd}${NC}"
+    echo -e "    ${YELLOW}💡 上面是 step_config 时你接受/输入的密码, 首次登录后请立即修改！${NC}"
+  elif [[ -n "${INITIAL_ADMIN_PASSWORD:-}" ]]; then
+    echo -e "    ${YELLOW}admin / ${INITIAL_ADMIN_PASSWORD}${NC}"
   else
     echo -e "    ${RED}⚠️  未设 INITIAL_ADMIN_PASSWORD, 密码已随机生成, 详见 DEPLOY-TROUBLESHOOT.md §1.5 重置${NC}"
   fi

@@ -649,16 +649,18 @@ export async function ensureAdminExists(): Promise<User> {
     db.prepare("INSERT INTO user_roles (user_id, role_id) VALUES (?, 'role_admin')").run(id);
   }
 
-  // P2-3 修复: dev/staging 打印明文密码 (INITIAL_ADMIN_PASSWORD 显式设置),
-  // production / 未设 env 仍然隐藏 (走随机密码, 提示通过系统设置重置).
-  const isProd = process.env.NODE_ENV === "production";
-  if (envPassword && !isDevDefault && !isProd) {
+  // P2-3 修复: 同事 2026-06-12 23:23 反馈 'production 模式 hidden, 看不到密码'
+  // 改: 设了 INITIAL_ADMIN_PASSWORD 就明文打, 不管 production (deploy 阶段 = setup, 只打一次)
+  if (envPassword && !isDevDefault) {
     console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
-    console.warn("║  DEV/STAGING: Default admin account created with INITIAL_ADMIN_PASSWORD    ║");
+    console.warn("║  Default admin account created with INITIAL_ADMIN_PASSWORD                 ║");
     console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
     console.warn("║  Username: admin                                                           ║");
     console.warn(`║  Password: ${initialPassword}                                                ║`);
-    console.warn("║  ⚠️  在 production 请勿设置 INITIAL_ADMIN_PASSWORD, 否则密码会明文打印    ║");
+    console.warn("║                                                                            ║");
+    console.warn("║  ⚠️  此密码仅在部署日志打印一次, 请保存到安全位置                          ║");
+    console.warn("║  ⚠️  首次登录后请通过「系统设置 → 用户」立即修改                            ║");
+    console.warn("║  ⚠️  production 部署后建议通过 SQL 或 UI 改成强密码 (别留 INITIAL_ADMIN_PASSWORD)${NC}");
     console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
   } else {
     console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
