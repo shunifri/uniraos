@@ -267,6 +267,119 @@ docker compose up -d    # 起完整 stack
 docker compose ps       # 看所有容器状态
 ```
 
+### 2.6 同事实际遇到: ECONNREFUSED 192.168.32.6:3306 + 顺带 admin 密码 hidden (2026-06-12 18:15)
+
+**症状**: 启动后日志:
+```
+Unhandled error in main: Error: connect ECONNREFUSED 192.168.32.6:3306
+...
+║  Password: [hidden — please reset via system settings after first login]   ║
+```
+
+**两个错一起修** (按顺序):
+
+#### 错 1: MySQL 连不上 (跟 §2.1/2.2/2.3 同根因, 但你 .env 写错了 host)
+
+你的 `.env` 里有 `MYSQL_PRIMARY_HOST=192.168.32.6` (raw IP, 不是 service name). 这个 IP 是**你本机**, 没跑 MySQL. MySQL 在 compose 起的容器里, service name `mysql-primary`.
+
+**修法**:
+```bash
+# 1. 删 .env 里的 MYSQL_PRIMARY_HOST 这一行
+sed -i '/^MYSQL_PRIMARY_HOST=/d' .env
+grep MYSQL .env
+# 应该: 只有 MYSQL_ROOT_PASSWORD / MYSQL_PASSWORD / MYSQL_USER / MYSQL_DATABASE, 没了 MYSQL_PRIMARY_HOST
+
+# 2. 重起 backend (mysql-primary 容器不需要重起, 它一直在 raos-backend network)
+docker compose restart raos-backend
+docker logs raos-backend --tail 30
+# 应该: 没有 ECONNREFUSED, 后端正常启动
+```
+
+**别 `docker compose down -v`** — `-v` 会删 MySQL 数据, 你 admin 用户没了, 但 admin 密码还 hidden, 鸡生蛋更严重.
+
+#### 错 2: admin 密码 hidden (NODE_ENV=production 时, INITIAL_ADMIN_PASSWORD 故意不打印)
+
+你看到 "Password: [hidden]" 是因为 `NODE_ENV=production` (env-validation 故意 production 隐藏, 防止 env 误配泄露).
+
+**修法 A (不重 build, 改 MySQL 直接重置 admin 密码)**:
+
+> **重要**: 用 **scrypt v2** 不是 bcrypt. 同事参考的网上 bcrypt 教程不对! 必须按下面步骤:
+
+```bash
+# 1. 在 raos 仓库根生成 scrypt v2 hash (跟 src/db/user-repository.ts:hashPassword 同一算法)
+node -e "
+const { scryptSync, randomBytes } = require('crypto');
+const SCRYPT_OPTIONS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const SCRYPT_KEYLEN = 64;
+const password = 'MySecurePass123!';  // 改成你要的密码 (>= 8 字符)
+const salt = randomBytes(16).toString('hex');
+const hash = scryptSync(password, salt, SCRYPT_KEYLEN, SCRYPT_OPTIONS).toString('hex');
+console.log('v2:' + salt + ':' + hash);
+"
+# 输出: v2:7647f8141978592f4095f5c89b296dd5:b05029c5504d38e3b0efd6953f699c91...
+# 复制这一整行 (v2:开头)
+
+# 2. 进 MySQL 改 admin 密码
+docker exec -it raos-mysql-primary mysql -uroot -p"$MYSQL_ROOT_PASSWORD" raos
+# (输 MYSQL_ROOT_PASSWORD, 从 .env 看)
+
+mysql> UPDATE users SET password_hash='v2:7647f8141978592f4095f5c89b296dd5:b05029c5504d38e3b0efd6953f699c91...' WHERE username='admin';
+mysql> UPDATE users SET status='active' WHERE username='admin';
+mysql> SELECT id, username, status, LEFT(password_hash, 30) AS hash_prefix FROM users WHERE username='admin';
+# 应该: status='active', hash_prefix='v2:...'
+mysql> \q
+
+# 3. 浏览器 admin / MySecurePass123! 登入
+```
+
+**修法 B (用 mysqldump 验证 admin 行存在)**:
+```bash
+docker exec raos-mysql-primary mysql -uroot -p"$MYSQL_ROOT_PASSWORD" raos -e \
+  "SELECT id, username, status, created_at FROM users WHERE username='admin';"
+# 应该看到 1 行 admin / status='active' / created_at 是首次启动时间
+# 如果 0 行 → 数据库初始化有问题, 见 §2.2 mysql healthcheck
+```
+
+**修法 C (System Settings 改密码, 不需要 SQL)**:
+- 如果你**已经有别的 admin / 用户**能登入, 走 UI:
+  System Settings → Users → admin → 重置密码
+- 不需要拉新代码 / 不需要改 MySQL
+
+#### 完整一气呵成序列 (错 1 + 错 2 一起修)
+
+```bash
+cd /path/to/raos
+
+# A. 修 .env
+sed -i '/^MYSQL_PRIMARY_HOST=/d' .env
+# (不用 INITIAL_ADMIN_PASSWORD, 走修法 A 改 MySQL)
+
+# B. 重起 backend
+docker compose restart raos-backend
+docker logs raos-backend --tail 30
+# 验证: 没有 ECONNREFUSED
+
+# C. 进 MySQL 改 admin 密码
+node -e "const{scryptSync,randomBytes}=require('crypto');const o={N:32768,r:8,p:1,maxmem:67108864};const h=scryptSync('MySecurePass123!',randomBytes(16).toString('hex'),64,o).toString('hex');console.log('v2:'+randomBytes(16).toString('hex').length+'—actually full line below');" 2>&1 | tail -1
+# ^ 上面那条命令有点 hack, 用下面这条
+node <<'EOF'
+const { scryptSync, randomBytes } = require('crypto');
+const o = { N: 32768, r: 8, p: 1, maxmem: 64*1024*1024 };
+const pwd = 'MySecurePass123!';
+const salt = randomBytes(16).toString('hex');
+const h = scryptSync(pwd, salt, 64, o).toString('hex');
+console.log('v2:' + salt + ':' + h);
+EOF
+# 复制输出 (v2:xxx:yyy)
+
+docker exec -it raos-mysql-primary mysql -uroot -p"$MYSQL_ROOT_PASSWORD" raos
+mysql> UPDATE users SET password_hash='<paste-here>' WHERE username='admin';
+mysql> UPDATE users SET status='active' WHERE username='admin';
+mysql> \q
+
+# D. 浏览器 admin / MySecurePass123! 登入
+```
+
 ---
 
 ## 3. 容器起来了但 `raos-backend` 一直 restart
