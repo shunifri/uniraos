@@ -757,6 +757,29 @@ function step_config() {
   fi
   echo ""
 
+  # P2-3 修复: INITIAL_ADMIN_PASSWORD 交互 (首登密码)
+  # 同事反馈 admin 密码 hidden 鸡生蛋, 必须有这一步
+  local admin_pass
+  admin_pass=$(generate_password)
+  echo -e "${CYAN}[Admin]${NC} 首次部署 admin 登录密码（>= 8 字符）"
+  echo -e "   ${YELLOW}💡 提示: 此密码用于首次登录 RAOS 控制台 (admin 用户)${NC}"
+  echo -e "   ${YELLOW}   部署脚本会在 backend 启动 log 明文打印一次, 之后可以改${NC}"
+  echo -e "   ${YELLOW}   选择「跳过」将走随机 32 位密码, 需要 SQL 重置, 详见 DEPLOY-TROUBLESHOOT.md §1.5${NC}"
+  if confirm "使用自动生成的强密码?"; then
+    set_env_var "INITIAL_ADMIN_PASSWORD" "${admin_pass}"
+    log_ok "INITIAL_ADMIN_PASSWORD 已设置 (会显示在 deploy 完成后的提示中)"
+  else
+    local custom_admin
+    custom_admin=$(read_password "Admin 密码")
+    while [[ ${#custom_admin} -lt 8 ]]; do
+      log_warn "密码至少需要 8 个字符"
+      custom_admin=$(read_password "Admin 密码")
+    done
+    set_env_var "INITIAL_ADMIN_PASSWORD" "${custom_admin}"
+    log_ok "INITIAL_ADMIN_PASSWORD 已设置"
+  fi
+  echo ""
+
   # LLM API Key
   echo -e "${CYAN}[LLM]${NC} 大语言模型 API Key"
   echo -e "   ${YELLOW}💡 提示: 你也可以在首次启动后，登录系统并在${NC}"
@@ -1008,6 +1031,26 @@ function step_deploy() {
   $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d \
     raos-backend raos-workers raos-frontend
   log_ok "应用服务已启动"
+
+  # P2-3 修复: 等 backend 起来后 grep admin 密码 (dev/staging 模式会明文打 log)
+  # 生产模式走 random + hidden, 见 DEPLOY-TROUBLESHOOT.md §1.5
+  if [[ -n "${INITIAL_ADMIN_PASSWORD:-}" && "${NODE_ENV:-production}" != "production" ]]; then
+    echo ""
+    log_info "等待 backend 启动 (最多 60s)..."
+    local bt_elapsed=0
+    while [ $bt_elapsed -lt 60 ]; do
+      if docker logs raos-backend 2>&1 | grep -q "ensured runtime data dirs"; then
+        break
+      fi
+      sleep 2
+      bt_elapsed=$((bt_elapsed + 2))
+    done
+    if docker logs raos-backend 2>&1 | grep -A6 "DEFAULT ADMIN" | grep -q "Password"; then
+      log_ok "Backend 已启动, admin 密码在 log 明文打印 (dev/staging 模式)"
+    else
+      log_warn "Backend 已启动但 admin 密码没明文打印 (production 模式 hidden)"
+    fi
+  fi
 }
 
 # =============================================================================
@@ -1056,6 +1099,24 @@ function step_health_check() {
     log_warn "前端服务健康检查未通过"
     echo "  查看日志: docker logs raos-frontend"
   fi
+
+  # P2-3 修复: 健康检查通过后, 自动跑 verify-deploy.sh 端到端验证
+  if [[ -f "$PROJECT_DIR/scripts/verify-deploy.sh" ]]; then
+    echo ""
+    log_info "运行端到端 verify (./scripts/verify-deploy.sh)..."
+    if bash "$PROJECT_DIR/scripts/verify-deploy.sh" 2>&1; then
+      log_ok "端到端 verify 通过"
+    else
+      local rc=$?
+      if [[ $rc -eq 2 ]]; then
+        # exit 2 = admin 密码 hidden 状态, 不算 fail, 提示
+        log_warn "verify-deploy.sh 提示 admin 密码 hidden (生产模式)"
+        echo "  详见 DEPLOY-TROUBLESHOOT.md §1.5 重置"
+      else
+        log_warn "verify-deploy.sh 失败 (exit=$rc), 详见 DEPLOY-TROUBLESHOOT.md"
+      fi
+    fi
+  fi
 }
 
 # =============================================================================
@@ -1076,13 +1137,17 @@ function step_finish() {
   echo "    📈 指标:     http://localhost:3000/metrics"
   echo ""
   echo -e "  ${BOLD}默认账号:${NC}"
-  echo -e "    ${YELLOW}admin / admin${NC}"
-  echo -e "    ${RED}⚠️  首次登录后请立即修改密码！${NC}"
+  echo -e "    ${YELLOW}admin / ${INITIAL_ADMIN_PASSWORD:-<未设, 见 DEPLOY-TROUBLESHOOT.md §1.5>}${NC}"
+  if [[ -n "${INITIAL_ADMIN_PASSWORD:-}" ]]; then
+    echo -e "    ${YELLOW}💡 上面是你在 step_config 输入的密码, 首次登录后请立即修改！${NC}"
+  else
+    echo -e "    ${RED}⚠️  未设 INITIAL_ADMIN_PASSWORD, 密码已随机生成, 详见 DEPLOY-TROUBLESHOOT.md §1.5 重置${NC}"
+  fi
   echo ""
   echo -e "  ${BOLD}基础设施:${NC}"
   echo "    MySQL:       localhost:3306"
   echo "    Redis:       localhost:6379"
-  echo "    Qdrant:      localhost:6333"
+  echo "    Qdrant:      http://localhost:6333"
   echo "    RabbitMQ:    http://localhost:15672"
   echo "    Neo4j:       http://localhost:7474"
   echo ""
@@ -1093,6 +1158,7 @@ function step_finish() {
   echo "    2. 启用监控: docker compose --profile monitoring up -d"
   echo "    3. 查看日志:  docker logs -f raos-backend"
   echo "    4. 备份数据:  ./deploy/backup.sh"
+  echo "    5. 端到端 verify: ./scripts/verify-deploy.sh"
   echo ""
   echo -e "  ${BOLD}常用命令:${NC}"
   echo "    查看状态:    docker compose ps"

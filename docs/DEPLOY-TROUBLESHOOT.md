@@ -1,54 +1,87 @@
 # RAOS Docker 部署故障排查 (2026-06-12)
 
-> **适用范围**: RAOS `master` 分支 (commit `2d3c4ad` 之后). 同事拉代码 + 部署遇到容器起不来 / 连不上 MySQL / admin 登不进时参考本文.
+> **适用范围**: RAOS `master` 分支 (commit `8e0f972` 之后). 同事拉代码 + 部署遇到容器起不来 / 连不上 MySQL / admin 登不进时参考本文.
 
 ---
 
-## 0. 5 分钟完整部署序列 (含 admin 密码)
+## 0. 5 分钟完整部署序列 (推荐用 deploy.sh 交互式, **不**手改 .env)
+
+**首选**: 一行交互式 `deploy/deploy.sh` — 自动拷 .env, 问密码, 走 verify:
 
 ```bash
-# 1. 拉代码 + 确认 commit
+# 1. 拉代码
 git pull origin master
 git log --oneline -3
-# 应该看到:
-#   2d3c4ad fix(deploy): 修 admin 密码鸡生蛋 (设 INITIAL_ADMIN_PASSWORD 走明文)
-#   bb1b586 fix(deploy): 加 MYSQL_PRIMARY_HOST validation + 部署故障排查文档
-#   6f7c88e fix(deploy): 修 raos-backend 启动 EACCES (.raos/audit 子目录权限)
+# 应该看到: 8e0f972 综合修 4 个部署坑
 
-# 2. .env 准备 (从 .env.example 拷贝)
-cp .env.example .env
-# 编辑 .env 设强密码:
-#   MYSQL_ROOT_PASSWORD=<强密码>
-#   MYSQL_PASSWORD=<强密码>
-#   MINIO_PASSWORD=<强密码>
-#   RABBITMQ_PASS=<强密码>
-#   JWT_SECRET=<openssl rand -hex 32>
-#   REDIS_PASSWORD=<强密码>
-#   NEO4J_AUTH=neo4j/<强密码>
-#   INITIAL_ADMIN_PASSWORD=MySecurePass123!  ← 必加 (>= 8 字符)
+# 2. 跑交互式 deploy.sh
+./deploy/deploy.sh
+# 5 步交互:
+#   步骤 1: 选部署方式 (1=本地build / 2=拉远程 / 3=纯镜像快速)
+#   步骤 2: 环境检查 (git / docker / disk / network)
+#   步骤 3: 步骤 3 问密码 (JWT_SECRET / MySQL / RabbitMQ / MinIO / Redis / Neo4j / Grafana / Admin)
+#            → INITIAL_ADMIN_PASSWORD 会在 §Admin 那一步问, 默认用 generate_password 强密码
+#            → dev/staging 会在 deploy 完成时 log 明文打印
+#   步骤 4: 配置摘要, 确认
+#   步骤 5: 执行部署 + health check + verify-deploy.sh 端到端验证
 
-# 3. 起 stack
-docker compose down -v       # 清旧 named volume
-docker compose up -d         # 起 8 个容器
-
-# 4. 验证
-docker compose ps            # 全部 Up (healthy)
-docker logs raos-backend --tail 50
-# 应该看到:
-#   [bootstrap] ensured runtime data dirs: 6 created
-#   ✅ Environment validation passed
-#   ║  Password: MySecurePass123!        ← dev/staging 明文打印
-#   RAOS server listening on port 3000
-
-# 5. 浏览器登入
+# 3. 浏览器登入
 # http://<server>/
-# admin / MySecurePass123!
+# admin / <deploy.sh 第 3 步 ADMIN 输入的密码>
+#   (deploy.sh step_finish 会显式打印: admin / <INITIAL_ADMIN_PASSWORD>)
 ```
 
-**生产部署** (`NODE_ENV=production`):
-- 不设 `INITIAL_ADMIN_PASSWORD` (production 走随机密码 + hidden)
-- 首次部署完用修法 2 (改 MySQL bcrypt hash) 重置 admin 密码
-- 或者: 部署完第一次通过别的方式登入, 进 System Settings 改 admin 密码
+**deploy.sh step_finish 显示**:
+```
+╔══════════════════════════════════════════════════════════════╗
+║              🎉 RAOS 部署完成！                                ║
+╚══════════════════════════════════════════════════════════════╝
+访问地址:
+   🌐 前端:     http://localhost
+   🔌 API:      http://localhost:3000
+默认账号:
+   admin / <你在第 3 步输入的 INITIAL_ADMIN_PASSWORD>
+   💡 上面是你在 step_config 输入的密码, 首次登录后请立即修改！
+后续操作:
+   1. 登录系统后进入「系统设置 → LLM 配置」填写 API Key
+   2. 启用监控: docker compose --profile monitoring up -d
+   3. 查看日志:  docker logs -f raos-backend
+   4. 备份数据:  ./deploy/backup.sh
+   5. 端到端 verify: ./scripts/verify-deploy.sh
+```
+
+**如果不想用 deploy.sh** (要 CI 自动化 / 有自定义 .env) → 见 §0.b 手改 .env 序列
+
+---
+
+## 0.b 手动 .env 部署序列 (CI / 自动化场景)
+
+```bash
+# 1. 拉代码
+git pull origin master
+
+# 2. .env 准备 (从 .env.example 拷 + 改 6 个必填强密码)
+cp .env.example .env
+sed -i 's/change_me_/CHANGE_ME_/g' .env  # 注释掉所有默认值, 强制手动改
+# 必填:
+#   MYSQL_ROOT_PASSWORD=<openssl rand -hex 16>
+#   MYSQL_PASSWORD=<openssl rand -hex 16>
+#   MINIO_PASSWORD=<openssl rand -hex 16>
+#   RABBITMQ_PASS=<openssl rand -hex 16>
+#   JWT_SECRET=<openssl rand -hex 32>
+#   INITIAL_ADMIN_PASSWORD=<openssl rand -hex 8 或自选强密码, >= 8 字符>
+
+# 3. 起 stack
+docker compose down -v
+docker compose up -d
+
+# 4. 端到端 verify (一键 8 步)
+./scripts/verify-deploy.sh
+
+# 5. 浏览器
+# http://<server>/
+# admin / $INITIAL_ADMIN_PASSWORD
+```
 
 ---
 
