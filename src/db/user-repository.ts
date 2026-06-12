@@ -621,8 +621,12 @@ export async function ensureAdminExists(): Promise<User> {
   if (existing) return existing;
 
   const id = `u_${randomUUID().slice(0, 12)}`;
-  const randomPassword = randomBytes(16).toString("hex");
-  const passwordHash = await hashPassword(randomPassword);
+  // P2-3 修复: 同事部署反馈 admin 密码随机生成, 不打印, 鸡生蛋登不进.
+  // 优先用 INITIAL_ADMIN_PASSWORD env (部署者可设), 否则随机 (production 安全).
+  const envPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  const isDevDefault = !envPassword || envPassword.length < 8;
+  const initialPassword = isDevDefault ? randomBytes(16).toString("hex") : envPassword!;
+  const passwordHash = await hashPassword(initialPassword);
 
   if (isMySQL()) {
     const adapter = await getMySQLAdapter();
@@ -645,13 +649,25 @@ export async function ensureAdminExists(): Promise<User> {
     db.prepare("INSERT INTO user_roles (user_id, role_id) VALUES (?, 'role_admin')").run(id);
   }
 
-  // 安全：密码不打印到控制台/日志，仅提示管理员通过系统设置重置
-  console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
-  console.warn("║  SECURITY WARNING: Default admin account created with a random password    ║");
-  console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
-  console.warn("║  Username: admin                                                           ║");
-  console.warn("║  Password: [hidden — please reset via system settings after first login]   ║");
-  console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
+  // P2-3 修复: dev/staging 打印明文密码 (INITIAL_ADMIN_PASSWORD 显式设置),
+  // production / 未设 env 仍然隐藏 (走随机密码, 提示通过系统设置重置).
+  const isProd = process.env.NODE_ENV === "production";
+  if (envPassword && !isDevDefault && !isProd) {
+    console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
+    console.warn("║  DEV/STAGING: Default admin account created with INITIAL_ADMIN_PASSWORD    ║");
+    console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
+    console.warn("║  Username: admin                                                           ║");
+    console.warn(`║  Password: ${initialPassword}                                                ║`);
+    console.warn("║  ⚠️  在 production 请勿设置 INITIAL_ADMIN_PASSWORD, 否则密码会明文打印    ║");
+    console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
+  } else {
+    console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
+    console.warn("║  SECURITY WARNING: Default admin account created with a random password    ║");
+    console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
+    console.warn("║  Username: admin                                                           ║");
+    console.warn("║  Password: [hidden — please reset via system settings after first login]   ║");
+    console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
+  }
   return (await getUserById(id))!;
 }
 
