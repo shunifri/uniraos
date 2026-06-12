@@ -1,0 +1,204 @@
+# RAOS Docker 部署故障排查 (2026-06-12)
+
+> **适用范围**: RAOS `master` 分支 (commit `6f7c88e` 之后). 同事拉代码 + 部署遇到容器起不来 / 连不上 MySQL 时参考本文.
+
+---
+
+## 1. EACCES: permission denied, open '/app/.raos/audit/audit.log'
+
+**症状**: `docker logs raos-backend` 报
+```
+Error: EACCES: permission denied, open '/app/.raos/audit/audit.log'
+```
+容器 restart loop, `docker ps -a` 看到 `Exited (1)` 或 restart count 涨.
+
+**根因**: Named volume `raos_data:/app/.raos` 第一次挂载时是 docker 自动建空目录 (owner=root:root mode=0755), 容器内 `USER raos` (UID 1001) 启动时没写权限建子目录.
+
+**修法**: commit `6f7c88e` 已修. 必须拉最新代码:
+```bash
+git pull origin master
+# 验证 commit 6f7c88e 在
+git log --oneline -3
+# 应该看到: fix(deploy): 修 raos-backend 启动 EACCES (.raos/audit 子目录权限)
+```
+
+**清空旧 named volume** (因为旧 volume 是 root:root 锁住的):
+```bash
+docker compose down -v
+# -v 删 named volume, 下次 up 时会重新建空目录
+```
+
+**重新 build + 起**:
+```bash
+# 方式 1: 拉预编译镜像 (推荐, 生产)
+./deploy/deploy.sh
+# 选 2 (拉取远程镜像部署)
+# 选 SWR 镜像地址 (跟 main 一致)
+
+# 方式 2: 本地 build
+./deploy/deploy.sh
+# 选 1 (本地构建部署)
+# 注意: 本地 build 模式只构建当前 host 架构, 镜像不能直接推生产
+
+# 方式 3 (脚本化多架构推送, 生产跨架构)
+./scripts/build-and-push.sh
+# 默认 linux/amd64,linux/arm64
+# 推到华为云 SWR
+```
+
+**验证修复**:
+```bash
+docker compose up -d
+docker logs raos-backend 2>&1 | grep -i "bootstrap\|ensured"
+# 应该看到: [bootstrap] ensured runtime data dirs: 6 created
+```
+
+---
+
+## 2. ECONNREFUSED 172.29.0.2:3306 (MySQL 连不上)
+
+**症状**: 容器起了, 但日志里:
+```
+Error: connect ECONNREFUSED 172.29.0.2:3306
+```
+或
+```
+mysql_adapter_query_error error="connect ECONNREFUSED <some-ip>:3306"
+```
+
+**根因诊断 3 步**:
+
+### 2.1 看容器是否在 `raos-backend` 网络里
+```bash
+docker network ls | grep raos
+# 应该看到 raos-backend
+docker network inspect raos-backend
+# 应该看到 raos-backend, raos-workers, mysql-primary, redis 等都连了
+```
+
+**如果只有 raos-backend 一个容器接了**:
+- 说明 mysql-primary 容器**没在起**, 跑 `docker compose ps` 看 mysql-primary 状态
+- 应该是 `Up` (healthy) 或 `Up` (starting). 如果 `Exited` 看 `docker logs raos-mysql-primary`
+
+### 2.2 看 mysql-primary 容器 healthcheck
+```bash
+docker inspect raos-mysql-primary --format '{{.State.Health.Status}}'
+# 应该: healthy
+# 如果: starting → 还在启动, 等 30-60s
+# 如果: unhealthy → 看 logs
+docker logs raos-mysql-primary 2>&1 | tail -30
+```
+
+**常见 unhealthy 原因**:
+- `MYSQL_ROOT_PASSWORD` 没设或空 (env-validation 不会拦, 但 mysql 启动后会 access denied)
+- `MYSQL_PASSWORD` 弱密码 (env-validation 会拦, 启动时就退出)
+- 端口 3306 已被宿主机占用 → 改 `docker-compose.yml` 端口映射
+
+### 2.3 看 `MYSQL_PRIMARY_HOST` env 实际值
+```bash
+docker exec raos-backend env | grep MYSQL
+# 应该: MYSQL_PRIMARY_HOST=mysql-primary
+# 错: MYSQL_PRIMARY_HOST=172.29.0.2 (说明 env 配错)
+# 错: MYSQL_PRIMARY_HOST=localhost (容器内 localhost 是自己, 连不到 mysql)
+```
+
+**如果是 `172.29.0.2`**: 这是 docker 内部网络 IP, 每次容器重启会变. 应该用 service name `mysql-primary` (compose 自动 DNS).
+
+**如果是 `localhost` / `127.0.0.1`**: 容器内 localhost = 容器自己, 不是 host. 错.
+
+**正确做法**: 删 `.env` 里 `MYSQL_PRIMARY_HOST=...` 这一行, 让 compose 走默认 (已经 hardcode 在 `docker-compose.yml:217`).
+
+### 2.4 手动测容器 → mysql 网络
+```bash
+# 进 raos-backend 容器
+docker exec -it raos-backend sh
+# 容器内 ping mysql
+getent hosts mysql-primary
+# 应该: 172.x.x.x mysql-primary
+# 或: nslookup mysql-primary
+# 应该解析到 mysql-primary 容器的 IP
+
+# 测端口
+nc -zv mysql-primary 3306
+# 应该: succeeded
+# 错: Connection refused
+```
+
+如果 `getent hosts mysql-primary` 解析不到, 说明容器**不在 raos-backend network**:
+- 跑 `docker network inspect raos-backend` 看 `Containers` 段
+- 你的容器名应该在里面
+- 不在的话, 你的容器是手 `docker run` 起的, 没用 compose
+
+### 2.5 修法: 全用 docker compose
+
+**不要**手动 `docker run`. 用 compose 起整个 stack, 容器间网络自动配:
+```bash
+cd /path/to/raos  # 项目根
+docker compose down -v  # 清掉旧
+docker compose up -d    # 起完整 stack
+docker compose ps       # 看所有容器状态
+```
+
+---
+
+## 3. 容器起来了但 `raos-backend` 一直 restart
+
+```bash
+docker compose ps
+# 看 STATUS 栏
+# 一直 Restarting → 看 logs
+docker logs raos-backend --tail 100
+```
+
+**常见原因**:
+- EACCES (见 §1)
+- MySQL 连不上 (见 §2)
+- 健康检查失败 (HEALTHCHECK 走 `curl http://localhost:3000/health`, 如果 3000 端口没起就是 failed)
+- `node server-loader.cjs` 启动失败 → 看 stack trace
+
+---
+
+## 4. 路径错提醒
+
+部署时 `build-and-push.sh` 在 **`scripts/` 目录下**, 不是项目根:
+```bash
+./scripts/build-and-push.sh   # 正确
+./build-and-push.sh           # 错, 找不到
+```
+
+这个错在 `deploy/deploy.sh:906` 的 hint log 里也出现过:
+```
+log_warn "如需多架构镜像推到 SWR, 请用 ./scripts/build-and-push.sh"
+```
+注意是 `./scripts/...` 不是 `./...`.
+
+---
+
+## 5. 一键检查脚本 (给你写)
+
+```bash
+#!/bin/bash
+# quick-check.sh - 一键检查 RAOS 部署状态
+set -e
+
+echo "=== 1. 网络 ==="
+docker network inspect raos-backend --format '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{"\n"}}{{end}}' 2>/dev/null || echo "raos-backend 网络不存在"
+
+echo ""
+echo "=== 2. 容器 ==="
+docker compose ps 2>/dev/null
+
+echo ""
+echo "=== 3. MySQL 健康 ==="
+docker inspect raos-mysql-primary --format '{{.State.Health.Status}}' 2>/dev/null || echo "无 mysql-primary 容器"
+
+echo ""
+echo "=== 4. raos-backend 日志最近 20 行 ==="
+docker logs raos-backend --tail 20 2>/dev/null || echo "无 raos-backend 容器"
+
+echo ""
+echo "=== 5. env ==="
+docker exec raos-backend env 2>/dev/null | grep -E "^(MYSQL|REDIS|QDRANT|RABBITMQ|MINIO|NEO4J|USE_MYSQL|GRAPH_STORE)" || echo "无 raos-backend 容器"
+```
+
+保存为 `quick-check.sh`, `chmod +x`, 跑 `./quick-check.sh` 一键看状态.
