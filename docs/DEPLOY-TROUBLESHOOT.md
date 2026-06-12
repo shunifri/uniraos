@@ -1,6 +1,54 @@
 # RAOS Docker 部署故障排查 (2026-06-12)
 
-> **适用范围**: RAOS `master` 分支 (commit `6f7c88e` 之后). 同事拉代码 + 部署遇到容器起不来 / 连不上 MySQL 时参考本文.
+> **适用范围**: RAOS `master` 分支 (commit `2d3c4ad` 之后). 同事拉代码 + 部署遇到容器起不来 / 连不上 MySQL / admin 登不进时参考本文.
+
+---
+
+## 0. 5 分钟完整部署序列 (含 admin 密码)
+
+```bash
+# 1. 拉代码 + 确认 commit
+git pull origin master
+git log --oneline -3
+# 应该看到:
+#   2d3c4ad fix(deploy): 修 admin 密码鸡生蛋 (设 INITIAL_ADMIN_PASSWORD 走明文)
+#   bb1b586 fix(deploy): 加 MYSQL_PRIMARY_HOST validation + 部署故障排查文档
+#   6f7c88e fix(deploy): 修 raos-backend 启动 EACCES (.raos/audit 子目录权限)
+
+# 2. .env 准备 (从 .env.example 拷贝)
+cp .env.example .env
+# 编辑 .env 设强密码:
+#   MYSQL_ROOT_PASSWORD=<强密码>
+#   MYSQL_PASSWORD=<强密码>
+#   MINIO_PASSWORD=<强密码>
+#   RABBITMQ_PASS=<强密码>
+#   JWT_SECRET=<openssl rand -hex 32>
+#   REDIS_PASSWORD=<强密码>
+#   NEO4J_AUTH=neo4j/<强密码>
+#   INITIAL_ADMIN_PASSWORD=MySecurePass123!  ← 必加 (>= 8 字符)
+
+# 3. 起 stack
+docker compose down -v       # 清旧 named volume
+docker compose up -d         # 起 8 个容器
+
+# 4. 验证
+docker compose ps            # 全部 Up (healthy)
+docker logs raos-backend --tail 50
+# 应该看到:
+#   [bootstrap] ensured runtime data dirs: 6 created
+#   ✅ Environment validation passed
+#   ║  Password: MySecurePass123!        ← dev/staging 明文打印
+#   RAOS server listening on port 3000
+
+# 5. 浏览器登入
+# http://<server>/
+# admin / MySecurePass123!
+```
+
+**生产部署** (`NODE_ENV=production`):
+- 不设 `INITIAL_ADMIN_PASSWORD` (production 走随机密码 + hidden)
+- 首次部署完用修法 2 (改 MySQL bcrypt hash) 重置 admin 密码
+- 或者: 部署完第一次通过别的方式登入, 进 System Settings 改 admin 密码
 
 ---
 
@@ -52,6 +100,86 @@ docker compose up -d
 docker logs raos-backend 2>&1 | grep -i "bootstrap\|ensured"
 # 应该看到: [bootstrap] ensured runtime data dirs: 6 created
 ```
+
+---
+
+## 1.5 401 Unauthorized "Invalid credentials" 登录失败 (admin 密码未知)
+
+**症状**: 浏览器到 `http://<server>/` 看到登录页, 输 `admin` + 任意密码 → 红框 "Invalid credentials", DevTools Network 看到 `/api/auth/login` 返回 **401 Unauthorized**.
+
+**根因** (commit `2d3c4ad` 修前): `src/db/user-repository.ts` `ensureAdminExists()` 首次启动自动创建 admin 用户, 密码是 `randomBytes(16).toString("hex")` 32 位**随机**, 然后 `console.warn` 只打印 "Password: [hidden — please reset via system settings]". 鸡生蛋: 没法登入就没法进系统设置.
+
+**修法 1 (推荐)**: 拉新代码 + 设 `INITIAL_ADMIN_PASSWORD` env
+
+```bash
+git pull origin master
+# 验证 commit 2d3c4ad 在
+git log --oneline -3
+# 应该看到: fix(deploy): 修 admin 密码鸡生蛋 (设 INITIAL_ADMIN_PASSWORD 走明文)
+
+# 编辑 .env 加 (>= 8 字符, 强密码):
+echo "INITIAL_ADMIN_PASSWORD=MySecurePass123!" >> .env
+
+# 清掉旧 admin 用户 (因为它已经有随机密码 hash, 重置不会自动跑)
+docker compose down -v
+# ↑ -v 删 named volume, 删旧 .raos/wal.jsonl + .raos/audit + mysql 容器 db data
+#   下次 up 时 MySQL 重新 init, ensureAdminExists 重新跑 (用新 env)
+
+# 起 stack
+docker compose up -d
+
+# 找 admin 密码 (dev/staging 会明文打印, production 不会)
+docker logs raos-backend | grep -A6 "DEFAULT ADMIN"
+# 应该看到:
+#   ╔════════════════════════════════════════════════════════════════════════════╗
+#   ║  DEV/STAGING: Default admin account created with INITIAL_ADMIN_PASSWORD    ║
+#   ╠════════════════════════════════════════════════════════════════════════════╣
+#   ║  Username: admin                                                           ║
+#   ║  Password: MySecurePass123!                                                ║
+#   ║  ⚠️  在 production 请勿设置 INITIAL_ADMIN_PASSWORD, 否则密码会明文打印    ║
+#   ╚════════════════════════════════════════════════════════════════════════════╝
+
+# 浏览器 admin / MySecurePass123! 登入
+```
+
+**修法 2 (不重新 build, 直接改 MySQL)**: 已部署好的生产想重置 admin 密码, 不拉代码不动 env
+
+```bash
+# 1. 在 raos 仓库根生成 bcrypt hash (跟 src 用的同一算法)
+cd /path/to/raos  # 必须有 node_modules (含 bcrypt)
+node -e "const bcrypt=require('bcrypt');bcrypt.hash('YourNewPass123!',10).then(h=>console.log(h))"
+# 输出: $2b$10$... (bcrypt hash, 60 字符)
+
+# 2. 进 MySQL 改 admin
+docker exec -it raos-mysql-primary mysql -uroot -p"$MYSQL_ROOT_PASSWORD" raos
+# (输 MYSQL_ROOT_PASSWORD, 从 .env 看)
+
+mysql> UPDATE users SET password_hash='<paste-bcrypt-here>' WHERE username='admin';
+mysql> UPDATE users SET status='active' WHERE username='admin';
+mysql> SELECT id, username, status FROM users WHERE username='admin';
+# 应该看到 status='active'
+mysql> \q
+
+# 3. 浏览器 admin / YourNewPass123! 登入
+```
+
+**修法 3 (不重置, 用 UI 改 admin 密码)**: 仅当你有另一个 admin / 高级用户能登入
+
+- 登入系统 → System Settings → Users → admin → 重置密码
+- 不需要拉新代码
+
+**安全边界**:
+| 场景 | INITIAL_ADMIN_PASSWORD 行为 |
+|------|---------------------------|
+| 设了 + >= 8 字符 + NODE_ENV != production | ✅ 用之, 明文打印到 log |
+| 设了 + < 8 字符 | ⚠️ 忽略, 走随机 (防弱密码) |
+| 没设 + NODE_ENV != production | ⚠️ 走随机 + hidden |
+| NODE_ENV = production | ⚠️ 走随机 + hidden (无论是否设 env, 防误配泄露) |
+
+**生产部署提醒**:
+- ❌ 生产**别**设 `INITIAL_ADMIN_PASSWORD` (会拿弱密码风险 + 假设没人看 log)
+- ✅ 生产部署完, 用修法 2 改 admin 密码为强密码
+- ✅ 或者: 首次登入后, 在 System Settings → Users 改 admin 密码
 
 ---
 
