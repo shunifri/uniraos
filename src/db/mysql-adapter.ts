@@ -29,7 +29,9 @@ export class MySQLAdapter {
       queueLimit: poolOpts.queueLimit,
       enableKeepAlive: true,
       keepAliveInitialDelay: poolOpts.keepAliveInitialDelay,
-      acquireTimeout: poolOpts.acquireTimeout,
+      // mysql2 v3 警告: 'Ignoring invalid configuration option passed to Connection: acquireTimeout'
+      // mysql2 v3 移除了 acquireTimeout, 改用 enableKeepAlive + 客户端 connectTimeout 控制
+      // (server-side wait_timeout 默认 8h, 跟 v2 行为接近; 客户端 connectTimeout 在下面保留)
       connectTimeout: poolOpts.connectTimeout,
       ...(sslConfig ? { ssl: sslConfig as mysql.SslOptions } : {}),
     };

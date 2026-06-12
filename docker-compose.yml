@@ -253,19 +253,23 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       # JWT 密钥
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      # P2-3 修复: 首次部署 admin 密码 (dev/staging 明文打 log, production 强制走 random)
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       # CORS 白名单
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
       # 日志
       LOG_LEVEL: info
     depends_on:
       mysql-primary:
-        condition: service_started
+        # P2-3 修复: 改 service_healthy (等 mysql healthcheck 过), 旧 service_started
+        # 容器起 mysql 还 init 时, raos-backend 已开始 pool → ECONNREFUSED
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       qdrant:
         condition: service_started
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - raos_data:/app/.raos
     healthcheck:
@@ -328,14 +332,20 @@ services:
       # LLM 配置（可选，首次启动后也可在系统设置中配置）
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # P2-3 修复: 跟 backend 共用 INITIAL_ADMIN_PASSWORD env
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       LOG_LEVEL: info
     volumes:
       - raos_data:/app/.raos
     depends_on:
-      - mysql-primary
-      - redis
-      - qdrant
-      - rabbitmq
+      mysql-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     networks:
       - raos-backend
     restart: unless-stopped
