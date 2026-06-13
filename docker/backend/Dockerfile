@@ -25,6 +25,14 @@ RUN apk add --no-cache python3 make g++
 
 # 国内环境配置 npm 镜像源（如有需要可注释或替换）
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+# P2-3 修复: 跳过 Puppeteer 的 Chrome 下载 (DefaultProvider: read ECONNRESET, 国内拉不到 googlechromelabs)
+# puppeteer 启动时按需下 Chrome, 不在 build 时下. runtime 缺 Chrome 时 web_screenshot / web_browse 技能会失败,
+# 业务侧 (web-skills.ts / advanced-skills.ts) 已 try/catch 兜底, 不影响其他功能.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# 同上, sharp / canvas 这些 native deps 也有 download hook
+ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
+ENV npm_config_sharp_binary_host="https://registry.npmmirror.com/-/binary/sharp"
 
 COPY package*.json ./
 COPY tsconfig.json ./

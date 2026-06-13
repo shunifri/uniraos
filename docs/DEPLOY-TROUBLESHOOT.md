@@ -415,7 +415,65 @@ mysql> \q
 
 ---
 
-## 3. 容器起来了但 `raos-backend` 一直 restart
+## 3. build 失败 puppeteer "Failed to set up chrome v146 / ECONNRESET"
+
+**症状** (本地 build 模式, deploy.sh 选 1):
+```
+=> ERROR [raos-backend dependencies 6/6] RUN npm ci --only=production ...
+npm error code 1
+npm error path /app/node_modules/puppeteer
+npm error Error: ERROR: Failed to set up chrome v146.0.7680.76!
+npm error     at downloadBrowser (file:///app/node_modules/puppeteer/lib/esm/puppeteer/node/install.js:26:15)
+npm error   [cause]: Error: All providers failed for chrome 146.0.7680.76:
+npm error     - DefaultProvider: read ECONNRESET
+```
+
+**根因**:
+- `puppeteer` (^24.39.1) 是 RAOS direct dep (`package.json:112`), 用于 `web_screenshot` / `web_browse` 技能
+- `npm ci` 触发 puppeteer postinstall hook (install.mjs), 默认行为: 下 Chrome 二进制 (~200MB)
+- 国内网络拉 `googlechromelabs` CDN 不通, `DefaultProvider: read ECONNRESET`, build exit 1
+
+**修法** (commit `de6d6d6` 已修):
+
+`docker/backend/Dockerfile` 阶段 1 加 2 个 env:
+```dockerfile
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+```
+- build 阶段跳过 Chrome 下载 → build 成功
+- runtime 启动时 `web_screenshot` / `web_browse` 技能调用 puppeteer → 找不到 Chrome → 抛错 → try/catch 接住 → 那次技能失败, 业务不受影响
+- 真要用 puppeteer 跑 screenshot / browse 时, 见 §3.1
+
+**sharp 二进制 host** 也加 (备, 防 sharp install 同样撞墙):
+```dockerfile
+ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
+ENV npm_config_sharp_binary_host="https://registry.npmmirror.com/-/binary/sharp"
+```
+
+### 3.1 真的要用 web_screenshot / web_browse 怎么办
+
+**方案 A (推荐, 改 image)**:
+```dockerfile
+# 在 docker/backend/Dockerfile 阶段 1 之后, 加:
+FROM dependencies AS puppeteer-chrome
+RUN apk add --no-cache chromium chromium-chromedriver
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+COPY --from=puppeteer-chrome / /  # 跟生产 stage 合并
+```
+
+**方案 B (用 puppeteer-core + 外部 Chrome)**:
+```bash
+# 改 package.json: puppeteer → puppeteer-core (不带 Chrome)
+npm uninstall puppeteer
+npm install puppeteer-core
+# runtime env: PUPPETEER_EXECUTABLE_PATH=/path/to/chrome
+```
+
+**方案 C (降级 + 不用技能)**:
+- 业务侧 web_screenshot / web_browse 直接返回 `{success: false, error: "Chrome not available"}`
+- 已在 `web-skills.ts:352` / `advanced-skills.ts:539` try/catch 兜底
+
+---
 
 ```bash
 docker compose ps
