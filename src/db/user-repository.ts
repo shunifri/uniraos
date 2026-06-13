@@ -618,7 +618,34 @@ export async function deleteRole(id: string): Promise<boolean> {
 
 export async function ensureAdminExists(): Promise<User> {
   const existing = await getUserByUsername("admin");
-  if (existing) return existing;
+  if (existing) {
+    // P2-3 修复: 同事反馈 "看不到密码" 还可能因为 admin 已有 (重启 / 重 build 没清 volume)
+    // 旧代码 return existing 直接走, 不打 log, 同事以为有错.
+    // 改: 总是打印 admin 当前状态 + 密码重置路径
+    // 注: User interface 不含 passwordHash, 直接查 DB 拿 (admin 内部用户, 不走 userRepo mapUser)
+    const adapter = isMySQL() ? await getMySQLAdapter() : null;
+    const rawHash = adapter
+      ? ((await adapter.query(
+          `SELECT password_hash FROM users WHERE username='admin' LIMIT 1`
+        )) as Array<{ password_hash: string }>)[0]?.password_hash
+      : null;
+    const hashPrefix = rawHash?.slice(0, 8) ?? "(unknown)";
+    const isV2Format = rawHash?.startsWith("v2:") ?? false;
+    console.warn("╔════════════════════════════════════════════════════════════════════════════╗");
+    console.warn("║  Admin account already exists (idempotent check)                            ║");
+    console.warn("╠════════════════════════════════════════════════════════════════════════════╣");
+    console.warn(`║  Username: admin                                                           ║`);
+    console.warn(`║  id:       ${existing.id}                                                 ║`);
+    console.warn(`║  status:   ${existing.status}                                             ║`);
+    console.warn(`║  hash:     ${hashPrefix}... (${isV2Format ? "v2 scrypt OK" : "⚠️  非 v2 格式!"})     ║`);
+    console.warn("║                                                                            ║");
+    console.warn("║  如忘记密码, 2 种重置方式:                                                  ║");
+    console.warn("║    1. 删除 MySQL volume: docker compose down -v && docker compose up -d    ║");
+    console.warn("║       (走 INITIAL_ADMIN_PASSWORD 重新创建)                                  ║");
+    console.warn("║    2. SQL UPDATE (DEPLOY-TROUBLESHOOT.md §1.5 修法 2)                       ║");
+    console.warn("╚════════════════════════════════════════════════════════════════════════════╝");
+    return existing;
+  }
 
   const id = `u_${randomUUID().slice(0, 12)}`;
   // P2-3 修复: 同事部署反馈 admin 密码随机生成, 不打印, 鸡生蛋登不进.
