@@ -221,6 +221,11 @@ function ModelCardForm({
 
 function AgentPanel({ t, onSave, initialValues }: { t: any; onSave: (v: any) => Promise<void>; initialValues?: any }) {
   const [form] = Form.useForm();
+  useEffect(() => {
+    if (initialValues) {
+      form.setFieldsValue(initialValues);
+    }
+  }, [initialValues, form]);
   return (
     <Flex vertical gap={16}>
       <Title level={4} style={{ margin: 0 }}>
