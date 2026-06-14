@@ -193,7 +193,21 @@ RAOS 提供专业版/企业版，包含以下高级能力：
 | **标定与评测** | — | ✅ |
 | **商业支持** | — | ✅ |
 
-专业版源码不在本仓库，采用商业授权。如有需求请联系 RAOS Team。
+### Pro Edition Capabilities
+
+The Pro Edition is built for teams that need multi-tenant deployment, enterprise governance, and automated agent improvement at scale:
+
+- **MySQL Scalable Backend** — Multi-tenant data isolation, connection pooling, and horizontal-read scaling for production workloads.
+- **Enterprise RBAC + Department Management** — Role-based access control, organizational hierarchy, data-scope permissions, and audit trails.
+- **Approval Workflows** — Visual workflow designer with sequential/parallel approvals, conditional branches, delegation, and SLA alerts.
+- **Form Engine** — Low-code form builder with dynamic fields, cross-field validation, data linkage, and embeddable widgets.
+- **Federation** — Cross-node Skill sharing, version migration, canary rollout, and A/B comparison across federated RAOS instances.
+- **Evolution Engine** — Automated Skill optimization, emergence monitoring, redline governance, and lifecycle management.
+- **Calibration & Evaluation** — LLM-output scoring, candidate ranking, real-data calibration, and continuous metric tracking.
+- **Document Mind & Enterprise Skills** — Advanced document parsing (DOCX/PPTX/XLSX/PDF) and connectors for enterprise systems.
+- **Commercial Support** — Dedicated support, custom SLAs, and prioritized feature development.
+
+> The Pro Edition source code is maintained in a separate private repository and licensed commercially. For inquiries, please contact the RAOS Team.
 
 ---
 
