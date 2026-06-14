@@ -1044,8 +1044,8 @@ export default function ConfigPage() {
       setCardConfigs(cards);
 
       setAgentConfig({
-        maxIterations: cfg.agent.maxIterations,
-        systemPrompt: cfg.agent.systemPrompt,
+        maxIterations: cfg.agent?.maxIterations,
+        systemPrompt: cfg.agent?.systemPrompt,
       });
 
       // 加载 Document Mind 配置
@@ -1136,6 +1136,7 @@ export default function ConfigPage() {
   const saveAgent = async (values: any) => {
     try {
       await api.post<any>("/api/config/agent", values);
+      setAgentConfig(values);
       message.success(t("saved"));
     } catch (e: any) { message.error(e.message); }
   };
@@ -1250,7 +1251,7 @@ export default function ConfigPage() {
         );
 
       case "agent":
-        return <AgentPanel t={t} onSave={saveAgent} initialValues={cardConfigs.agent} />;
+        return <AgentPanel t={t} onSave={saveAgent} initialValues={agentConfig} />;
 
       case "docmind":
         return (
