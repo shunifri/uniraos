@@ -196,7 +196,7 @@ fi
 echo ""
 log_info "运行数据库迁移..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm \
-  --entrypoint sh raos-backend -c "npm run db:migrate"
+  --entrypoint sh raos-backend -c "npm run db:migrate:prod"
 log_ok "迁移完成"
 
 # 启动应用

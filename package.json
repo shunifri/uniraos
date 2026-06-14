@@ -13,6 +13,7 @@
     "start": "node dist/server.js",
     "worker:start": "node dist/workers/index.js",
     "db:migrate": "tsx src/server/migration-runner.ts",
+    "db:migrate:prod": "node dist/server/migration-runner.js",
     "db:seed": "tsx src/db/seed.ts",
     "test": "vitest run tests/memory/knowledge-graph/ --no-file-parallelism && vitest run --exclude tests/memory/knowledge-graph/",
     "test:watch": "vitest",

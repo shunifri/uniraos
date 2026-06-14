@@ -1015,7 +1015,7 @@ function step_deploy() {
   echo ""
   log_info "运行数据库迁移..."
   if ! $COMPOSE_CMD "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" run --rm \
-    --entrypoint sh raos-backend -c "npm run db:migrate" 2>/dev/null; then
+    --entrypoint sh raos-backend -c "npm run db:migrate:prod" 2>/dev/null; then
     log_warn "使用容器内迁移失败，尝试本地迁移..."
     if command -v npm &>/dev/null && [[ -f "$PROJECT_DIR/package.json" ]]; then
       (cd "$PROJECT_DIR" && npm run db:migrate) || true
