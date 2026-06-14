@@ -16,6 +16,15 @@ function safeJsonParse(s: any): Record<string, unknown> {
   }
 }
 
+/** 兼容 Neo4j driver 的 Integer / number：disableLosslessIntegers=true 时返回 number */
+function toNumber(value: any): number {
+  if (value == null) return 0;
+  if (typeof value === "number") return value;
+  if (typeof value.toNumber === "function") return value.toNumber();
+  const n = Number(value);
+  return Number.isNaN(n) ? 0 : n;
+}
+
 export class Neo4jGraphStore {
   private driver: Driver;
   private owner: string;
@@ -134,8 +143,8 @@ export class Neo4jGraphStore {
                 node.version as version, node.importance as importance,
                 score
          ORDER BY score DESC
-         LIMIT $limit`,
-        { query: luceneQuery, ownerId: this.owner, limit }
+         LIMIT toInteger($limit)`,
+        { query: luceneQuery, ownerId: this.owner, limit: Math.floor(limit) }
       );
 
       const scored: Array<{ node: GraphNode; score: number }> = [];
@@ -251,7 +260,7 @@ export class Neo4jGraphStore {
         { id, ownerId: this.owner }
       );
 
-      const deletedCount = result.records[0]?.get("deletedCount")?.toNumber() || 0;
+      const deletedCount = toNumber(result.records[0]?.get("deletedCount"));
       this.cache.delete(id);
 
       // 清除关联边的缓存
@@ -541,7 +550,7 @@ export class Neo4jGraphStore {
         { id, ownerId: this.owner }
       );
 
-      const deletedCount = result.records[0]?.get("deletedCount")?.toNumber() || 0;
+      const deletedCount = toNumber(result.records[0]?.get("deletedCount"));
       this.cacheEdges.delete(id);
       return deletedCount > 0;
     } finally {
@@ -826,7 +835,7 @@ export class Neo4jGraphStore {
         { nodeId, ownerId: this.owner }
       );
 
-      return result.records[0]?.get("degree")?.toNumber() || 0;
+      return toNumber(result.records[0]?.get("degree"));
     } finally {
       await session.close();
     }
@@ -841,7 +850,7 @@ export class Neo4jGraphStore {
         { ownerId: this.owner }
       );
 
-      return result.records[0]?.get("count")?.toNumber() || 0;
+      return toNumber(result.records[0]?.get("count"));
     } finally {
       await session.close();
     }
@@ -856,7 +865,7 @@ export class Neo4jGraphStore {
         { ownerId: this.owner }
       );
 
-      return result.records[0]?.get("count")?.toNumber() || 0;
+      return toNumber(result.records[0]?.get("count"));
     } finally {
       await session.close();
     }
@@ -994,8 +1003,8 @@ export class Neo4jGraphStore {
         { ownerId: this.owner }
       );
 
-      const nodeCount = countResult.records[0]?.get("nodeCount")?.toNumber() || 0;
-      const edgeCount = countResult.records[0]?.get("edgeCount")?.toNumber() || 0;
+      const nodeCount = toNumber(countResult.records[0]?.get("nodeCount"));
+      const edgeCount = toNumber(countResult.records[0]?.get("edgeCount"));
 
       // 删除所有节点（会自动删除关联的边）
       await session.run(
