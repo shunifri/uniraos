@@ -1,0 +1,33 @@
+# =============================================================================
+# 国内环境 Docker 镜像覆盖配置
+# 当 Docker Hub 无法访问时使用
+# 用法：docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+# =============================================================================
+
+services:
+  mysql-primary:
+    image: docker.m.daocloud.io/library/mysql:8.0
+
+  mysql-replica:
+    image: docker.m.daocloud.io/library/mysql:8.0
+
+  redis:
+    image: docker.m.daocloud.io/library/redis:7-alpine
+
+  qdrant:
+    image: docker.m.daocloud.io/qdrant/qdrant:v1.9.0
+
+  rabbitmq:
+    image: docker.m.daocloud.io/library/rabbitmq:3.12-management-alpine
+
+  minio:
+    image: docker.m.daocloud.io/minio/minio:RELEASE.2024-03-03T17-50-39Z
+
+  neo4j:
+    image: docker.m.daocloud.io/library/neo4j:5.15.0-community
+
+  prometheus:
+    image: docker.m.daocloud.io/prom/prometheus:v2.51.0
+
+  grafana:
+    image: docker.m.daocloud.io/grafana/grafana:10.4.1

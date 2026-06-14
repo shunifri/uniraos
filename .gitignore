@@ -1,0 +1,202 @@
+node_modules/
+dist/
+src/ui/assets/
+.raos/
+# P2-9: 测试时 LTM file backend 临时目录
+.raos-test/
+.worktrees/
+uploads/
+*.tsbuildinfo
+
+# Logs
+*.log
+backend.log*
+frontend.log*
+server.log
+
+# Coverage
+coverage/
+web/coverage/
+
+# Test reports
+playwright-report/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Local agent tool data and temp directories
+.claude/
+.kimi/
+.mavis/
+.opencode/
+*.tmp
+
+# Temp
+*.bak
+
+# Environment variables and backups
+.env
+.env.*
+!.env.example
+.env.bak.*
+
+# Runtime / local files
+*.pid
+*.db
+raos.db
+
+# Community Edition: exclude Pro-only modules and tests from published tree
+src/db/mysql-*.ts
+src/queue/
+src/workers/
+src/engine/evolution-controller.ts
+src/engine/emergence-detector.ts
+src/engine/skill-lifecycle.ts
+src/engine/worker-sandbox.ts
+src/engine/worker-sandbox-worker.ts
+src/inbox/adapters/evolution-adapter.ts
+src/routes/evolution-routes.ts
+src/db/evolution-repository.ts
+src/db/department-repository.ts
+src/db/kb-tenants.ts
+src/skills/evolution-skills.ts
+src/services/file-parse-queue.ts
+src/services/kg-extraction-queue.ts
+src/utils/ingest-queue.ts
+src/monitoring/
+tests/
+web/tests/
+web/src/**/*.test.ts
+web/src/**/*.test.tsx
+web/src/**/__tests__/
+
+# Frontend Pro-only API tests
+web/src/api/__tests__/admin-api.test.ts
+web/src/api/__tests__/connections-api.test.ts
+web/src/api/__tests__/evolution-api.test.ts
+web/src/api/__tests__/federation-api.test.ts
+web/src/api/__tests__/workflow-api.test.ts
+
+# Analysis / planning docs and deliverables
+docs/superpowers/
+docs/workflow-engine-research.md
+PRODUCTION_GAP_ANALYSIS.md
+P3-*.md
+修复总结*.md
+知识图谱检索能力评估.md
+调研报告_*.md
+未命名.txt
+deliverables/
+data/
+
+# Root-level temp / debug / test scripts
+check-*.mjs
+check-*.cjs
+check-*.js
+check-*.ts
+check-*.sql
+delete-*.cjs
+delete-*.mjs
+debug-*.ts
+list-docs.cjs
+init_mysql*.mjs
+reset_*.mjs
+reset-*.cjs
+apply_migration*.mjs
+optimize-graph-indexes.*
+test-*.ts
+test-*.tsx
+test-*.mjs
+test-*.cjs
+test-*.js
+test-*.sh
+test-*.md
+final-test.ts
+
+# Root debug / test scripts (underscore variants)
+check_*.mjs
+check_*.cjs
+check_*.js
+check_*.ts
+check_*.sql
+
+# Pro-only / calibration / analysis scripts
+scripts/backup-mysql.sh
+scripts/analyze-calibration.ts
+scripts/calibrate-from-real-data.ts
+scripts/calibrate-fts-score.ts
+scripts/migrate-form-key-cascade.ts
+scripts/ab-test-graph-context.ts
+scripts/ab-test-llm-responses.ts
+scripts/audit-data-quality.ts
+scripts/load-test.sh
+scripts/sample-real-data.csv
+
+# Local tool config & commercial materials
+opencode.json
+RAOS产品推介.pptx
+
+# Root-level temp / debug / deliverable files
+create-graph-tables*
+create-missing-tables.cjs
+deliverable-*.md
+fix-stuck-doc.mjs
+fix-user-roles.ts
+reset-doc-status.mjs
+output-simple.md
+output-vlm.md
+temp-chat.tsx
+
+# Form / app-designer leftovers
+src/types/form.ts
+web/src/pages/Genealogy.tsx
+web/src/components/AppDesignCard.tsx
+
+# Analysis / review / planning docs (keep ARCHITECTURE, DEPLOY-TROUBLESHOOT, NEO4J_INTEGRATION, OPERATIONS, SYSTEM_SPEC)
+docs/AUDIT.md
+docs/CALIBRATION*.md
+docs/CHANGELOG_KG.md
+docs/FORM-WORKFLOW*.md
+docs/GRAPH_CONTEXT_CHANGELOG.md
+docs/KG_ARCHITECTURE_VISION.md
+docs/KG_REVIEW*.md
+docs/KNOWLEDGE_GRAPH_REVIEW*.md
+docs/PROJECT_REVIEW*.md
+docs/RAOS-设计目标全面评估报告.md
+docs/ROADMAP-2026-Q3.md
+docs/V1-V2-P0-VERIFICATION.md
+docs/migration-skip-to-todo.md
+docs/skill-gap-analysis*.md
+
+# Admin / RBAC / remote agent / scheduler leftovers
+src/routes/admin-compat-routes.ts
+src/agents/remote-agent.ts
+src/db/migrations/v9_inbox_scheduler.sql
+src/permissions/
+src/config/skill-permissions.ts
+src/monitoring/
+src/metrics/http-metrics.ts
+
+# Monitoring stack configs
+monitoring/
+docker-compose.monitoring.yml
+docker-compose.swarm.yml
+docker-compose.test.yml
+run-check.sh
+run-debug.sh
+run-fix.sh
+init-db.js
+
+# Development planning / architecture docs not intended for community release
+raos.md
+AGENTS.md
+ROADMAP.md
+COMMUNITY-TODO.md
+docs/ARCHITECTURE.md
+docs/SYSTEM_SPEC.md
+docs/*
+!docs/继续教育招生咨询应用.md

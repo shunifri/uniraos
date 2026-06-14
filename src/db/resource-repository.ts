@@ -1,0 +1,221 @@
+/**
+ * 资源与权限仓库：资源注册、权限管理、Skill 同步
+ * 支持 SQLite 和 MySQL 双模式
+ */
+import { randomUUID } from "crypto";
+import { getDb } from "./database.js";
+
+export interface Resource {
+  id: string;
+  name: string;
+  type: "api" | "skill" | "menu" | "data";
+  description: string;
+  createdAt: number;
+}
+
+export interface Permission {
+  id: string;
+  name: string;
+  description: string;
+  resourceId: string;
+  action: string;
+}
+
+// ===== 资源 =====
+
+export async function listResources(type?: string): Promise<Resource[]> {
+  
+  
+  const db = getDb();
+  if (type) {
+    return (db.prepare("SELECT * FROM resources WHERE type = ? ORDER BY name").all(type) as any[]).map(mapResource);
+  }
+  return (db.prepare("SELECT * FROM resources ORDER BY type, name").all() as any[]).map(mapResource);
+}
+
+export async function getResourceByName(name: string): Promise<Resource | null> {
+  
+  
+  const row = getDb().prepare("SELECT * FROM resources WHERE name = ?").get(name) as any;
+  return row ? mapResource(row) : null;
+}
+
+export async function getResourceById(id: string): Promise<Resource | null> {
+  
+  
+  const row = getDb().prepare("SELECT * FROM resources WHERE id = ?").get(id) as any;
+  return row ? mapResource(row) : null;
+}
+
+export async function createResource(input: { name: string; type: string; description?: string }): Promise<Resource> {
+  const id = `res_${randomUUID().slice(0, 12)}`;
+  
+  
+  
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO resources (id, name, type, description) VALUES (?, ?, ?, ?)
+  `).run(id, input.name, input.type, input.description ?? "");
+  
+  const resource = await getResourceById(id);
+  if (!resource) throw new Error("Failed to create resource");
+  return resource;
+}
+
+// ===== 权限 =====
+
+export async function listPermissions(): Promise<Permission[]> {
+  
+  
+  return (getDb().prepare("SELECT * FROM permissions ORDER BY name").all() as any[]).map(mapPermission);
+}
+
+export async function createPermission(input: { name: string; description?: string; resourceId: string; action: string }): Promise<Permission> {
+  const id = `perm_${randomUUID().slice(0, 12)}`;
+  
+  
+  
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO permissions (id, name, description, resource_id, action) VALUES (?, ?, ?, ?, ?)
+  `).run(id, input.name, input.description ?? "", input.resourceId, input.action);
+
+  const row = db.prepare("SELECT * FROM permissions WHERE id = ?").get(id) as any;
+  return mapPermission(row);
+}
+
+async function getPermissionById(id: string): Promise<Permission | null> {
+  
+  
+  const row = getDb().prepare("SELECT * FROM permissions WHERE id = ?").get(id) as any;
+  return row ? mapPermission(row) : null;
+}
+
+export async function getPermissionsByRole(roleId: string): Promise<Permission[]> {
+  
+  
+  return (getDb().prepare(`
+    SELECT p.* FROM permissions p
+    JOIN role_permissions rp ON rp.permission_id = p.id
+    WHERE rp.role_id = ?
+    ORDER BY p.name
+  `).all(roleId) as any[]).map(mapPermission);
+}
+
+export async function assignPermissionsToRole(roleId: string, permissionIds: string[]): Promise<void> {
+  
+  
+  const db = getDb();
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)"
+  );
+  const run = db.transaction(() => {
+    for (const pid of permissionIds) {
+      stmt.run(roleId, pid);
+    }
+  });
+  run();
+}
+
+export async function removePermissionsFromRole(roleId: string, permissionIds: string[]): Promise<void> {
+  
+  
+  const db = getDb();
+  const stmt = db.prepare(
+    "DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?"
+  );
+  const run = db.transaction(() => {
+    for (const pid of permissionIds) {
+      stmt.run(roleId, pid);
+    }
+  });
+  run();
+}
+
+// ===== Skill 同步 =====
+
+/** 从 SkillRegistry 同步 Skill 到资源表（upsert） */
+export async function syncSkillResources(skills: Array<{ name: string; description?: string }>): Promise<{ added: number; total: number }> {
+  let added = 0;
+  const db = getDb();
+
+  const upsertResource = db.prepare(`
+    INSERT INTO resources (id, name, type, description)
+    VALUES (?, ?, 'skill', ?)
+    ON CONFLICT(name) DO UPDATE SET description = excluded.description
+  `);
+
+  const upsertPermission = db.prepare(`
+    INSERT INTO permissions (id, name, description, resource_id, action)
+    VALUES (?, ?, ?, ?, 'execute')
+    ON CONFLICT(name) DO UPDATE SET description = excluded.description
+  `);
+
+  // 将新的 skill 资源分配给根部门
+  const assignToRoot = db.prepare(`
+    INSERT OR IGNORE INTO department_resources (department_id, resource_id)
+    VALUES ('dept_root', ?)
+  `);
+
+  const run = db.transaction(() => {
+    for (const skill of skills) {
+      const resourceName = `skill:${skill.name}`;
+      const existing = db.prepare("SELECT * FROM resources WHERE name = ?").get(resourceName) as any;
+
+      if (!existing) {
+        const resId = `res_skill_${skill.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        upsertResource.run(resId, resourceName, skill.description ?? "");
+        const permId = `perm_skill_${skill.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        upsertPermission.run(permId, `skill:${skill.name}.execute`, `执行 Skill: ${skill.name}`, resId);
+        assignToRoot.run(resId);
+        added++;
+      } else {
+        upsertResource.run(existing.id, resourceName, skill.description ?? "");
+      }
+    }
+  });
+
+  run();
+
+  const total = (db.prepare("SELECT COUNT(*) as c FROM resources WHERE type = 'skill'").get() as any).c;
+  return { added, total };
+}
+
+// ===== 内部 =====
+
+function mapResource(row: any): Resource {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    description: row.description ?? "",
+    createdAt: row.created_at,
+  };
+}
+
+function mapPermission(row: any): Permission {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? "",
+    resourceId: row.resource_id,
+    action: row.action,
+  };
+}
+
+export async function replacePermissionsForRole(roleId: string, permissionIds: string[]): Promise<void> {
+  
+
+  const db = getDb();
+  const transaction = db.transaction(() => {
+    // 先删除所有现有权限
+    db.prepare("DELETE FROM role_permissions WHERE role_id = ?").run(roleId);
+
+    // 再添加新权限
+    const stmt = db.prepare("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)");
+    for (const permId of permissionIds) {
+      stmt.run(roleId, permId);
+    }
+  });
+  transaction();
+}

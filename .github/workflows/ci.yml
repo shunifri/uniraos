@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpassword
+          MYSQL_DATABASE: raos
+          MYSQL_USER: raos
+          MYSQL_PASSWORD: raospassword
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -prootpassword"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=3s
+          --health-retries=5
+      qdrant:
+        image: qdrant/qdrant:v1.9.0
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd="curl -f http://localhost:6333/healthz"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: cd web && npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check backend
+        run: npx tsc --noEmit
+
+      - name: Type check frontend
+        run: cd web && npx tsc --noEmit
+
+      - name: Run backend tests
+        env:
+          NODE_ENV: test
+          USE_MYSQL: true
+          MYSQL_PRIMARY_HOST: localhost
+          MYSQL_PRIMARY_PORT: 3307
+          MYSQL_USER: raos
+          MYSQL_PASSWORD: raospassword
+          MYSQL_DATABASE: raos
+          MYSQL_CONN_LIMIT: 5
+          REDIS_HOSTS: localhost:6379
+          JWT_SECRET: test-jwt-secret-for-ci-only-must-be-32-characters-long
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 6333
+        run: npm test
+
+      - name: Run frontend tests
+        run: cd web && npm test
+
+      - name: Security audit
+        run: npm run security-audit || true
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Build frontend
+        run: cd web && npm run build

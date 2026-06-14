@@ -1,0 +1,91 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { resolve } from "path";
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: [
+      {
+        find: "@",
+        replacement: resolve(__dirname, "src"),
+      },
+      // P1-33: @ant-design/x 的 CodeHighlighter 内部用
+      //   require(`react-syntax-highlighter/dist/esm/languages/prism/${lang}`) 同步 require ESM 路径,
+      //   Vite dev 下报 "Failed to resolve module specifier 'react-syntax-highlighter/dist/esm/languages/prism/javascript'".
+      //
+      // 修法: alias 把 esm 路径重定向到 cjs 兼容版本, 同步 require 能解析.
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/languages\/prism\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/languages/prism/$1",
+      },
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/languages\/hljs\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/languages/hljs/$1",
+      },
+      {
+        find: /^react-syntax-highlighter\/dist\/esm\/styles\/(.+)$/,
+        replacement: "react-syntax-highlighter/dist/cjs/styles/$1",
+      },
+      // Q3 item #9: 显式重定向 bare `react-syntax-highlighter` 导入到 CJS 入口.
+      // 防止 antd-x 升级时 ESM 解析规则变动导致 dev 报错 (e.g. 子路径优化剔除).
+      // CJS index 导出与 ESM index 一致 (Light/LightAsync/Prism/PrismAsync/PrismAsyncLight/PrismLight/createElement/default).
+      {
+        find: "react-syntax-highlighter",
+        replacement: "react-syntax-highlighter/dist/cjs/index",
+      },
+    ],
+  },
+  server: {
+    port: 9002,
+    // P1-33: @ant-design/x 的 CodeHighlighter 用 require(`react-syntax-highlighter/dist/esm/languages/prism/${lang}`)
+    //   同步 require ESM 路径, Vite dev 下会报 "Failed to resolve module specifier".
+    //   修复: optimizeDeps 强制预构建 react-syntax-highlighter 全语言包,
+    //   Vite 会把 ESM 路径转成 webbundle, sync require 能解析.
+    //   exclude: ['react-syntax-highlighter'] 反过来, 走 Vite 自己的 resolution.
+    //   includes: 全部 prism 语言, CodeHighlighter 懒加载时也能命中.
+    fs: {
+      allow: [".."],
+    },
+    proxy: {
+      "/api": {
+        target: "http://localhost:3000",
+        changeOrigin: true,
+        // 匹配后端 skill 超时（300s）+ 缓冲，0 表示无超时
+        timeout: 0,
+        configure: (proxy, _options) => {
+          proxy.on("error", (err, req, res) => {
+            console.error("[Vite Proxy Error]", req.method, req.url, err.message);
+            if (res && !res.headersSent) {
+              res.writeHead(502, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ success: false, error: "Proxy error: " + err.message }));
+            }
+          });
+        },
+      },
+      // P2 修复：把 /ws WebSocket 也代理到后端 (之前只代理 /api，WS 握手直接 404)
+      // ws: true 启用 WebSocket 升级；changeOrigin 让后端看到正确的 host
+      "/ws": {
+        target: "ws://localhost:3000",
+        ws: true,
+        changeOrigin: true,
+        configure: (proxy, _options) => {
+          proxy.on("error", (err, _req, _socket) => {
+            console.error("[Vite WS Proxy Error]", err.message);
+          });
+        },
+      },
+    },
+  },
+  build: {
+    outDir: "../src/ui",
+    emptyOutDir: true,
+    // P2 修复：显示禁用 Source Map，防止生产环境源码泄露
+    sourcemap: false,
+  },
+  // P1-33: 让 Vite 预构建 react-syntax-highlighter, antd-x 内部的 require() 能走 Vite 的 module graph
+  optimizeDeps: {
+    include: ["react-syntax-highlighter"],
+  },
+});

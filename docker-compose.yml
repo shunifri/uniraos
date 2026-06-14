@@ -1,0 +1,174 @@
+version: '3.8'
+
+# =============================================================================
+# RAOS Community Edition — 轻量 Docker 部署配置
+# 包含：Redis + Qdrant + SQLite 后端 + 前端 Web
+# =============================================================================
+
+services:
+  # Redis（缓存、会话）
+  redis:
+    image: redis:7-alpine
+    container_name: raos-redis
+    ports:
+      - "6379:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: raos-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          perl -e 'use IO::Socket::INET; my $$s = IO::Socket::INET->new(PeerAddr=>q{localhost}, PeerPort=>6333, Proto=>q{tcp}, Timeout=>5); exit($$s ? 0 : 1);' || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - raos-backend
+    restart: unless-stopped
+
+  # RAOS 后端 API 服务（Community Edition）
+  raos-backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: production
+    container_name: raos-backend
+    user: "1001:1001"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # SQLite 模式
+      USE_MYSQL: "false"
+      # Redis 配置
+      REDIS_HOSTS: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_KEY_PREFIX: "raos:"
+      # Qdrant 配置
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_GRPC_PORT: 6334
+      # 知识图谱使用 SQLite 存储
+      GRAPH_STORE_BACKEND: mysql
+      # LLM 配置（可选，首次启动后也可在系统设置中配置）
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # JWT 密钥
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      # 首次部署 admin 密码
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      # CORS 白名单
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      # 日志
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - raos_data:/app/.raos
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - raos-backend
+      - raos-frontend
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # RAOS 前端 Web 服务
+  raos-frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_WS_URL: ws://localhost:3000
+    container_name: raos-frontend
+    environment:
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/frontend/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/frontend/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      raos-backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    networks:
+      - raos-frontend
+    restart: unless-stopped
+
+# =============================================================================
+# 数据卷
+# =============================================================================
+volumes:
+  redis_data:
+    driver: local
+  qdrant_storage:
+    driver: local
+  raos_data:
+    driver: local
+
+# =============================================================================
+# 网络
+# =============================================================================
+networks:
+  raos-backend:
+    driver: bridge
+    internal: false
+  raos-frontend:
+    driver: bridge
+    internal: false

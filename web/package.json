@@ -1,0 +1,52 @@
+{
+  "name": "raos-web",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "@ant-design/x": "^2.4.0",
+    "@ant-design/x-markdown": "^2.4.0",
+    "@fontsource-variable/noto-sans-sc": "^5.2.10",
+    "@fontsource/plus-jakarta-sans": "^5.2.8",
+    "@types/dompurify": "^3.0.5",
+    "antd": "^5.24.0",
+    "dayjs": "^1.11.0",
+    "dompurify": "^3.3.3",
+    "echarts": "^6.0.0",
+    "echarts-for-react": "^3.0.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.6.0",
+    "react-syntax-highlighter": "~16.1.1",
+    "remark-gfm": "^4.0.1",
+    "zustand": "^5.0.0"
+  },
+  "//overrides": "P1-33 + Q3 item #9: force react-syntax-highlighter version even when @ant-design/x upgrades. The vite.config.ts alias pattern (esm → cjs subpaths) is sensitive to package internals; a major bump would silently break CodeHighlighter in dev. ~16.1.1 is the current verified version.",
+  "overrides": {
+    "react-syntax-highlighter": "~16.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.4.1",
+    "@vitest/coverage-v8": "^4.1.5",
+    "jsdom": "^29.0.2",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~5.7.2",
+    "vite": "^6.3.0",
+    "vitest": "^4.1.5"
+  }
+}
