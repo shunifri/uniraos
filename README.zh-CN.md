@@ -1,10 +1,11 @@
-# RAOS — Recursive Agent Operating System
+# RAOS — 递归式智能体操作系统
 
 <p align="center">
-  <strong>递归式智能体操作系统</strong> / <strong>Recursive Agent Operating System</strong>
+  <strong>Recursive Agent Operating System</strong> — 基于统一 Skill 抽象的自适应智能体平台
 </p>
 
 <p align="center">
+  <a href="#简介">简介</a> •
   <a href="#核心特性">核心特性</a> •
   <a href="#快速开始">快速开始</a> •
   <a href="#架构">架构</a> •
@@ -14,29 +15,14 @@
 </p>
 
 <p align="center">
-  <a href="./README.zh-CN.md">简体中文</a>
+  <a href="./README.md">English</a>
 </p>
-
----
-
-## What is RAOS?
-
-RAOS（Recursive Agent Operating System）is a **production-grade recursive agent operating system**. It unifies all system capabilities — business logic, orchestration, memory, tools, and self-evolution — behind a single abstraction called **Skill**.
-
-Instead of hard-coding workflows, RAOS lets agents recursively compose and execute Skills, enabling:
-
-- 🧬 **Self-evolution** — Generate, test, and deploy new Skills from natural language descriptions
-- 🔗 **Recursive composition** — Skills call other Skills, forming arbitrarily deep execution chains
-- 📊 **Self-analysis** — Continuous optimization through execution metrics and performance data
-- 🛡️ **Reliability** — DAG validation, SAGA compensation, circuit breakers, and error propagation control
-
-> 📖 This is the **Community Edition** of RAOS. For the MySQL-backed Enterprise/Pro edition with advanced permissions, workflows, federation, and evolution engine, see the [Pro Edition](#pro-edition) section.
 
 ---
 
 ## 简介
 
-RAOS（递归式智能体操作系统）是一个**生产级递归式智能体操作系统**。它将系统所有能力——业务逻辑、编排、记忆、工具乃至自我进化——统一抽象为 **Skill**。
+RAOS（Recursive Agent Operating System）是一个**生产级递归式智能体操作系统**。它将系统所有能力——业务逻辑、编排、记忆、工具，乃至系统自我进化——统一抽象为 **Skill**。
 
 RAOS 不再硬编码工作流，而是让智能体递归地组合与执行 Skill，从而实现：
 
@@ -49,25 +35,25 @@ RAOS 不再硬编码工作流，而是让智能体递归地组合与执行 Skill
 
 ---
 
-## 核心特性 / Core Features
+## 核心特性
 
-### 🤖 智能体系统 / Agent System
-- **三级智能体**：Simple / ReAct / Team，Orchestrator 自动根据任务复杂度选择策略
+### 🤖 智能体系统
+- **三级智能体**：Simple / ReAct / Team，Orchestrator 根据任务复杂度自动选择策略
 - **七种协作协议**：HIERARCHICAL、SEQUENTIAL、SWARM、A2A、CONTRACT_NET、MARKET_BASED、BLACKBOARD
 - **ReAct 循环**：推理 → 行动 → 观察，支持 Tool-use 桥接和自动记忆提取
 
-### 🧬 Skill 自进化 / Skill Self-Evolution
+### 🧬 Skill 自进化
 - `skill_from_description` — 将自然语言描述转换为可执行代码
 - Skill 组合器 — 声明式组合多个 Skill 为复杂工作流
 - `skill_test` — 为新生成 Skill 自动生成测试用例
 - `skill_optimizer` — 分析执行数据并给出优化建议
 
-### 🧠 记忆系统 / Memory System
+### 🧠 记忆系统
 - **STM（短期记忆）**：内存 LRU + TTL + 关键词搜索
 - **LTM（长期记忆）**：文件持久化 + 语义搜索 + 自动归档 + 冲突检测
 - **知识图谱**：原生图存储，支持社区检测、中心节点识别、路径查找
 
-### 🔌 多模态与集成 / Multimodal & Integrations
+### 🔌 多模态与集成
 - **LLM 提供商**：OpenAI、Claude、OpenAI-Compatible
 - **多模态**：文本、图像、语音理解与生成
 - **数据连接器**：SQLite、MySQL、PostgreSQL、MongoDB 外部数据源
@@ -75,9 +61,9 @@ RAOS 不再硬编码工作流，而是让智能体递归地组合与执行 Skill
 
 ---
 
-## 快速开始 / Quick Start
+## 快速开始
 
-### 环境要求 / Requirements
+### 环境要求
 
 - Docker 24.0+ & Docker Compose v2+
 - 4C8G 以上服务器（生产建议 8C16G）
@@ -93,54 +79,52 @@ git clone https://github.com/your-org/raos-community.git && cd raos-community
 docker compose up -d
 ```
 
-社区版栈包含：
+社区版栈仅包含：
 - Redis（缓存、会话）
 - Qdrant（向量检索）
 - RAOS 后端（SQLite 模式）
 - RAOS 前端
+
+> 💡 **首次部署无需配置 LLM API Key**，启动后登录系统，在「系统设置 → LLM 配置」中填写即可。
 
 部署完成后访问：
 - **前端**: http://localhost
 - **API**: http://localhost:3000
 - **健康检查**: http://localhost:3000/health
 
-> 💡 **首次部署无需配置 LLM API Key**，启动后登录系统，在「系统设置 → LLM 配置」中填写即可。
->
 > ⚠️ 首次部署后请立即使用默认账号 `admin / admin` 登录并修改密码。
 
 ---
 
-## 架构 / Architecture
+## 架构
 
 RAOS 的核心思想是：**编排本质上也是一组 Skill**。所有能力都注册在 `SkillRegistry` 中，通过 DAG 验证后，由 `ExecutionEngine` 递归执行。
 
 ```
 ┌─────────────────────────────────────────┐
-│  用户交互层 / User Interface              │
-│  (React 18 + Vite)                      │
+│  用户交互层 (React 18 + Vite)            │
 ├─────────────────────────────────────────┤
-│  API 网关 / API Gateway                  │
-│  (Express + Auth)                       │
+│  API 网关 (Express + 认证)               │
 ├─────────────────────────────────────────┤
-│  核心引擎 / Core Engine                  │
-│  ├── 执行引擎 / Execution Engine        │
-│  ├── Skill 注册表 / Skill Registry      │
-│  ├── Agent 循环 / Agent Loop            │
-│  └── 记忆系统 / Memory System           │
+│  核心引擎                                │
+│  ├── 执行引擎（递归、DAG）               │
+│  ├── Skill 注册表                        │
+│  ├── Agent 循环（ReAct）                 │
+│  └── 记忆系统                            │
 ├─────────────────────────────────────────┤
 │  Skills（记忆、Web、数据、图谱...）       │
 ├─────────────────────────────────────────┤
-│  基础设施 / Infrastructure               │
+│  基础设施                                │
 │  ├── STM / LTM                          │
-│  ├── 向量数据库 / Vector (Qdrant)        │
-│  ├── 图数据库 / Graph (SQLite)           │
-│  └── 数据库 / Database (SQLite)          │
+│  ├── 向量数据库 (Qdrant)                 │
+│  ├── 图数据库 (SQLite)                   │
+│  └── 数据库 (SQLite)                     │
 └─────────────────────────────────────────┘
 ```
 
 ---
 
-## 开发指南 / Development
+## 开发指南
 
 ```bash
 # 1. 安装依赖
@@ -164,17 +148,28 @@ npm run dev
 ### 常用命令
 
 ```bash
+# 数据库迁移
 npm run db:migrate
+
+# 数据库种子数据
 npm run db:seed
+
+# 构建生产包
 npm run build:full
+
+# 启动生产服务
 npm start
+
+# 类型检查
 npx tsc --noEmit
+
+# 运行测试
 npm test
 ```
 
 ---
 
-## 专业版 / Pro Edition
+## 专业版
 
 RAOS 提供专业版/企业版，包含以下高级能力：
 
@@ -197,7 +192,7 @@ RAOS 提供专业版/企业版，包含以下高级能力：
 
 ---
 
-## 项目结构 / Project Structure
+## 项目结构
 
 ```
 raos-community/
@@ -220,9 +215,11 @@ raos-community/
 
 ---
 
-## 贡献指南 / Contributing
+## 贡献指南
 
 欢迎贡献！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+贡献流程：
 
 1. Fork 本仓库
 2. 创建功能分支：`git checkout -b feature/xxx`
@@ -234,14 +231,14 @@ raos-community/
 
 ---
 
-## 许可证 / License
+## 许可证
 
-RAOS Community Edition is licensed under the [MIT License](./LICENSE).
+RAOS 社区版基于 [MIT License](./LICENSE) 开源。
 
-The Pro / Enterprise Edition is commercially licensed.
+专业版/企业版采用商业授权。
 
 ---
 
 <p align="center">
-  Built with ❤️ by the RAOS Team
+  由 RAOS Team 用 ❤️ 构建
 </p>

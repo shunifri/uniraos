@@ -7,8 +7,7 @@ import {
   CheckCircleOutlined, CheckOutlined, CloseCircleOutlined,
   FormOutlined, UnorderedListOutlined, QuestionCircleOutlined,
 } from "@ant-design/icons";
-import DynamicForm from "./DynamicForm";
-import type { RaosFormSchema } from "./form-engine/types";
+
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -42,7 +41,7 @@ interface ConfirmCardProps {
   onConfirm: (confirmId: string, response: unknown) => void;
   onCancel: (confirmId: string) => void;
   disabled?: boolean;
-  schema?: RaosFormSchema;
+  schema?: any;
   submittedData?: any;
 }
 
@@ -208,36 +207,6 @@ export default function ConfirmCard({
       setSubmittedData(externalSubmittedData);
     }
   }, [externalSubmittedData]);
-
-  // --- NEW FORM ENGINE MODE ---
-  if (schema) {
-    return (
-      <div className="glass-card" style={{ ...glassCardStyle, maxWidth: 520 }}>
-        <GlassCardHeader
-          icon={<FormOutlined style={{ color: "white", fontSize: 14 }} />}
-          title={title}
-        />
-        {description && <Text type="secondary" style={{ display: "block", marginBottom: 12, fontSize: 13 }}>{description}</Text>}
-        <DynamicForm
-          schema={schema}
-          initialData={disabled ? submittedData ?? undefined : undefined}
-          readOnly={disabled}
-          embedded
-          onSubmit={(formData) => {
-            setSubmittedData(formData);
-            onConfirm(confirmId, formData);
-          }}
-          onCancel={() => onCancel(confirmId)}
-        />
-        {disabled && (
-          <Flex align="center" gap={4} style={{ marginTop: 12 }}>
-            <CheckCircleOutlined style={{ color: "#10B981" }} />
-            <Text style={{ color: "#10B981", fontSize: 12 }}>已提交</Text>
-          </Flex>
-        )}
-      </div>
-    );
-  }
 
   // --- SELECTION MODE --- 统一横排芯片布局
   if (type === "selection") {

@@ -19,7 +19,7 @@ import type { SkillRegistry } from "../registry/index.js";
 import { getUserPermissions, getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
 import { ShareRepository } from "../db/share-repository.js";
-import { getDb, isMySQL } from "../db/database.js";
+import { getDb } from "../db/database.js";
 
 export interface SkillAccessResult {
   /** 可用的 Skill 列表 */
@@ -50,7 +50,7 @@ export class SkillAccessService {
 
   constructor(registry: SkillRegistry) {
     this.registry = registry;
-    this.shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+    this.shareRepo = new ShareRepository(getDb());
 
     // 监听 SkillRegistry 变更，清除相关缓存
     this.registry.onChange((event) => {

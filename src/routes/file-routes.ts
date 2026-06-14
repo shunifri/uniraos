@@ -6,7 +6,7 @@ import { fileTypeFromFile } from "file-type";
 import { join, dirname, resolve } from "path";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, renameSync, rmSync, createReadStream, writeFileSync, unlinkSync } from "fs";
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
-import { getDb, isMySQL } from "../db/database.js";
+import { getDb } from "../db/database.js";
 import { parseDocument, type VisionModelConfig } from "../services/doc-parser.js";
 import type { Paragraph, TextRun } from "docx";
 import { extractPptxStyle } from "../services/pptx-style-extractor.js";
@@ -17,12 +17,6 @@ import { getDepartmentById } from "../db/department-repository.js";
 import { requestContext } from "../user/request-context.js";
 import type { RouteDependencies } from "./types.js";
 import { handleUploadErrors } from "../utils/upload-error-handler.js";
-
-// MySQL adapter helper
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
-  return getAdapter();
-}
 
 const WS_BASE = join(process.cwd(), ".raos", "workspace");
 
@@ -979,7 +973,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       }
 
       // 查询分享给我的文件
-      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const shareRepo = new ShareRepository(getDb());
       const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
 
       // 获取文件详情（从 upload_records 表或文件系统）
@@ -995,7 +989,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
       }> = [];
 
       // 从 upload_records 查询文件信息 (SQLite only)
-      if (sharedFileIds.length > 0 && !isMySQL()) {
+      if (sharedFileIds.length > 0) {
         const db = getDb();
         for (const fileId of sharedFileIds) {
           // 尝试从 upload_records 获取
@@ -1121,7 +1115,7 @@ export function createFileRoutes(deps: RouteDependencies): Router {
         if (dept) deptPath = dept.path;
       }
 
-      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const shareRepo = new ShareRepository(getDb());
       const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
 
       if (sharedFileIds.length > 0) {
@@ -1435,7 +1429,7 @@ ${fileList}
         const dept = await getDepartmentById(user.departmentId);
         if (dept) deptPath = dept.path;
       }
-      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const shareRepo = new ShareRepository(getDb());
       const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
       const fileName = filePath.split("/").pop() || filePath;
       const isShared = sharedFileIds.some((id) => filePath === id || fileName === id);
@@ -1483,7 +1477,7 @@ ${fileList}
         const dept = await getDepartmentById(user.departmentId);
         if (dept) deptPath = dept.path;
       }
-      const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+      const shareRepo = new ShareRepository(getDb());
       const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
       const fName = filePath.split("/").pop() || filePath;
       const isShared = sharedFileIds.some((id) => filePath === id || fName === id);
@@ -1537,12 +1531,9 @@ ${fileList}
       const userId = req.user?.id;
       if (userId) {
         let rows: Array<{ id: string; name: string; colors_json: string; source_file: string }>;
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          rows = await adapter.query("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC", [userId]);
-        } else {
+        
           rows = getDb().prepare("SELECT * FROM custom_pptx_themes WHERE user_id = ? ORDER BY created_at DESC").all(userId) as Array<{ id: string; name: string; colors_json: string; source_file: string }>;
-        }
+        
         custom = rows.map((r) => {
           const colors = JSON.parse(r.colors_json);
           return {
@@ -1599,17 +1590,11 @@ ${fileList}
         return;
       }
 
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        await adapter.execute(
-          "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file, created_at) VALUES (?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-          [id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile]
-        );
-      } else {
+      
         getDb().prepare(
           "INSERT INTO custom_pptx_themes (id, user_id, name, colors_json, fonts_json, source_file) VALUES (?, ?, ?, ?, ?, ?)"
         ).run(id, userId, style.name, JSON.stringify(style.colors), JSON.stringify(style.fonts), style.sourceFile);
-      }
+      
 
       res.json({
         success: true,
@@ -1639,14 +1624,10 @@ ${fileList}
       }
 
       let success = false;
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        const result = await adapter.execute("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?", [themeId, userId]);
-        success = result.affectedRows > 0;
-      } else {
+      
         const result = getDb().prepare("DELETE FROM custom_pptx_themes WHERE id = ? AND user_id = ?").run(themeId, userId);
         success = result.changes > 0;
-      }
+      
       if (!success) {
         res.status(404).json({ success: false, error: "主题不存在或无权删除" });
         return;
@@ -1695,7 +1676,7 @@ ${fileList}
           const dept = await getDepartmentById(user.departmentId);
           if (dept) deptPath = dept.path;
         }
-        const shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+        const shareRepo = new ShareRepository(getDb());
         const sharedFileIds = await shareRepo.getSharedResourceIds("file", userId, roleIds, deptPath);
         const fileName = filePath.split("/").pop() || filePath;
         const isShared = sharedFileIds.some((id) => filePath === id || fileName === id);

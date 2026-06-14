@@ -1,45 +1,75 @@
 /**
- * Inbox Repository — MySQL 数据访问层
+ * Inbox Repository — SQLite 数据访问层
  *
  * 所有 inbox_items 表的读写操作集中在此
  */
 
+import { getDb } from "../db/database.js";
 import { log } from "../utils/logger.js";
 import type { InboxItem, InboxQuery, InboxStats, CreateInboxItemInput } from "./inbox-types.js";
+
+function ensureTable(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inbox_items (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('approval', 'notification', 'task', 'alert')),
+      category TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low', 'normal', 'high', 'urgent')),
+      status TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread', 'read', 'pending', 'completed', 'dismissed')),
+      payload TEXT,
+      ai_suggestion TEXT,
+      aggregate_group_id TEXT,
+      aggregate_count INTEGER DEFAULT 1,
+      conversation_id TEXT,
+      scheduled_at INTEGER,
+      due_at INTEGER,
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_inbox_user_status ON inbox_items(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_inbox_conversation ON inbox_items(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_inbox_aggregate ON inbox_items(aggregate_group_id);
+    CREATE INDEX IF NOT EXISTS idx_inbox_due ON inbox_items(due_at);
+  `);
+}
 
 export class InboxRepository {
   /**
    * 创建 InboxItem
    */
   async create(item: CreateInboxItemInput): Promise<InboxItem> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
     const id = `inbx_${crypto.randomUUID().slice(0, 12)}`;
     const now = Date.now();
 
-    await adapter.execute(
+    db.prepare(
       `INSERT INTO inbox_items
         (id, user_id, type, category, source, source_id, title, description,
          priority, status, payload, conversation_id, scheduled_at, due_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        item.userId,
-        item.type,
-        item.category,
-        item.source,
-        item.sourceId || null,
-        item.title,
-        item.description || null,
-        item.priority || "normal",
-        "unread",
-        item.payload ? JSON.stringify(item.payload) : null,
-        item.conversationId || null,
-        item.scheduledAt || null,
-        item.dueAt || null,
-        now,
-      ]
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      item.userId,
+      item.type,
+      item.category,
+      item.source,
+      item.sourceId || null,
+      item.title,
+      item.description || null,
+      item.priority || "normal",
+      "unread",
+      item.payload ? JSON.stringify(item.payload) : null,
+      item.conversationId || null,
+      item.scheduledAt || null,
+      item.dueAt || null,
+      now,
     );
 
     return {
@@ -54,6 +84,9 @@ export class InboxRepository {
       priority: item.priority || "normal",
       status: "unread",
       payload: item.payload || {},
+      aiSuggestion: undefined,
+      aggregateGroupId: undefined,
+      aggregateCount: 1,
       conversationId: item.conversationId,
       scheduledAt: item.scheduledAt,
       dueAt: item.dueAt,
@@ -65,35 +98,34 @@ export class InboxRepository {
    * 根据 ID 查询
    */
   async findById(id: string): Promise<InboxItem | null> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    const rows = await adapter.query<any>("SELECT * FROM inbox_items WHERE id = ?", [id]);
-    if (rows.length === 0) return null;
-    return this.parseRow(rows[0]);
+    const row = db.prepare("SELECT * FROM inbox_items WHERE id = ?").get(id) as any;
+    if (!row) return null;
+    return this.parseRow(row);
   }
 
   /**
    * 根据 source + sourceId 查找（用于关联系统回调）
    */
   async findBySourceAndSourceId(source: string, sourceId: string): Promise<InboxItem | null> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    const rows = await adapter.query<any>(
-      "SELECT * FROM inbox_items WHERE source = ? AND source_id = ? AND status IN ('unread', 'pending', 'read') ORDER BY created_at DESC LIMIT 1",
-      [source, sourceId]
-    );
-    if (rows.length === 0) return null;
-    return this.parseRow(rows[0]);
+    const row = db.prepare(
+      "SELECT * FROM inbox_items WHERE source = ? AND source_id = ? AND status IN ('unread', 'pending', 'read') ORDER BY created_at DESC LIMIT 1"
+    ).get(source, sourceId) as any;
+    if (!row) return null;
+    return this.parseRow(row);
   }
 
   /**
    * 列表查询（支持过滤、分页）
    */
   async list(query: InboxQuery): Promise<{ items: InboxItem[]; total: number }> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
     const conditions: string[] = [];
     const params: any[] = [];
@@ -138,17 +170,14 @@ export class InboxRepository {
     const sortBy = allowedSortColumns.has(rawSortBy) ? rawSortBy : "created_at";
     const sortOrder = query.sortOrder === "asc" ? "ASC" : "DESC";
 
-    const [countRows, dataRows] = await Promise.all([
-      adapter.query<{ total: number }>(`SELECT COUNT(*) as total FROM inbox_items ${where}`, params),
-      adapter.query<any>(
-        `SELECT * FROM inbox_items ${where} ORDER BY ${sortBy} ${sortOrder} LIMIT ? OFFSET ?`,
-        [...params, pageSize, offset]
-      ),
-    ]);
+    const countRow = db.prepare(`SELECT COUNT(*) as total FROM inbox_items ${where}`).get(...params) as { total: number };
+    const dataRows = db.prepare(
+      `SELECT * FROM inbox_items ${where} ORDER BY ${sortBy} ${sortOrder} LIMIT ? OFFSET ?`
+    ).all(...params, pageSize, offset) as any[];
 
     return {
       items: dataRows.map((r) => this.parseRow(r)),
-      total: countRows[0]?.total || 0,
+      total: countRow?.total || 0,
     };
   }
 
@@ -157,8 +186,8 @@ export class InboxRepository {
    * 返回受影响的行数（0 表示条件不满足）
    */
   async updateStatusIf(id: string, status: string, expectedStatuses: string[], completedAt?: number): Promise<number> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
     const placeholders = expectedStatuses.map(() => "?").join(", ");
     const params = completedAt
@@ -168,27 +197,25 @@ export class InboxRepository {
       ? `UPDATE inbox_items SET status = ?, completed_at = ? WHERE id = ? AND status IN (${placeholders})`
       : `UPDATE inbox_items SET status = ? WHERE id = ? AND status IN (${placeholders})`;
 
-    const result = await adapter.execute(sql, params);
-    return (result as any)?.affectedRows ?? 0;
+    const result = db.prepare(sql).run(...params);
+    return result.changes ?? 0;
   }
 
   /**
    * 更新状态（无条件，仅用于内部系统回调等受控场景）
    */
   async updateStatus(id: string, status: string, completedAt?: number): Promise<void> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
     if (completedAt) {
-      await adapter.execute(
-        "UPDATE inbox_items SET status = ?, completed_at = ? WHERE id = ?",
-        [status, completedAt, id]
-      );
+      db.prepare(
+        "UPDATE inbox_items SET status = ?, completed_at = ? WHERE id = ?"
+      ).run(status, completedAt, id);
     } else {
-      await adapter.execute(
-        "UPDATE inbox_items SET status = ? WHERE id = ?",
-        [status, id]
-      );
+      db.prepare(
+        "UPDATE inbox_items SET status = ? WHERE id = ?"
+      ).run(status, id);
     }
   }
 
@@ -196,36 +223,34 @@ export class InboxRepository {
    * 更新 AI 建议
    */
   async updateAISuggestion(id: string, aiSuggestion: any): Promise<void> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    await adapter.execute(
-      "UPDATE inbox_items SET ai_suggestion = ? WHERE id = ?",
-      [JSON.stringify(aiSuggestion), id]
-    );
+    db.prepare(
+      "UPDATE inbox_items SET ai_suggestion = ? WHERE id = ?"
+    ).run(JSON.stringify(aiSuggestion), id);
   }
 
   /**
    * 更新聚合信息
    */
   async updateAggregate(id: string, groupId: string, count: number): Promise<void> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    await adapter.execute(
-      "UPDATE inbox_items SET aggregate_group_id = ?, aggregate_count = ? WHERE id = ?",
-      [groupId, count, id]
-    );
+    db.prepare(
+      "UPDATE inbox_items SET aggregate_group_id = ?, aggregate_count = ? WHERE id = ?"
+    ).run(groupId, count, id);
   }
 
   /**
    * 统计
    */
   async getStats(userId: string): Promise<InboxStats> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    const rows = await adapter.query<any>(
+    const row = db.prepare(
       `SELECT
         COUNT(CASE WHEN status = 'unread' THEN 1 END) as unread_count,
         COUNT(CASE WHEN status IN ('unread', 'pending') AND type = 'approval' THEN 1 END) as pending_approvals,
@@ -233,11 +258,9 @@ export class InboxRepository {
         COUNT(CASE WHEN status = 'unread' AND type = 'notification' THEN 1 END) as unread_notifications,
         COUNT(CASE WHEN status = 'pending' AND type = 'task' AND scheduled_at > ? THEN 1 END) as upcoming_reminders
       FROM inbox_items
-      WHERE user_id = ?`,
-      [Date.now(), userId]
-    );
+      WHERE user_id = ?`
+    ).get(Date.now(), userId) as any;
 
-    const row = rows[0];
     return {
       unreadCount: row.unread_count || 0,
       pendingApprovals: row.pending_approvals || 0,
@@ -251,14 +274,13 @@ export class InboxRepository {
    * 获取未读数
    */
   async getUnreadCount(userId: string): Promise<number> {
-    const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-    const adapter = await getMySQLAdapter();
+    const db = getDb();
+    ensureTable(db);
 
-    const rows = await adapter.query<{ count: number }>(
-      "SELECT COUNT(*) as count FROM inbox_items WHERE user_id = ? AND status = 'unread'",
-      [userId]
-    );
-    return rows[0]?.count || 0;
+    const row = db.prepare(
+      "SELECT COUNT(*) as count FROM inbox_items WHERE user_id = ? AND status = 'unread'"
+    ).get(userId) as { count: number };
+    return row?.count || 0;
   }
 
   // ─── 私有方法 ───

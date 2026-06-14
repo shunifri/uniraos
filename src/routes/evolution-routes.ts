@@ -420,7 +420,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   // GET /api/federation/recommendations — List recommendations
   router.get("/federation/recommendations", requireAuth, requireAdmin, (_req, res) => {
     const recommendations = federationManager.getRecommendations();
-    res.json(recommendations.map((r) => ({
+    res.json(recommendations.map((r: any) => ({
       id: `${r.sourceInstance}-${r.skillName}`,
       type: r.action,
       skillName: r.skillName,
@@ -434,7 +434,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   router.post("/federation/accept-recommendation/:id", requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id;
     const recommendations = federationManager.getRecommendations();
-    const rec = recommendations.find((r) => `${r.sourceInstance}-${r.skillName}` === id);
+    const rec = recommendations.find((r: any) => `${r.sourceInstance}-${r.skillName}` === id);
     if (!rec) {
       res.status(404).json({ error: "Recommendation not found" });
       return;
@@ -453,7 +453,7 @@ export function createEvolutionRoutes(deps: RouteDependencies): Router {
   // GET /api/federation/migrations — List migration history
   router.get("/federation/migrations", requireAuth, requireAdmin, (_req, res) => {
     const history = migrationManager.getHistory();
-    res.json(history.map((h, index) => ({
+    res.json(history.map((h: any, index: number) => ({
       id: `${h.skillName}-${index}`,
       skillName: h.skillName,
       sourceInstance: h.sourceInstance,

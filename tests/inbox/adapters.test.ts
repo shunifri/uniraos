@@ -7,7 +7,6 @@
 import { describe, it, expect } from "vitest";
 import { createEvolutionAdapter } from "../../src/inbox/adapters/evolution-adapter.js";
 import { createSystemAdapter } from "../../src/inbox/adapters/system-adapter.js";
-import { createWorkflowAdapter } from "../../src/inbox/adapters/workflow-adapter.js";
 
 describe("Evolution Adapter", () => {
   it("should convert evolution approval to inbox item", async () => {
@@ -112,92 +111,3 @@ describe("System Adapter", () => {
   });
 });
 
-describe("Workflow Adapter", () => {
-  it("should convert workflow task to inbox item", async () => {
-    const adapter = createWorkflowAdapter();
-    const task = {
-      id: 42,
-      assignee: "user_789",
-      dueDate: "2025-12-31",
-    };
-    const node = {
-      id: "node_1",
-      name: "审批节点",
-      form: { fields: [] },
-      actions: [
-        { action: "approve", label: "通过" },
-        { action: "reject", label: "驳回" },
-      ],
-      dueDuration: 86400,
-    };
-    const instance = {
-      id: "inst_1",
-      name: "请假流程",
-    };
-
-    const item = await adapter.toInboxItem(task, node, instance);
-
-    expect(item).toMatchObject({
-      userId: "user_789",
-      type: "approval",
-      category: "workflow_task",
-      source: "workflow",
-      sourceId: "42",
-      title: "审批节点",
-      description: "请假流程",
-      priority: "high",
-      dueAt: new Date("2025-12-31").getTime(),
-      payload: {
-        schema: { fields: [] },
-        actions: [
-          { action: "approve", label: "通过" },
-          { action: "reject", label: "驳回" },
-        ],
-        metadata: { instanceId: "inst_1", taskId: 42 },
-      },
-    });
-  });
-
-  it("should fallback to candidateUsers when assignee is missing", async () => {
-    const adapter = createWorkflowAdapter();
-    const task = {
-      id: 99,
-      candidateUsers: ["user_a", "user_b"],
-    };
-    const node = {
-      id: "node_2",
-      name: "复核节点",
-    };
-    const instance = {
-      id: "inst_2",
-      name: "报销流程",
-    };
-
-    const item = await adapter.toInboxItem(task, node, instance);
-
-    expect(item).toMatchObject({
-      userId: "user_a",
-      title: "复核节点",
-      priority: "normal",
-      payload: {
-        actions: [
-          { action: "approve", label: "通过", primary: true },
-          { action: "reject", label: "驳回", danger: true },
-          { action: "transfer", label: "转交" },
-        ],
-      },
-    });
-    expect(item.dueAt).toBeUndefined();
-  });
-
-  it("should fallback to system when no assignee or candidates", async () => {
-    const adapter = createWorkflowAdapter();
-    const task = { id: 100 };
-    const node = { id: "node_3" };
-    const instance = { id: "inst_3" };
-
-    const item = await adapter.toInboxItem(task, node, instance);
-
-    expect(item).toMatchObject({ userId: "system", title: "node_3" });
-  });
-});

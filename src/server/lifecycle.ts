@@ -4,8 +4,6 @@ import type { Server } from "http";
 import { ShareRepository } from "../db/share-repository.js";
 import { OpenAIMultimodalProvider } from "../llm/openai-multimodal-provider.js";
 import { mountRoutes } from "../routes/index.js";
-import { getSchedulerService } from "../scheduler/scheduler-service.js";
-import { processScheduleJob } from "../scheduler/scheduler-worker.js";
 import { getInboxService, setAiReviewProviderGetter } from "../inbox/inbox-service.js";
 import { runInboxSchedulerMigration } from "./migration-runner.js";
 import type { BootstrapResult } from "./bootstrap.js";
@@ -60,7 +58,7 @@ function createRouteDependencies(deps: BootstrapResult) {
 }
 
 /**
- * 初始化 Worker 基础设施（WAL 恢复、Scheduler、Inbox、信号处理）。
+ * 初始化 Worker 基础设施（WAL 恢复、Inbox、信号处理）。
  * 可在 Server 进程和独立 Worker 进程中复用。
  */
 export function initWorkerInfrastructure(deps: BootstrapResult): void {
@@ -77,15 +75,7 @@ export function initWorkerInfrastructure(deps: BootstrapResult): void {
     });
   }
 
-  // ─── 初始化 Inbox + Scheduler 基础设施 ───
-  const schedulerQueue = getSchedulerService()["queue"];
-  if (schedulerQueue) {
-    void schedulerQueue.process(async (job) => {
-      await processScheduleJob(job.data);
-      return { success: true };
-    });
-    console.log("   Scheduler worker initialized (Bull)");
-  }
+  // ─── 初始化 Inbox 基础设施 ───
 
   // 注入 AI Review 的 LLM Provider getter
   setAiReviewProviderGetter(() => providerManager.getProvider());

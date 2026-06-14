@@ -6,7 +6,7 @@ import { join } from "path";
 import { permissions } from "../permissions/index.js";
 import { getUserRoles, getUserById } from "../db/user-repository.js";
 import { getDepartmentById } from "../db/department-repository.js";
-import { getDb, isMySQL } from "../db/database.js";
+import { getDb } from "../db/database.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { RouteDependencies } from "./types.js";
 
@@ -89,16 +89,11 @@ export function createShareRoutes(deps: RouteDependencies & { shareRepository: S
       // 2. kb_document 分享需要 owner 验证
       if (resourceType === "kb_document") {
         let isOwner = false;
-        if (isMySQL()) {
-          const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-          const adapter = await getMySQLAdapter();
-          const rows = await adapter.query("SELECT owner_id FROM kb_documents WHERE doc_id = ?", [resourceId]);
-          isOwner = rows.length > 0 && rows[0].owner_id === req.user!.id;
-        } else {
+        
           const db = getDb();
           const row = db.prepare("SELECT owner_id FROM kb_documents WHERE doc_id = ?").get(resourceId) as { owner_id: string } | undefined;
           isOwner = row?.owner_id === req.user!.id;
-        }
+        
         if (!isOwner) {
           res.status(403).json({ success: false, error: "Only document owner can share this document" });
           return;

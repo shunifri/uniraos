@@ -6,7 +6,6 @@ export * from "./utils/errors.js";
 export * from "./llm/index.js";
 export { ConfigManager } from "./config/config-manager.js";
 export { defineSkill } from "./types/skill.js";
-export * from "./federation/index.js";
 export { RemoteAgent, createRemoteAgentFactory, SimpleAgent, ReactAgent, TeamAgent, Orchestrator, Protocol } from "./agents/index.js";
 export type { Agent, AgentInput, AgentOutput, AgentProfile, AgentLevel, TeamConfig, RemoteAgentConfig, OrchestratorConfig } from "./agents/index.js";
 export { ShortTermMemory, FileLTMBackend, LongTermMemory, OpenAIEmbeddingProvider, LocalEmbeddingProvider, cosineSimilarity } from "./memory/index.js";

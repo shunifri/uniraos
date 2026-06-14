@@ -1,5 +1,6 @@
-import { join, resolve } from "path";
+import { join } from "path";
 import { ensureRuntimeDataDirs } from "../utils/data-dirs.js";
+import { getDb } from "../db/database.js";
 import { SkillRegistry } from "../registry/index.js";
 import { ExecutionEngine, AsyncTaskManager, SkillAccessService, setGlobalExecutionEngine } from "../engine/index.js";
 import { WALManager } from "../wal/index.js";
@@ -11,7 +12,6 @@ import { createMemorySkills } from "../memory/memory-skills.js";
 import { createMultimodalSkills } from "../llm/multimodal-skills.js";
 import { createDataSkills } from "../skills/data-skills.js";
 import { createDatabaseSkills } from "../skills/db-skills.js";
-import { createFormSkills } from "../skills/form-skills.js";
 import { createWebSkills } from "../skills/web-skills.js";
 import { createDocumentSkills } from "../skills/document-skills.js";
 import { createChartSkills } from "../skills/chart-skills.js";
@@ -19,15 +19,9 @@ import { createProtocolSkills } from "../skills/protocol-skills.js";
 import { createKnowledgeSkills } from "../skills/knowledge-skills.js";
 import { createApiGenSkills } from "../skills/api-gen-skills.js";
 import { createMetaSkills, createSkillFromApproval } from "../skills/meta-skills.js";
-import { registerAppDesignerSkill } from "../skills/app-designer-skill.js";
 import { createPlanningSkill } from "../skills/planning-skill.js";
 import { createPlanExecutionSkills } from "../skills/plan-execution-skills.js";
 import { createGraphSkills } from "../skills/graph-skills.js";
-import { createWorkflowSkills } from "../skills/workflow-skills.js";
-import { createSchedulerSkills } from "../skills/scheduler-skills.js";
-import { createEnterpriseSkills } from "../skills/enterprise-skills.js";
-import { createIntegrationSkills } from "../skills/integration-skills.js";
-import { createAdvancedSkills } from "../skills/advanced-skills.js";
 import { createUserConfirmSkill } from "../skills/user-confirm-skill.js";
 import { SkillMarketplace } from "../skills/skill-marketplace.js";
 import { OpenAIMultimodalProvider } from "../llm/openai-multimodal-provider.js";
@@ -41,20 +35,10 @@ import { EvolutionController, SkillLifecycleManager, EmergenceDetector, setGloba
 import { createEvolutionSkills } from "../skills/evolution-skills.js";
 import { PromptManager } from "../llm/prompt-manager.js";
 import { ModelRouter } from "../llm/model-router.js";
-import {
-  HttpFederationTransport,
-  SkillMigrationManager,
-  FederationManager,
-  EvolutionEngine,
-  createFederationSkills,
-} from "../federation/index.js";
 import { ProviderManager } from "./provider-manager.js";
 import { loadExampleSkills, syncSkillsToResources } from "./skill-bootstrap.js";
-import { DocMindParser } from "../services/docmind-parser.js";
-import { initParsingQueue, getParsingQueue } from "../services/parsing-queue.js";
 import { ingestQueue } from "../utils/ingest-queue.js";
-import { isMySQL } from "../db/database.js";
-import { getMySQLAdapter } from "../db/mysql-adapter.js";
+
 import type { LLMProvider, LLMProviderConfig, MultimodalProvider } from "../llm/types.js";
 
 export interface BootstrapResult {
@@ -73,10 +57,10 @@ export interface BootstrapResult {
   lifecycleManager: SkillLifecycleManager;
   marketplace: SkillMarketplace;
   pluginLoader: PluginLoader;
-  federationTransport: HttpFederationTransport;
-  migrationManager: SkillMigrationManager;
-  federationManager: FederationManager;
-  evolutionEngine: EvolutionEngine;
+  federationTransport: any;
+  migrationManager: any;
+  federationManager: any;
+  evolutionEngine: any;
   instanceId: string;
 }
 
@@ -103,29 +87,6 @@ export async function bootstrap(): Promise<BootstrapResult> {
   const skillAccessService = new SkillAccessService(registry);
   const providerManager = new ProviderManager(configManager, sessionManager, registry, engine, skillAccessService);
 
-  // 初始化 Document Mind ParsingQueue（如果已配置）
-  if (configManager.isDocMindConfigured()) {
-    const docMindConfig = configManager.getDocMind();
-    if (docMindConfig.accessKeyId && docMindConfig.accessKeySecret) {
-      const parser = new DocMindParser({
-        accessKeyId: docMindConfig.accessKeyId,
-        accessKeySecret: docMindConfig.accessKeySecret,
-        endpoint: docMindConfig.endpoint,
-        regionId: docMindConfig.regionId,
-      });
-      const visionConfig = providerManager.getVisionConfig();
-      initParsingQueue(parser, (owner) => getKnowledgeBase(owner), {
-        maxConcurrent: 3,
-        pollingIntervalMs: 3000,
-        maxPollingTimeMs: 30 * 60 * 1000,
-        enableIncrementalIndex: true,
-        kbImagesDir: resolve(process.cwd(), ".raos/kb_images"),
-      }, sessionManager, visionConfig);
-      getParsingQueue();
-      console.log("   Document Mind parsing queue initialized");
-    }
-  }
-
   const evolutionController = new EvolutionController(undefined, registry);
   setGlobalEvolutionController(evolutionController);
   await evolutionController.init();
@@ -142,34 +103,8 @@ export async function bootstrap(): Promise<BootstrapResult> {
     continueOnError: true,
   });
 
-  // 联邦/迁移/进化 组件
-  const fedCfg = configManager.getFederation();
-  const evoCfg = configManager.getEvolution();
-  const instanceId = fedCfg.instanceId || `raos_${process.pid}`;
-  const federationTransport = new HttpFederationTransport({
-    apiKey: fedCfg.federationKey || undefined,
-  });
-  const migrationManager = new SkillMigrationManager(registry, engine.metrics, federationTransport, instanceId);
-  const federationManager = new FederationManager({
-    registry,
-    metrics: engine.metrics,
-    transport: federationTransport,
-    migration: migrationManager,
-    instanceId,
-  });
-  const evolutionEngine = new EvolutionEngine({
-    registry,
-    metrics: engine.metrics,
-    evolutionController,
-    lifecycleManager,
-    config: {
-      autoExecute: evoCfg.autoExecute,
-      cycleIntervalMs: evoCfg.cycleIntervalMs,
-      maxActionsPerCycle: evoCfg.maxActionsPerCycle,
-      skipApprovalRequired: evoCfg.skipApprovalRequired,
-    },
-  });
-  evolutionEngine.getFederatedRecommendations = () => federationManager.getRecommendations();
+  // Community Edition: federation/evolution engine modules removed.
+  const instanceId = configManager.getFederation().instanceId || `raos_${process.pid}`;
 
   // 启动 session 清理
   sessionManager.startCleanup();
@@ -194,22 +129,13 @@ export async function bootstrap(): Promise<BootstrapResult> {
 
   await createDataSkills(registry);
   await createDatabaseSkills(registry);
-  createFormSkills(registry);
   createWebSkills(registry);
   createDocumentSkills(registry);
   createChartSkills(registry);
   createProtocolSkills(registry);
   createKnowledgeSkills(registry, sessionManager);
   createApiGenSkills(registry);
-  createFederationSkills(registry, migrationManager, federationManager, evolutionEngine);
-  createWorkflowSkills(registry, () => providerManager.getProvider());
-  console.log(`   Workflow skills registered`);
-  createSchedulerSkills(registry);
-  await createEnterpriseSkills(registry);
-  await createIntegrationSkills(registry);
-  await createAdvancedSkills(registry);
   createMetaSkills(registry, engine, () => providerManager.getProvider(), evolutionController);
-  registerAppDesignerSkill(registry, engine, () => providerManager.getProvider());
 
   for (const skill of createGraphSkills(sessionManager)) {
     registry.register(skill);
@@ -373,16 +299,15 @@ export async function bootstrap(): Promise<BootstrapResult> {
   // 启动时恢复未完成的向量化任务（内存队列在重启后会丢失任务）
   void (async () => {
     try {
-      if (!isMySQL()) return;
-      const adapter = getMySQLAdapter();
       // 查询所有存在 vector IS NULL 的 chunks 的文档
-      const rows = await adapter.query<{ doc_id: string; owner_id: string; name: string; count: number }>(
+      const db = getDb();
+      const rows = db.prepare(
         `SELECT c.doc_id, d.owner_id, d.name, COUNT(*) as count
          FROM kb_chunks c
          JOIN kb_documents d ON c.doc_id = d.doc_id
          WHERE c.vector IS NULL
          GROUP BY c.doc_id, d.owner_id, d.name`
-      );
+      ).all() as Array<{ doc_id: string; owner_id: string; name: string; count: number }>;
       if (rows.length > 0) {
         console.log(`   [Bootstrap] 发现 ${rows.length} 个文档有未向量化的 chunks，自动恢复向量化队列`);
         for (const row of rows) {
@@ -416,10 +341,10 @@ export async function bootstrap(): Promise<BootstrapResult> {
     lifecycleManager,
     marketplace,
     pluginLoader,
-    federationTransport,
-    migrationManager,
-    federationManager,
-    evolutionEngine,
+    federationTransport: undefined,
+    migrationManager: undefined,
+    federationManager: undefined,
+    evolutionEngine: undefined,
     instanceId,
   };
 }

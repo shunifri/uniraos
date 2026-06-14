@@ -16,12 +16,6 @@ import type { ModelRouter } from "../llm/model-router.js";
 import type { LLMProvider, LLMProviderConfig, MultimodalProvider } from "../llm/types.js";
 import type { Orchestrator } from "../agents/index.js";
 import type { AgentLoop } from "../llm/agent-loop.js";
-import type {
-  HttpFederationTransport,
-  SkillMigrationManager,
-  FederationManager,
-  EvolutionEngine,
-} from "../federation/index.js";
 import type { ShareRepository } from "../db/share-repository.js";
 import type { SkillAccessService } from "../engine/index.js";
 
@@ -40,10 +34,10 @@ export interface RouteDependencies {
   lifecycleManager: SkillLifecycleManager;
   promptManager: PromptManager;
   modelRouter: ModelRouter;
-  federationTransport: HttpFederationTransport;
-  migrationManager: SkillMigrationManager;
-  federationManager: FederationManager;
-  evolutionEngine: EvolutionEngine;
+  federationTransport: any;
+  migrationManager: any;
+  federationManager: any;
+  evolutionEngine: any;
   instanceId: string;
 
   // Mutable references / accessors

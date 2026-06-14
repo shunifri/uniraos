@@ -3,7 +3,7 @@ import type { SkillDefinition } from '../../types/index.js';
 import { getUserPermissions, getUserRoles, getUserById } from '../../db/user-repository.js';
 import { getDepartmentById } from '../../db/department-repository.js';
 import { ShareRepository } from '../../db/share-repository.js';
-import { getDb, isMySQL } from '../../db/database.js';
+import { getDb } from '../../db/database.js';
 import { skillPermission } from '../constants.js';
 
 /** 变更事件类型 */
@@ -31,7 +31,7 @@ export class SkillPermissionService {
 
   constructor(registry: SkillRegistry) {
     this.registry = registry;
-    this.shareRepo = new ShareRepository(isMySQL() ? undefined : getDb());
+    this.shareRepo = new ShareRepository(getDb());
 
     this.registry.onChange(() => {
       this.invalidateAll();

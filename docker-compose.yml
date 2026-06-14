@@ -1,78 +1,12 @@
 version: '3.8'
 
 # =============================================================================
-# RAOS 完整 Docker 部署配置
-# 包含：基础设施 + 后端 API + 前端 Web
+# RAOS Community Edition — 轻量 Docker 部署配置
+# 包含：Redis + Qdrant + SQLite 后端 + 前端 Web
 # =============================================================================
 
 services:
-  # ===========================================================================
-  # 基础设施层
-  # ===========================================================================
-  
-  # MySQL 主库
-  mysql-primary:
-    image: mysql:8.0
-    container_name: raos-mysql-primary
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
-      MYSQL_DATABASE: raos
-      MYSQL_USER: ${MYSQL_USER:-raos}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
-    volumes:
-      - mysql_primary_data:/var/lib/mysql
-      - ./docker/mysql/primary.cnf:/etc/mysql/conf.d/custom.cnf:ro
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
-    command: >
-      --server-id=1
-      --log-bin=mysql-bin
-      --binlog-format=ROW
-      --innodb-buffer-pool-size=1G
-      --max-connections=200
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - raos-backend
-    restart: unless-stopped
-
-  # MySQL 从库（可选）
-  mysql-replica:
-    image: mysql:8.0
-    container_name: raos-mysql-replica
-    ports:
-      - "3307:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
-    volumes:
-      - mysql_replica_data:/var/lib/mysql
-      - ./docker/mysql/replica.cnf:/etc/mysql/conf.d/custom.cnf:ro
-    command: >
-      --server-id=2
-      --read-only=1
-      --innodb-buffer-pool-size=1G
-    depends_on:
-      mysql-primary:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - raos-backend
-    restart: unless-stopped
-    profiles:
-      - replica
-
-  # Redis
+  # Redis（缓存、会话）
   redis:
     image: redis:7-alpine
     container_name: raos-redis
@@ -122,109 +56,19 @@ services:
       - raos-backend
     restart: unless-stopped
 
-  # RabbitMQ
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: raos-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-raos}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-    healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - raos-backend
-    restart: unless-stopped
-
-  # MinIO 对象存储
-  minio:
-    image: minio/minio:RELEASE.2024-03-03T17-50-39Z
-    container_name: raos-minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_USER:-raos}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD is required}
-      MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - raos-backend
-    restart: unless-stopped
-
-  # Neo4j 图数据库
-  neo4j:
-    image: neo4j:5.15.0-community
-    container_name: raos-neo4j
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    environment:
-      NEO4J_AUTH: "${NEO4J_AUTH:?NEO4J_AUTH is required (格式: neo4j/<password>)}"
-      NEO4J_dbms_memory_pagecache_size: ${NEO4J_PAGE_CACHE:-512M}
-      NEO4J_dbms_memory_heap_initial__size: ${NEO4J_HEAP_INIT:-512M}
-      NEO4J_dbms_memory_heap_max__size: ${NEO4J_HEAP_MAX:-1G}
-      NEO4J_dbms_connector_bolt_listen__address: 0.0.0.0:7687
-      NEO4J_dbms_connector_http_listen__address: 0.0.0.0:7474
-      NEO4J_dbms_connector_https_listen__address: 0.0.0.0:7473
-      NEO4J_dbms_default__database: raos
-      NEO4J_PLUGINS: '["apoc"]'
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-      - neo4j_import:/var/lib/neo4j/import
-      - neo4j_plugins:/plugins
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    networks:
-      - raos-backend
-    restart: unless-stopped
-
-  # ===========================================================================
-  # 后端服务层
-  # ===========================================================================
-  
-  # RAOS 后端 API 服务
+  # RAOS 后端 API 服务（Community Edition）
   raos-backend:
-    # 华为云 SWR 镜像（bytenode 字节码保护）
-    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
-    # 本地构建配置（部署脚本根据模式自动选择 build 或 pull）
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
       target: production
     container_name: raos-backend
-    # 用非 root UID 跑, 跟 Dockerfile 里 adduser 的 1001 对齐, 让 /app/.raos volume 文件权限不打架
     user: "1001:1001"
     environment:
       NODE_ENV: production
       PORT: 3000
-      # 数据库配置
-      MYSQL_PRIMARY_HOST: mysql-primary
-      MYSQL_PRIMARY_PORT: 3306
-      MYSQL_USER: ${MYSQL_USER:-raos}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
-      MYSQL_DATABASE: raos
-      MYSQL_CONN_LIMIT: 20
+      # SQLite 模式
+      USE_MYSQL: "false"
       # Redis 配置
       REDIS_HOSTS: redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -233,48 +77,24 @@ services:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       QDRANT_GRPC_PORT: 6334
-      # RabbitMQ 配置
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASS:?RABBITMQ_PASS is required}@rabbitmq:5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-raos}
-      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
-      # MinIO 配置
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: 9000
-      MINIO_USE_SSL: "false"
-      MINIO_USER: ${MINIO_USER:-raos}
-      MINIO_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD is required}
-      MINIO_BUCKET: raos-files
-      # Neo4j 配置（可选）
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
-      NEO4J_DATABASE: raos
-      # 数据库类型
-      USE_MYSQL: "true"
-      # 知识图谱存储后端: mysql 或 neo4j
-      GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
+      # 知识图谱使用 SQLite 存储
+      GRAPH_STORE_BACKEND: mysql
       # LLM 配置（可选，首次启动后也可在系统设置中配置）
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       # JWT 密钥
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
-      # P2-3 修复: 首次部署 admin 密码 (dev/staging 明文打 log, production 强制走 random)
+      # 首次部署 admin 密码
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       # CORS 白名单
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
       # 日志
       LOG_LEVEL: info
     depends_on:
-      mysql-primary:
-        # P2-3 修复: 改 service_healthy (等 mysql healthcheck 过), 旧 service_started
-        # 容器起 mysql 还 init 时, raos-backend 已开始 pool → ECONNREFUSED
-        condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
         condition: service_started
-      rabbitmq:
-        condition: service_healthy
     volumes:
       - raos_data:/app/.raos
     healthcheck:
@@ -297,79 +117,8 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # 队列消费者服务（可独立扩展）
-  # 队列消费者服务（与后端共用镜像，仅命令不同）
-  raos-workers:
-    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-backend:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: docker/backend/Dockerfile
-      target: production
-    container_name: raos-workers
-    user: "1001:1001"
-    command: node worker-loader.cjs
-    environment:
-      NODE_ENV: production
-      # 数据库配置（与 backend 相同）
-      MYSQL_PRIMARY_HOST: mysql-primary
-      MYSQL_PRIMARY_PORT: 3306
-      MYSQL_USER: ${MYSQL_USER:-raos}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
-      MYSQL_DATABASE: raos
-      REDIS_HOSTS: redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASS:?RABBITMQ_PASS is required}@rabbitmq:5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-raos}
-      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: 9000
-      MINIO_USER: ${MINIO_USER:-raos}
-      MINIO_PASSWORD: ${MINIO_PASSWORD:?MINIO_PASSWORD is required}
-      # Neo4j 配置（可选）
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
-      NEO4J_DATABASE: raos
-      USE_MYSQL: "true"
-      GRAPH_STORE_BACKEND: ${GRAPH_STORE_BACKEND:-mysql}
-      # LLM 配置（可选，首次启动后也可在系统设置中配置）
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      # P2-3 修复: 跟 backend 共用 INITIAL_ADMIN_PASSWORD env
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
-      LOG_LEVEL: info
-    volumes:
-      - raos_data:/app/.raos
-    depends_on:
-      mysql-primary:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - raos-backend
-    restart: unless-stopped
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  # ===========================================================================
-  # 前端服务层
-  # ===========================================================================
-  
   # RAOS 前端 Web 服务
-  # 前端 Web 服务
   raos-frontend:
-    # 华为云 SWR 镜像
-    image: swr.cn-north-4.myhuaweicloud.com/kavin/raos-frontend:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
@@ -402,79 +151,13 @@ services:
       - raos-frontend
     restart: unless-stopped
 
-  # ===========================================================================
-  # 监控层（可选）
-  # ===========================================================================
-  
-  # Prometheus
-  prometheus:
-    image: prom/prometheus:v2.51.0
-    container_name: raos-prometheus
-    volumes:
-      - ./docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    ports:
-      - "9090:9090"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-    networks:
-      - raos-backend
-    restart: unless-stopped
-    profiles:
-      - monitoring
-
-  # Grafana
-  grafana:
-    image: grafana/grafana:10.4.1
-    container_name: raos-grafana
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:?GRAFANA_USER is required}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: http://localhost:3001
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-    ports:
-      - "3001:3000"
-    depends_on:
-      - prometheus
-    networks:
-      - raos-backend
-    restart: unless-stopped
-    profiles:
-      - monitoring
-
 # =============================================================================
 # 数据卷
 # =============================================================================
 volumes:
-  mysql_primary_data:
-    driver: local
-  mysql_replica_data:
-    driver: local
   redis_data:
     driver: local
   qdrant_storage:
-    driver: local
-  rabbitmq_data:
-    driver: local
-  minio_data:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
-  neo4j_data:
-    driver: local
-  neo4j_logs:
-    driver: local
-  neo4j_import:
-    driver: local
-  neo4j_plugins:
     driver: local
   raos_data:
     driver: local

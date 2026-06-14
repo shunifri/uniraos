@@ -2,17 +2,7 @@
  * 知识库集合服务
  * 支持多知识库分类管理
  */
-
-import { getDb, isMySQL } from '../db/database.js';
-import type { MySQLAdapter } from '../db/mysql-adapter.js';
-
-async function getAdapter(): Promise<MySQLAdapter> {
-  if (isMySQL()) {
-    const { getMySQLAdapter } = await import('../db/mysql-adapter.js');
-    return getMySQLAdapter();
-  }
-  throw new Error('kb-collection-service requires MySQL adapter');
-}
+import { getDb } from '../db/database.js';
 
 export interface KBCollection {
   id: string;
@@ -37,14 +27,13 @@ export async function createKBCollection(
   ownerId: string,
   input: KBCollectionInput
 ): Promise<KBCollection> {
-  const adapter = await getAdapter();
+  const db = getDb();
   const id = generateCollectionId();
   const now = Date.now();
 
-  await adapter.execute(
-    'INSERT INTO kb_collections (id, name, description, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, input.name, input.description || '', ownerId, now, now]
-  );
+  db.prepare(
+    'INSERT INTO kb_collections (id, name, description, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, input.name, input.description || '', ownerId, now, now);
 
   return {
     id,
@@ -58,15 +47,12 @@ export async function createKBCollection(
 
 /** 列出用户的所有知识库集合（含共享的） */
 export async function listKBCollections(ownerId: string): Promise<KBCollection[]> {
-  const adapter = await getAdapter();
+  const db = getDb();
 
   // 1. 自己的 collections
-  const ownRows = await adapter.query<
-    { id: string; name: string; description: string; owner_id: string; created_at: number; updated_at: number }
-  >(
-    'SELECT id, name, description, owner_id, created_at, updated_at FROM kb_collections WHERE owner_id = ? ORDER BY created_at DESC',
-    [ownerId]
-  );
+  const ownRows = db.prepare(
+    'SELECT id, name, description, owner_id, created_at, updated_at FROM kb_collections WHERE owner_id = ? ORDER BY created_at DESC'
+  ).all(ownerId) as Array<{ id: string; name: string; description: string; owner_id: string; created_at: number; updated_at: number }>;
 
   // 自动创建默认知识库（用户首次使用时）
   if (ownRows.length === 0) {
@@ -94,16 +80,12 @@ export async function listKBCollections(ownerId: string): Promise<KBCollection[]
 
 /** 获取单个知识库集合 */
 export async function getKBCollection(id: string): Promise<KBCollection | null> {
-  const adapter = await getAdapter();
-  const rows = await adapter.query<
-    { id: string; name: string; description: string; owner_id: string; created_at: number; updated_at: number }
-  >(
-    'SELECT id, name, description, owner_id, created_at, updated_at FROM kb_collections WHERE id = ?',
-    [id]
-  );
+  const db = getDb();
+  const r = db.prepare(
+    'SELECT id, name, description, owner_id, created_at, updated_at FROM kb_collections WHERE id = ?'
+  ).get(id) as { id: string; name: string; description: string; owner_id: string; created_at: number; updated_at: number } | undefined;
 
-  if (rows.length === 0) return null;
-  const r = rows[0];
+  if (!r) return null;
   return {
     id: r.id,
     name: r.name,
@@ -119,7 +101,7 @@ export async function updateKBCollection(
   id: string,
   updates: Partial<KBCollectionInput>
 ): Promise<void> {
-  const adapter = await getAdapter();
+  const db = getDb();
   const fields: string[] = [];
   const params: unknown[] = [];
 
@@ -137,54 +119,48 @@ export async function updateKBCollection(
   params.push(Date.now());
   params.push(id);
 
-  await adapter.execute(
-    `UPDATE kb_collections SET ${fields.join(', ')} WHERE id = ?`,
-    params
-  );
+  db.prepare(
+    `UPDATE kb_collections SET ${fields.join(', ')} WHERE id = ?`
+  ).run(...params);
 }
 
 /** 删除知识库集合 — 文档移回默认知识库 */
 export async function deleteKBCollection(id: string, ownerId: string): Promise<void> {
-  const adapter = await getAdapter();
+  const db = getDb();
 
   // 获取默认知识库 ID
-  const defaultRows = await adapter.query<{ id: string }>(
-    "SELECT id FROM kb_collections WHERE owner_id = ? AND name = '默认知识库'",
-    [ownerId]
-  );
-  const defaultCollectionId = defaultRows[0]?.id;
+  const defaultRow = db.prepare(
+    "SELECT id FROM kb_collections WHERE owner_id = ? AND name = '默认知识库'"
+  ).get(ownerId) as { id: string } | undefined;
+  const defaultCollectionId = defaultRow?.id;
 
   // 将集合内的文档移回默认库
   if (defaultCollectionId) {
-    await adapter.execute(
-      'UPDATE kb_documents SET collection_id = ? WHERE collection_id = ? AND owner_id = ?',
-      [defaultCollectionId, id, ownerId]
-    );
+    db.prepare(
+      'UPDATE kb_documents SET collection_id = ? WHERE collection_id = ? AND owner_id = ?'
+    ).run(defaultCollectionId, id, ownerId);
   } else {
     // 没有默认库，设为 NULL
-    await adapter.execute(
-      'UPDATE kb_documents SET collection_id = NULL WHERE collection_id = ? AND owner_id = ?',
-      [id, ownerId]
-    );
+    db.prepare(
+      'UPDATE kb_documents SET collection_id = NULL WHERE collection_id = ? AND owner_id = ?'
+    ).run(id, ownerId);
   }
 
   // 删除集合
-  await adapter.execute(
-    'DELETE FROM kb_collections WHERE id = ? AND owner_id = ?',
-    [id, ownerId]
-  );
+  db.prepare(
+    'DELETE FROM kb_collections WHERE id = ? AND owner_id = ?'
+  ).run(id, ownerId);
 }
 
 /** 获取或创建默认知识库 */
 export async function getOrCreateDefaultCollection(ownerId: string): Promise<string> {
-  const adapter = await getAdapter();
+  const db = getDb();
 
-  const rows = await adapter.query<{ id: string }>(
-    "SELECT id FROM kb_collections WHERE owner_id = ? AND name = '默认知识库'",
-    [ownerId]
-  );
+  const row = db.prepare(
+    "SELECT id FROM kb_collections WHERE owner_id = ? AND name = '默认知识库'"
+  ).get(ownerId) as { id: string } | undefined;
 
-  if (rows.length > 0) return rows[0].id;
+  if (row) return row.id;
 
   const collection = await createKBCollection(ownerId, {
     name: '默认知识库',

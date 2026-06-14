@@ -3,7 +3,7 @@
  * 支持 SQLite 和 MySQL 双模式
  * 负责保存和加载 evolution_generations / evolution_violations / evolution_approvals
  */
-import { getDb, isMySQL } from "./database.js";
+import { getDb } from "./database.js";
 import type Database from "better-sqlite3";
 
 export interface EvolutionGenerationRecord {
@@ -38,11 +38,6 @@ export interface EvolutionApprovalRecord {
   statusUpdatedAt?: number;
 }
 
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import("./mysql-adapter.js");
-  return getAdapter();
-}
-
 export class EvolutionRepository {
   constructor(private sqliteDb?: Database.Database) {}
 
@@ -52,51 +47,7 @@ export class EvolutionRepository {
 
   /** 初始化表结构 */
   async initTables(): Promise<void> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(`
-        CREATE TABLE IF NOT EXISTS evolution_generations (
-          id VARCHAR(36) PRIMARY KEY,
-          skill_name VARCHAR(200) NOT NULL,
-          generated_by VARCHAR(200) NOT NULL,
-          depth INT NOT NULL,
-          created_at BIGINT NOT NULL,
-          approved TINYINT NOT NULL DEFAULT 0,
-          data TEXT,
-          INDEX idx_ev_gen_skill (skill_name),
-          INDEX idx_ev_gen_created (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await adapter.execute(`
-        CREATE TABLE IF NOT EXISTS evolution_violations (
-          id VARCHAR(36) PRIMARY KEY,
-          constraint_id VARCHAR(200) NOT NULL,
-          description TEXT NOT NULL,
-          blocking TINYINT NOT NULL DEFAULT 1,
-          skill_name VARCHAR(200) NOT NULL,
-          detected_at BIGINT NOT NULL,
-          INDEX idx_ev_viol_constraint (constraint_id),
-          INDEX idx_ev_viol_detected (detected_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await adapter.execute(`
-        CREATE TABLE IF NOT EXISTS evolution_approvals (
-          id VARCHAR(36) PRIMARY KEY,
-          name VARCHAR(200) NOT NULL,
-          description TEXT NOT NULL,
-          code LONGTEXT,
-          capabilities TEXT,
-          generated_by VARCHAR(200) NOT NULL,
-          depth INT NOT NULL,
-          created_at BIGINT NOT NULL,
-          status VARCHAR(20) NOT NULL DEFAULT 'pending',
-          status_updated_at BIGINT,
-          INDEX idx_ev_app_status (status),
-          INDEX idx_ev_app_created (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      return;
-    }
+    
 
     const db = this.sqliteDb ?? getDb();
     db.exec(`
@@ -144,15 +95,7 @@ export class EvolutionRepository {
 
   /** 保存 generation */
   async saveGeneration(record: EvolutionGenerationRecord): Promise<void> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        `INSERT INTO evolution_generations (id, skill_name, generated_by, depth, created_at, approved, data)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [record.id, record.skillName, record.generatedBy, record.depth, record.createdAt, record.approved ? 1 : 0, record.data ?? null]
-      );
-      return;
-    }
+    
     const db = this.sqliteDb ?? getDb();
     db.prepare(
       `INSERT INTO evolution_generations (id, skill_name, generated_by, depth, created_at, approved, data)
@@ -162,15 +105,7 @@ export class EvolutionRepository {
 
   /** 保存 violation */
   async saveViolation(record: EvolutionViolationRecord): Promise<void> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        `INSERT INTO evolution_violations (id, constraint_id, description, blocking, skill_name, detected_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [record.id, record.constraintId, record.description, record.blocking ? 1 : 0, record.skillName, record.detectedAt]
-      );
-      return;
-    }
+    
     const db = this.sqliteDb ?? getDb();
     db.prepare(
       `INSERT INTO evolution_violations (id, constraint_id, description, blocking, skill_name, detected_at)
@@ -181,15 +116,7 @@ export class EvolutionRepository {
   /** 保存 approval */
   async saveApproval(record: EvolutionApprovalRecord): Promise<void> {
     const capabilitiesJson = JSON.stringify(record.capabilities);
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        `INSERT INTO evolution_approvals (id, name, description, code, capabilities, generated_by, depth, created_at, status, status_updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [record.id, record.name, record.description, record.code, capabilitiesJson, record.generatedBy, record.depth, record.createdAt, record.status, record.statusUpdatedAt ?? null]
-      );
-      return;
-    }
+    
     const db = this.sqliteDb ?? getDb();
     db.prepare(
       `INSERT INTO evolution_approvals (id, name, description, code, capabilities, generated_by, depth, created_at, status, status_updated_at)
@@ -199,14 +126,7 @@ export class EvolutionRepository {
 
   /** 更新 approval 状态（带 CAS：仅当状态为 pending 时才更新） */
   async updateApprovalStatus(id: string, status: string, statusUpdatedAt: number): Promise<number> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(
-        `UPDATE evolution_approvals SET status = ?, status_updated_at = ? WHERE id = ? AND status = 'pending'`,
-        [status, statusUpdatedAt, id]
-      );
-      return (result as any)?.affectedRows ?? 0;
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const result = db.prepare(
       `UPDATE evolution_approvals SET status = ?, status_updated_at = ? WHERE id = ? AND status = 'pending'`
@@ -216,19 +136,7 @@ export class EvolutionRepository {
 
   /** 加载所有 generations */
   async loadGenerations(): Promise<EvolutionGenerationRecord[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM evolution_generations");
-      return (rows as any[]).map((r) => ({
-        id: r.id,
-        skillName: r.skill_name,
-        generatedBy: r.generated_by,
-        depth: r.depth,
-        createdAt: r.created_at,
-        approved: r.approved === 1 || r.approved === true,
-        data: r.data,
-      }));
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const rows = db.prepare("SELECT * FROM evolution_generations").all() as any[];
     return rows.map((r) => ({
@@ -244,18 +152,7 @@ export class EvolutionRepository {
 
   /** 加载所有 violations */
   async loadViolations(): Promise<EvolutionViolationRecord[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM evolution_violations");
-      return (rows as any[]).map((r) => ({
-        id: r.id,
-        constraintId: r.constraint_id,
-        description: r.description,
-        blocking: r.blocking === 1 || r.blocking === true,
-        skillName: r.skill_name,
-        detectedAt: r.detected_at,
-      }));
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const rows = db.prepare("SELECT * FROM evolution_violations").all() as any[];
     return rows.map((r) => ({
@@ -270,11 +167,7 @@ export class EvolutionRepository {
 
   /** 加载 pending approvals */
   async loadPendingApprovals(): Promise<EvolutionApprovalRecord[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM evolution_approvals WHERE status = 'pending'");
-      return (rows as any[]).map((r) => this.mapApprovalRow(r));
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const rows = db.prepare("SELECT * FROM evolution_approvals WHERE status = 'pending'").all() as any[];
     return rows.map((r) => this.mapApprovalRow(r));
@@ -282,11 +175,7 @@ export class EvolutionRepository {
 
   /** 获取已审批列表 */
   async getApprovedApprovals(): Promise<EvolutionApprovalRecord[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM evolution_approvals WHERE status = 'approved'");
-      return (rows as any[]).map((r) => this.mapApprovalRow(r));
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const rows = db.prepare("SELECT * FROM evolution_approvals WHERE status = 'approved'").all() as any[];
     return rows.map((r) => this.mapApprovalRow(r));
@@ -294,11 +183,7 @@ export class EvolutionRepository {
 
   /** 按状态获取审批列表 */
   async getApprovalsByStatus(status: string): Promise<EvolutionApprovalRecord[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM evolution_approvals WHERE status = ? ORDER BY created_at DESC", [status]);
-      return (rows as any[]).map((r) => this.mapApprovalRow(r));
-    }
+    
     const db = this.sqliteDb ?? getDb();
     const rows = db.prepare("SELECT * FROM evolution_approvals WHERE status = ? ORDER BY created_at DESC").all(status) as any[];
     return rows.map((r) => this.mapApprovalRow(r));

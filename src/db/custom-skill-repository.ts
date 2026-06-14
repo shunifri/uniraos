@@ -4,7 +4,7 @@
  * 负责保存和加载用户创建的自定义 Skill
  */
 import { randomUUID } from "crypto";
-import { getDb, isMySQL } from "./database.js";
+import { getDb } from "./database.js";
 import type { SkillDefinition } from "../types/index.js";
 import { defineSkill, defineSystemSkill } from "../types/index.js";
 
@@ -37,11 +37,6 @@ export interface CustomSkill {
   updatedAt: number;
 }
 
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import('./mysql-adapter.js');
-  return getAdapter();
-}
-
 export class CustomSkillRepository {
   constructor(private sqliteDb?: any) {}
 
@@ -58,25 +53,7 @@ export class CustomSkillRepository {
     const definitionObj = { ...skill, _handlerCode: handlerCode };
     const definitionJson = JSON.stringify(definitionObj);
 
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        `INSERT INTO custom_skills (
-          id, name, description, version, definition, owner_id, is_system, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          skill.name,
-          skill.description || "",
-          skill.version || "1.0.0",
-          definitionJson,
-          ownerId,
-          skill.isSystem ? 1 : 0,
-          now,
-          now,
-        ]
-      );
-    } else {
+    
       if (!this.sqliteDb) throw new Error("SQLite database not provided");
       this.sqliteDb.prepare(`
         INSERT INTO custom_skills (
@@ -93,7 +70,7 @@ export class CustomSkillRepository {
         now,
         now
       );
-    }
+    
 
     return {
       id,
@@ -110,14 +87,7 @@ export class CustomSkillRepository {
 
   /** 按 ID 查找自定义 Skill */
   async findById(id: string): Promise<CustomSkill | null> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query(
-        "SELECT * FROM custom_skills WHERE id = ?",
-        [id]
-      );
-      return rows.length > 0 ? this.mapRow(rows[0]) : null;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const row = this.sqliteDb.prepare(
@@ -128,14 +98,7 @@ export class CustomSkillRepository {
 
   /** 按名称和所有者查找自定义 Skill */
   async findByName(name: string, ownerId?: string): Promise<CustomSkill | null> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      let sql = "SELECT * FROM custom_skills WHERE name = ?";
-      const params: unknown[] = [name];
-      if (ownerId) { sql += " AND owner_id = ?"; params.push(ownerId); }
-      const rows = await adapter.query(sql, params);
-      return rows.length > 0 ? this.mapRow(rows[0]) : null;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const sql = ownerId
@@ -148,14 +111,7 @@ export class CustomSkillRepository {
 
   /** 获取用户的所有自定义 Skill */
   async findByOwner(ownerId: string): Promise<CustomSkill[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query(
-        "SELECT * FROM custom_skills WHERE owner_id = ?",
-        [ownerId]
-      );
-      return rows.map(this.mapRow);
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const rows = this.sqliteDb.prepare(
@@ -166,11 +122,7 @@ export class CustomSkillRepository {
 
   /** 获取所有自定义 Skill（仅用于系统启动加载） */
   async findAll(): Promise<CustomSkill[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query("SELECT * FROM custom_skills");
-      return rows.map(this.mapRow);
-    }
+    
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const rows = this.sqliteDb.prepare("SELECT * FROM custom_skills").all();
     return rows.map(this.mapRow);
@@ -182,14 +134,7 @@ export class CustomSkillRepository {
       const existing = await this.findById(id);
       if (!existing || existing.ownerId !== ownerId) return false;
     }
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(
-        "DELETE FROM custom_skills WHERE id = ?",
-        [id]
-      );
-      return result.affectedRows > 0;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(
@@ -200,14 +145,7 @@ export class CustomSkillRepository {
 
   /** 按名称删除自定义 Skill（需要 ownerId 校验） */
   async deleteByName(name: string, ownerId: string): Promise<boolean> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(
-        "DELETE FROM custom_skills WHERE name = ? AND owner_id = ?",
-        [name, ownerId]
-      );
-      return result.affectedRows > 0;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(
@@ -218,14 +156,7 @@ export class CustomSkillRepository {
 
   /** 删除用户的所有自定义 Skill */
   async deleteByOwner(ownerId: string): Promise<number> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(
-        "DELETE FROM custom_skills WHERE owner_id = ?",
-        [ownerId]
-      );
-      return result.affectedRows;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(
@@ -317,7 +248,6 @@ export class CustomSkillRepository {
   }
 
   private mapRow(row: any): CustomSkill {
-    // MySQL JSON 字段可能返回对象，确保 definition 为字符串
     let definition = row.definition;
     if (typeof definition !== "string") {
       definition = JSON.stringify(definition);
@@ -337,5 +267,5 @@ export class CustomSkillRepository {
 }
 
 export function getCustomSkillRepository(): CustomSkillRepository {
-  return new CustomSkillRepository(isMySQL() ? undefined : getDb());
+  return new CustomSkillRepository(getDb());
 }

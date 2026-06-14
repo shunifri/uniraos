@@ -6,11 +6,9 @@ import { permissions } from "../permissions/index.js";
 import { requestContext } from "../user/request-context.js";
 import { getKnowledgeBase, getKBPageImageList, getKBPageImagePath } from "../skills/knowledge-skills.js";
 import { createKBCollection, listKBCollections, deleteKBCollection } from "../services/kb-collection-service.js";
-import { getMySQLAdapter } from "../db/mysql-adapter.js";
 import type { RouteDependencies } from "./types.js";
-import type { ParsingUpdate } from "../services/parsing-queue.js";
-import { getParsingQueue } from "../services/parsing-queue.js";
 import { log } from "../utils/logger.js";
+import { getDb } from "../db/database.js";
 import { ingestQueue } from "../utils/ingest-queue.js";
 
 export function createKnowledgeRoutes(deps: RouteDependencies): Router {
@@ -242,13 +240,12 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
       const { collectionId } = req.body;
       const owner = req.user!.id;
 
-      const adapter = getMySQLAdapter();
-      const result = await adapter.execute(
-        "UPDATE kb_documents SET collection_id = ? WHERE doc_id = ? AND owner_id = ?",
-        [collectionId || null, docId, owner]
-      );
+      const db = getDb();
+      const result = db.prepare(
+        "UPDATE kb_documents SET collection_id = ? WHERE doc_id = ? AND owner_id = ?"
+      ).run(collectionId || null, docId, owner);
 
-      if (result.affectedRows === 0) {
+      if (result.changes === 0) {
         res.status(404).json({ success: false, error: "文档不存在或无权限" });
         return;
       }
@@ -295,7 +292,7 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     }
   });
 
-  // SSE: 文档解析进度流
+  // SSE: 文档解析进度流 (Community Edition: Document Mind queue removed; DB fallback only)
   router.get("/knowledge/documents/:docId/stream", pm.requireAuth, pm.requirePermission(permissions.constants.API.KNOWLEDGE_READ), async (req, res) => {
     const owner = req.user!.id;
     const docId = String(req.params.docId);
@@ -305,76 +302,33 @@ export function createKnowledgeRoutes(deps: RouteDependencies): Router {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // 获取解析队列
-    const queue = getParsingQueue();
-
-    if (!queue) {
-      res.write(`data: ${JSON.stringify({ status: 'failed', error: '解析队列未初始化' })}\n\n`);
-      res.end();
-      return;
-    }
-
-    // 获取当前任务状态
-    const task = queue.getTask(docId);
-    if (!task || task.owner !== owner) {
-      // 内存队列中无任务（可能因服务器重启丢失），查询数据库 fallback
-      try {
-        const kb = getKnowledgeBase(owner);
-        const dbStatus = await kb.getParsingStatus(docId);
-        if (dbStatus) {
-          const isDone = dbStatus.parsingStatus === 'success' || dbStatus.parsingStatus === 'failed';
-          // 如果任务仍在 processing 但队列已丢失（服务重启后无法恢复），标记为失败
-          const fallbackStatus = isDone ? dbStatus.parsingStatus : 'failed';
-          const fallbackError = isDone
-            ? (dbStatus.parsingStatus === 'failed' ? '解析失败' : undefined)
-            : '解析任务已丢失（可能因服务重启），请刷新页面查看最新状态';
-          res.write(`data: ${JSON.stringify({
-            docId,
-            status: fallbackStatus,
-            progress: dbStatus.parsingProgress,
-            processedSegments: 0,
-            totalSegments: 0,
-            canPreview: isDone,
-            canSearch: isDone,
-            error: fallbackError,
-          })}\n\n`);
-          res.end();
-          return;
-        }
-      } catch (e: unknown) {
-        console.warn(`[SSE] Failed to fetch parsing status fallback for ${docId}:`, (e as Error).message);
-      }
-      res.write(`data: ${JSON.stringify({ status: 'failed', error: '任务不存在' })}\n\n`);
-      res.end();
-      return;
-    }
-
-    // 订阅进度更新
-    const unsubscribe = queue.subscribe(docId, (update: ParsingUpdate) => {
-      res.write(`data: ${JSON.stringify(update)}\n\n`);
-
-      // 如果任务完成或失败，关闭连接并取消订阅
-      if (update.status === 'success' || update.status === 'failed') {
-        unsubscribe(); // 立即取消订阅防止内存泄漏
+    try {
+      const kb = getKnowledgeBase(owner);
+      const dbStatus = await kb.getParsingStatus(docId);
+      if (dbStatus) {
+        const isDone = dbStatus.parsingStatus === 'success' || dbStatus.parsingStatus === 'failed';
+        const fallbackStatus = isDone ? dbStatus.parsingStatus : 'failed';
+        const fallbackError = isDone
+          ? (dbStatus.parsingStatus === 'failed' ? '解析失败' : undefined)
+          : '解析任务已丢失（可能因服务重启），请刷新页面查看最新状态';
+        res.write(`data: ${JSON.stringify({
+          docId,
+          status: fallbackStatus,
+          progress: dbStatus.parsingProgress,
+          processedSegments: 0,
+          totalSegments: 0,
+          canPreview: isDone,
+          canSearch: isDone,
+          error: fallbackError,
+        })}\n\n`);
         res.end();
+        return;
       }
-    });
-
-    // 客户端断开时取消订阅（防止连接提前关闭导致的内存泄漏）
-    req.on('close', () => {
-      unsubscribe();
-    });
-
-    // 发送初始状态
-    res.write(`data: ${JSON.stringify({
-      docId,
-      status: task.status,
-      progress: task.progress,
-      processedSegments: task.processedSegments,
-      totalSegments: task.totalSegments,
-      canPreview: task.processedSegments > 0,
-      canSearch: task.processedSegments > 0,
-    })}\n\n`);
+    } catch (e: unknown) {
+      console.warn(`[SSE] Failed to fetch parsing status fallback for ${docId}:`, (e as Error).message);
+    }
+    res.write(`data: ${JSON.stringify({ status: 'failed', error: '任务不存在' })}\n\n`);
+    res.end();
   });
 
   // 获取文档内嵌图片

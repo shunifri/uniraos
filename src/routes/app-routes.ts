@@ -3,10 +3,8 @@
  * 用于第三方 widget 嵌入场景：根据 appId 获取应用包含的 skills
  * 以及获取 anonymous 角色的 skill 白名单
  */
-
 import { Router } from "express";
-import { getDb, isMySQL } from "../db/database.js";
-import { getMySQLAdapter } from "../db/mysql-adapter.js";
+import { getDb } from "../db/database.js";
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
 import { permissions } from "../permissions/index.js";
 import type { RouteDependencies } from "./types.js";
@@ -24,15 +22,8 @@ export function createAppRoutes(deps: RouteDependencies): Router {
       const appId = req.params.appId;
       const userId = req.user!.id;
 
-      let row: any;
-      if (isMySQL()) {
-        const adapter = getMySQLAdapter();
-        const rows = await adapter.query("SELECT * FROM app_designs WHERE id = ?", [appId]);
-        row = rows[0];
-      } else {
-        const db = getDb();
-        row = db.prepare("SELECT * FROM app_designs WHERE id = ?").get(appId);
-      }
+      const db = getDb();
+      const row = db.prepare("SELECT * FROM app_designs WHERE id = ?").get(appId) as any;
 
       if (!row) {
         res.status(404).json({ success: false, error: "应用不存在" });
@@ -89,15 +80,8 @@ export function createAppRoutes(deps: RouteDependencies): Router {
       const appId = Array.isArray(req.params.appId) ? req.params.appId[0] : req.params.appId;
       const userId = req.user!.id;
 
-      let row: any;
-      if (isMySQL()) {
-        const adapter = getMySQLAdapter();
-        const rows = await adapter.query("SELECT * FROM app_designs WHERE id = ?", [appId]);
-        row = rows[0];
-      } else {
-        const db = getDb();
-        row = db.prepare("SELECT * FROM app_designs WHERE id = ?").get(appId);
-      }
+      const db = getDb();
+      const row = db.prepare("SELECT * FROM app_designs WHERE id = ?").get(appId) as any;
 
       if (!row) {
         res.status(404).json({ success: false, error: "应用不存在" });
@@ -109,14 +93,13 @@ export function createAppRoutes(deps: RouteDependencies): Router {
         return;
       }
 
-      // 调用 AppDesignerService 执行级联删除
-      const { AppDesignerService } = await import("../skills/app-designer-skill.js");
-      const service = new AppDesignerService();
-      const { deleted, errors } = await service.deleteDesign(appId, userId);
+      // Community Edition: app designer cascade deletion is not available;
+      // we only remove the app_designs record itself.
+      db.prepare("DELETE FROM app_designs WHERE id = ?").run(appId);
 
       res.json({
         success: true,
-        data: { appId, deleted, errors, message: `应用已删除，级联清理 ${deleted.length} 个组件` },
+        data: { appId, message: "应用已删除" },
       });
     } catch (e: unknown) {
       console.error("[app-routes] error:", e);
@@ -131,36 +114,20 @@ export function createAppRoutes(deps: RouteDependencies): Router {
    */
   router.get("/permissions/anonymous-skills", async (req, res) => {
     try {
-      let rows: any[] = [];
-      if (isMySQL()) {
-        const adapter = getMySQLAdapter();
-        rows = await adapter.query(
-          `SELECT p.name
-           FROM permissions p
-           JOIN role_permissions rp ON rp.permission_id = p.id
-           JOIN roles r ON r.id = rp.role_id
-           WHERE r.name = 'anonymous' AND p.name LIKE 'skill:%.execute'`,
-          []
-        );
-      } else {
-        const db = getDb();
-        rows = db.prepare(
-          `SELECT p.name
-           FROM permissions p
-           JOIN role_permissions rp ON rp.permission_id = p.id
-           JOIN roles r ON r.id = rp.role_id
-           WHERE r.name = 'anonymous' AND p.name LIKE 'skill:%.execute'`
-        ).all() as any[];
-      }
+      const db = getDb();
+      const rows = db.prepare(
+        `SELECT p.name
+         FROM permissions p
+         JOIN role_permissions rp ON rp.permission_id = p.id
+         WHERE rp.role_id = 'role_viewer' AND p.action = 'execute'`
+      ).all() as Array<{ name: string }>;
 
-      const skills = rows
-        .map((r) => r.name)
-        .filter((name: string) => name.startsWith("skill:") && name.endsWith(".execute"))
-        .map((name: string) => name.slice(6, -8)); // 去掉前缀 skill: 和后缀 .execute
-
-      res.json({ success: true, data: { skills } });
+      res.json({
+        success: true,
+        data: rows.map((r) => r.name),
+      });
     } catch (e: unknown) {
-      console.error("[app-routes] error:", e);
+      console.error("[app-routes] anonymous-skills error:", e);
       res.status(500).json({ success: false, error: "Internal server error" });
     }
   });

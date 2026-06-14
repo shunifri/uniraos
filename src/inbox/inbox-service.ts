@@ -92,14 +92,7 @@ export class InboxService {
       return item;
     }
 
-    // 先执行回调（workflow/evolution），回调成功后再原子标记为 completed
-    // 这样如果回调失败，inbox item 不会变成 completed 而 workflow 未推进
-    if (item.category === "workflow_task" && item.sourceId) {
-      const callbackOk = await this.callbackWorkflow(item, result);
-      if (!callbackOk) {
-        return item; // 回调失败，保持原状态
-      }
-    }
+    // 先执行回调（evolution），回调成功后再原子标记为 completed
     if (item.category === "evolution_approval" && item.sourceId) {
       const callbackOk = await this.callbackEvolution(item, result);
       if (!callbackOk) {
@@ -344,37 +337,6 @@ ${context ? `该用户近期同类审批历史:\n${context}\n` : ""}
       log("info", "inbox_ai_review_completed", { id: item.id, recommendation: suggestion?.recommendation });
     } catch (err: any) {
       log("error", "inbox_ai_review_failed", { id: item.id, error: err.message });
-    }
-  }
-
-  private async callbackWorkflow(item: InboxItem, result?: any): Promise<boolean> {
-    try {
-      const { getWorkflowEngine } = await import("../workflow/engine.js");
-      const engine = getWorkflowEngine();
-      if (item.sourceId) {
-        const taskId = parseInt(item.sourceId, 10);
-        if (!isNaN(taskId)) {
-          const action = result?.action;
-          if (!action) {
-            log("error", "inbox_callback_workflow_missing_action", { itemId: item.id, taskId });
-            return false;
-          }
-          const formData = result?.formData || {};
-          const comment = result?.comment || "";
-          const userId = result?.userId || item.userId;
-          const completeResult = await engine.completeTask(taskId, { action, formData, comment }, userId);
-          if (!completeResult.success) {
-            log("error", "inbox_callback_workflow_failed", { itemId: item.id, taskId, error: completeResult.error?.message });
-            return false;
-          }
-          log("info", "inbox_callback_workflow_completed", { itemId: item.id, taskId });
-          return true;
-        }
-      }
-      return true;
-    } catch (err: any) {
-      log("error", "inbox_callback_workflow_failed", { itemId: item.id, error: err.message });
-      return false;
     }
   }
 

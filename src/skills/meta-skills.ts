@@ -16,7 +16,7 @@ import { runInSandbox } from "../engine/worker-sandbox.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { permissions } from "../permissions/index.js";
 import { getCustomSkillRepository } from "../db/custom-skill-repository.js";
-import { isMySQL } from "../db/database.js";
+
 import { scanCode } from "../utils/code-security.js";
 
 /** 计算两个字符串的编辑距离（Levenshtein Distance） */
@@ -452,9 +452,7 @@ export function createMetaSkills(
           ? `\n示例:\n${examples.map((e, i) => `  ${i + 1}. 输入: ${JSON.stringify(e.input)} → 输出: ${JSON.stringify(e.output)}`).join("\n")}`
           : "";
 
-        const dbTypeHint = isMySQL()
-          ? "当前系统使用 MySQL 数据库，如需直接 SQL 查询请使用 mysql_query(skillName='mysql_query', params={sql})，所有数据库连接由系统托管，代码中禁止自行构造 connection 对象或引用 host/port/user/password/database 等变量。"
-          : "当前系统使用 SQLite 数据库，如需直接 SQL 查询请使用 db_query(skillName='db_query', params={sql})。";
+        const dbTypeHint = "当前系统使用 SQLite 数据库，如需直接 SQL 查询请使用 db_query(skillName='db_query', params={sql})。";
 
         const prompt = `你是一个 Skill 代码生成器。根据以下描述生成一个 JavaScript 函数体。
 

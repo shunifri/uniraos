@@ -8,7 +8,6 @@
  * 4. 同名/相同计划去重判断
  * 5. 文件锁（简易版）防止并发写冲突
  */
-
 import { existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import { withPlanLock, readPlanFileLocked, writePlanFileLocked } from "./plan-lock.js";
 import { join, resolve, basename } from "path";
@@ -17,7 +16,7 @@ import { PLAN_FILENAME_MAX_LENGTH } from "./plan-constants.js";
 import { findPlanByConversationIdIndexed, invalidateUserIndex } from "./plan-index.js";
 import { getCurrentUserId } from "../user/request-context.js";
 import { log } from "../utils/logger.js";
-import { getDb, isMySQL } from "../db/database.js";
+import { getDb } from "../db/database.js";
 import { parsePlan, serializePlan, createPlanContent, computeProgress } from "./plan-parser.js";
 import type {
   ParsedPlan,
@@ -357,19 +356,12 @@ export async function saveChatMessage(
   if (!conversationId) return;
   try {
     const extraJson = opts?.extra ? JSON.stringify(opts.extra) : null;
-    if (isMySQL()) {
-      const { getMySQLAdapter } = await import("../db/mysql-adapter.js");
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-        [conversationId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson]
-      );
-    } else {
+    
       const db = getDb();
       if (!db) return;
       const insertMsg = db.prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
       insertMsg.run(conversationId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
-    }
+    
   } catch (err) {
     log("warn", "plan_save_chat_msg_failed", { conversationId, error: err instanceof Error ? err.message : String(err) });
   }

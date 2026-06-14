@@ -9,7 +9,6 @@
  */
 
 import { log } from "../utils/logger.js";
-import { getSchedulerService } from "../scheduler/scheduler-service.js";
 import type { ExecutionEngine } from "../engine/execution-engine.js";
 import {
   readPlan,
@@ -345,38 +344,12 @@ async function scheduleNextStep(
   options: PlanExecuteOptions,
   userId?: string
 ): Promise<void> {
-  const scheduler = getSchedulerService();
+  // Community Edition: scheduler removed; async progression is disabled.
   const plan = readPlan(fileName, userId);
-
-  const event = await scheduler.createEvent({
-    userId: userId || "anonymous",
-    type: "recurring",
-    triggerConfig: { mode: "relative", delayMs: options.stepDelayMs || 0 },
-    actionConfig: {
-      type: "skill",
-      payload: {
-        skillName: "plan_execute",
-        fileName,
-        fromStep: nextStepIndex,
-        asyncProgress: options.asyncProgress,
-        stepDelayMs: options.stepDelayMs,
-        maxRetries: options.maxRetries,
-      },
-    },
-    source: "system",
-    sourceId: plan.meta.planId,
-  });
-
-  // 将事件 ID 存入 plan frontmatter，以便后续清理
-  const { updatePlanMeta } = await import("./plan-state.js");
-  const existingIds = plan.meta.scheduledEventIds || [];
-  await updatePlanMeta(fileName, { scheduledEventIds: [...existingIds, event.id] }, userId);
-
-  log("info", "plan_step_scheduled", {
+  log("info", "plan_scheduler_disabled", {
     planId: plan.meta.planId,
     nextStep: nextStepIndex,
     delayMs: options.stepDelayMs || 0,
-    eventId: event.id,
   });
 }
 
@@ -387,16 +360,7 @@ export async function cancelScheduledPlanEvents(fileName: string, userId?: strin
     const eventIds = plan.meta.scheduledEventIds || [];
     if (eventIds.length === 0) return;
 
-    const scheduler = getSchedulerService();
-    for (const eventId of eventIds) {
-      try {
-        await scheduler.cancelEvent(eventId);
-      } catch {
-        // 事件可能已经触发或不存在，忽略
-      }
-    }
-
-    // 清空已存储的事件 ID
+    // Community Edition: scheduler removed; just clear stored event IDs.
     const { updatePlanMeta } = await import("./plan-state.js");
     await updatePlanMeta(fileName, { scheduledEventIds: [] }, userId);
     log("info", "plan_scheduler_cleanup", { planId: plan.meta.planId, cancelledCount: eventIds.length });

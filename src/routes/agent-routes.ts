@@ -5,7 +5,7 @@ import { getStreamBuffer } from "../websocket/stream-buffer.js";
 import { requireAdmin as _requireAdmin } from "../permissions/middleware/auth-middleware.js";
 const requireAdmin = _requireAdmin;
 import { requireAuth, requirePermission } from "../permissions/middleware/auth-middleware.js";
-import { getDb, isMySQL } from "../db/database.js";
+import { getDb } from "../db/database.js";
 import { getRoleAgentConfig, getUserRoles } from "../db/user-repository.js";
 import type { RoleAgentConfig } from "../permissions/types/role.js";
 import { parseDocument } from "../services/doc-parser.js";
@@ -15,12 +15,6 @@ import { log } from "../utils/logger.js";
 import { requestContext } from "../user/request-context.js";
 import { PendingConfirmRepository, type PendingConfirm } from "../db/pending-confirm-repository.js";
 import { listPlans, pausePlan, resumePlan, cancelPlan, deletePlan } from "../plan/plan-state.js";
-
-// MySQL adapter helper
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import('../db/mysql-adapter.js');
-  return getAdapter();
-}
 
 export function createAgentRoutes(deps: RouteDependencies): Router {
   const {
@@ -70,18 +64,11 @@ ${message}`;
       // P1-23 修复: 之前硬性要求 status="applied", draft 状态的设计拿不到 systemPrompt
       // (脚本测试或刚保存还没"应用"时, 角色设定完全失效)
       // 放宽: draft + applied 都支持
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        const rows = await adapter.query(
-          "SELECT name, design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
-          [appId],
-        );
-        row = rows[0];
-      } else {
+      
         row = getDb().prepare(
           "SELECT name, design_json, status FROM app_designs WHERE id = ? AND status IN ('draft', 'applied')",
         ).get(appId);
-      }
+      
       if (!row) {
         console.warn(`[loadAppSystemPrompt] app_design not found or status invalid: appId=${appId}`);
         return undefined;
@@ -259,7 +246,6 @@ ${message}`;
     });
   });
 
-
   router.post("/agent/chat/start", requireAuth, requirePermission("chat.stream"), async (req, res) => {
     const userId = req.user!.id;
     const { message, mode, conversationId, defaultSkill, defaultSkills, appId } = req.body as {
@@ -343,87 +329,18 @@ ${message}`;
         const content = cancelled
           ? "用户取消了操作"
           : `[表单已提交] ${typeof response === "string" ? response : JSON.stringify(response)}`;
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          await adapter.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, created_at) VALUES (?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-            [conversationId, "user", content, "user_confirm", "done"],
-          );
-        } else {
+        
           getDb().prepare(
             "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, created_at) VALUES (?, ?, ?, ?, ?, unixepoch() * 1000)",
           ).run(conversationId, "user", content, "user_confirm", "done");
-        }
+        
       } catch (err) {
         console.warn("[confirm] Save chat message failed:", err);
       }
     }
 
-    // 2. 保存表单实例 + 3. 触发工作流（仅非取消时）
-    if (!cancelled) {
-      try {
-        const appId = (record.confirmData as any)?.appId as string | undefined;
-        const formKey = (record.confirmData as any)?.formKey as string | undefined;
-
-        // 2. 保存表单实例到 form_instances 表
-        if (formKey) {
-          try {
-            const { getFormDefinitionByKey, createFormInstance, submitFormInstance } = await import("../services/form-service.js");
-            const formDef = await getFormDefinitionByKey(formKey);
-            if (formDef?.id) {
-              const instance = await createFormInstance({
-                definitionId: formDef.id,
-                dataJson: responseData,
-                status: "draft",
-                submittedBy: effectiveUserId,
-              });
-              if (instance?.id) {
-                await submitFormInstance(instance.id, effectiveUserId);
-                console.log(`[confirm] Form instance saved: ${instance.id} for form ${formKey}`);
-              }
-            }
-          } catch (err) {
-            console.warn("[confirm] Save form instance failed:", err);
-          }
-        }
-
-        // 3. 自动触发关联的工作流
-        if (appId && formKey) {
-          let designJson: any;
-          if (isMySQL()) {
-            const adapter = await getMySQLAdapter();
-            const rows = await adapter.query("SELECT design_json FROM app_designs WHERE id = ? AND status = ?", [appId, "applied"]);
-            designJson = rows[0]?.design_json;
-          } else {
-            const row = getDb().prepare("SELECT design_json FROM app_designs WHERE id = ? AND status = ?").get(appId, "applied") as any;
-            designJson = row?.design_json;
-          }
-          if (designJson) {
-            const design = typeof designJson === "string" ? JSON.parse(designJson) : designJson;
-            const relationships = design?.relationships ?? [];
-            const submitsTo = relationships.find((r: any) => r.type === "submits_to" && String(r.from || "").replace(/^form:/, "") === formKey);
-            if (submitsTo) {
-              const workflowKey = String(submitsTo.to || "").replace(/^workflow:/, "");
-              if (workflowKey) {
-                const { getWorkflowEngine } = await import("../workflow/engine.js");
-                const engine = getWorkflowEngine();
-                const wfResult = await engine.startInstance(workflowKey, effectiveUserId, responseData, `${formKey}_${confirmId}`);
-                if (wfResult.success) {
-                  console.log(`[confirm] Auto-triggered workflow ${workflowKey} for form ${formKey}`);
-                } else {
-                  console.warn("[confirm] Workflow trigger failed:", wfResult.error);
-                  workflowWarning = `关联工作流启动失败: ${wfResult.error?.message || "未知错误"}`;
-                }
-              }
-            }
-          }
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn("[confirm] Auto-trigger workflow failed:", errMsg);
-        workflowWarning = `关联工作流启动异常: ${errMsg}`;
-      }
-    }
+    // Workflow/Form engines are not included in the Community Edition,
+    // so we no longer persist form instances or auto-trigger workflows here.
 
     return workflowWarning;
   }
@@ -563,19 +480,12 @@ ${message}`;
   router.get("/conversations", requireAuth, async (req, res) => {
     const userId = req.user!.id;
     try {
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        const rows = await adapter.query(
-          "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
-          [userId]
-        );
-        res.json({ success: true, conversations: rows });
-      } else {
+      
         const rows = getDb().prepare(
           "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
         ).all(userId);
         res.json({ success: true, conversations: rows });
-      }
+      
     } catch (error) {
       console.error("[agent-routes] error:", error);
       res.status(500).json({ success: false, error: "Internal server error" });
@@ -587,17 +497,11 @@ ${message}`;
     const id = "conv_" + crypto.randomUUID().slice(0, 12);
     const title = req.body.title || "新对话";
     try {
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        await adapter.execute(
-          "INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000)",
-          [id, userId, title]
-        );
-      } else {
+      
         getDb().prepare(
           "INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)"
         ).run(id, userId, title);
-      }
+      
       res.json({ success: true, id, title });
     } catch (error) {
       console.error("[agent-routes] error:", error);
@@ -613,32 +517,13 @@ ${message}`;
 
     try {
       let conv;
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
-        conv = rows[0];
-      } else {
+      
         conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-      }
+      
       if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
       let rows: any[];
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        if (beforeId > 0) {
-          rows = await adapter.query(
-            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
-            [convId, beforeId, limit]
-          );
-          rows.reverse();
-        } else {
-          rows = await adapter.query(
-            "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-            [convId, limit]
-          );
-          rows.reverse();
-        }
-      } else {
+      
         if (beforeId > 0) {
           rows = getDb().prepare(
             "SELECT id, role, content, skill_name, status, is_error, extra, created_at FROM chat_messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
@@ -650,7 +535,7 @@ ${message}`;
           ).all(convId, limit) as any[];
           rows.reverse();
         }
-      }
+      
 
       const msgs = rows.map((r) => ({
         ...r,
@@ -659,13 +544,9 @@ ${message}`;
 
       let hasMore = false;
       if (rows.length > 0) {
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?", [convId, rows[0].id]);
-          hasMore = countRows[0]?.c > 0;
-        } else {
+        
           hasMore = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ? AND id < ?").get(convId, rows[0].id) as any).c > 0;
-        }
+        
       }
 
       res.json({ success: true, messages: msgs, hasMore });
@@ -682,27 +563,14 @@ ${message}`;
     
     try {
       let conv;
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        const rows = await adapter.query("SELECT id FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
-        conv = rows[0];
-      } else {
+      
         conv = getDb().prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(convId, userId);
-      }
+      
       if (!conv) { res.status(404).json({ success: false, error: "Conversation not found" }); return; }
 
       const msgs: Array<{ role: string; content: string; skillName?: string; status?: string; isError?: boolean; extra?: unknown }> = req.body.messages || [];
       
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        for (const m of msgs) {
-          const extraJson = m.extra ? JSON.stringify(m.extra) : null;
-          await adapter.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-            [convId, m.role, m.content, m.skillName || null, m.status || null, m.isError ? 1 : 0, extraJson]
-          );
-        }
-      } else {
+      
         const insert = getDb().prepare(
           "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)"
         );
@@ -713,21 +581,11 @@ ${message}`;
           }
         });
         insertMany(msgs);
-      }
+      
 
       const firstUser = msgs.find(m => m.role === "user");
       if (firstUser) {
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          const countRows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
-          const msgCount = countRows[0]?.c || 0;
-          if (msgCount <= msgs.length) {
-            const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
-            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
-          } else {
-            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
-          }
-        } else {
+        
           const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
           if (msgCount <= msgs.length) {
             const title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? "..." : "");
@@ -735,7 +593,7 @@ ${message}`;
           } else {
             getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
           }
-        }
+        
       }
 
       res.json({ success: true });
@@ -749,12 +607,9 @@ ${message}`;
     const userId = req.user!.id;
     const convId = req.params.id as string;
     try {
-      if (isMySQL()) {
-        const adapter = await getMySQLAdapter();
-        await adapter.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", [convId, userId]);
-      } else {
+      
         getDb().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(convId, userId);
-      }
+      
       res.json({ success: true });
     } catch (error) {
       console.error("[agent-routes] error:", error);
@@ -844,16 +699,10 @@ ${message}`;
       if (!convId) return;
       try {
         const extraJson = opts?.extra ? JSON.stringify(opts.extra) : null;
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          await adapter.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP() * 1000)",
-            [convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson]
-          );
-        } else {
+        
           const insertMsg = getDb().prepare("INSERT INTO chat_messages (conversation_id, role, content, skill_name, status, is_error, extra) VALUES (?, ?, ?, ?, ?, ?, ?)");
           insertMsg.run(convId, role, content, opts?.skillName || null, opts?.status || null, opts?.isError ? 1 : 0, extraJson);
-        }
+        
       } catch (err) {
         console.warn(`[saveMsg] failed: role=${role}, convId=${convId}, error=${err instanceof Error ? err.message : String(err)}`);
       }
@@ -862,23 +711,14 @@ ${message}`;
     async function updateConvTitle(title: string) {
       if (!convId) return;
       try {
-        if (isMySQL()) {
-          const adapter = await getMySQLAdapter();
-          const rows = await adapter.query("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?", [convId]);
-          const msgCount = rows[0]?.c || 0;
-          if (msgCount <= 2) {
-            await adapter.execute("UPDATE conversations SET title = ?, updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [title, convId]);
-          } else {
-            await adapter.execute("UPDATE conversations SET updated_at = UNIX_TIMESTAMP() * 1000 WHERE id = ?", [convId]);
-          }
-        } else {
+        
           const msgCount = (getDb().prepare("SELECT COUNT(*) as c FROM chat_messages WHERE conversation_id = ?").get(convId) as any).c;
           if (msgCount <= 2) {
             getDb().prepare("UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?").run(title, convId);
           } else {
             getDb().prepare("UPDATE conversations SET updated_at = unixepoch() WHERE id = ?").run(convId);
           }
-        }
+        
       } catch {}
     }
 
@@ -1027,19 +867,12 @@ ${message}`;
       async function loadHistoryFromDb(conversationId: string): Promise<Array<{ role: string; content: string }>> {
         try {
           let rows: Array<{ role: string; content: string }> = [];
-          if (isMySQL()) {
-            const adapter = await getMySQLAdapter();
-            rows = await adapter.query(
-              "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-              [conversationId, DB_HISTORY_LIMIT]
-            );
-            rows.reverse();
-          } else {
+          
             rows = getDb().prepare(
               "SELECT role, content FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?"
             ).all(conversationId, DB_HISTORY_LIMIT) as Array<{ role: string; content: string }>;
             rows.reverse();
-          }
+          
           const validRoles = new Set(["user", "assistant", "tool", "system"]);
           const history = rows
             .filter((r) => validRoles.has(r.role))

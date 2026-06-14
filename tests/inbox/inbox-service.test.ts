@@ -32,9 +32,6 @@ const mockRouter = {
 
 const mockEmit = vi.fn();
 const mockLog = vi.fn();
-const mockWorkflowEngine = {
-  completeTask: vi.fn(),
-};
 const mockEvolutionController = {
   approve: vi.fn(),
   reject: vi.fn(),
@@ -58,10 +55,6 @@ vi.mock("../../src/inbox/inbox-events.js", () => ({
 
 vi.mock("../../src/utils/logger.js", () => ({
   log: (...args: any[]) => mockLog(...args),
-}));
-
-vi.mock("../../src/workflow/engine.js", () => ({
-  getWorkflowEngine: () => mockWorkflowEngine,
 }));
 
 vi.mock("../../src/engine/evolution-controller.js", () => ({
@@ -217,35 +210,19 @@ describe("InboxService", () => {
 
   describe("completeItem", () => {
     it("should update status to completed and emit event", async () => {
-      const item = makeItem({ category: "workflow_task", source: "workflow" });
+      const item = makeItem({ category: "system_alert", source: "system" });
       mockRepo.updateStatusIf.mockResolvedValue(1);
-      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
       mockRepo.findById
         .mockResolvedValueOnce(item)
         .mockResolvedValueOnce({ ...item, status: "completed" });
 
-      const result = await service.completeItem("inbx_test001", { action: "approve" });
+      const result = await service.completeItem("inbx_test001");
 
       expect(mockRepo.updateStatusIf).toHaveBeenCalledWith("inbx_test001", "completed", ["unread", "pending", "read"], expect.any(Number));
       expect(mockEmit).toHaveBeenCalledWith(
         expect.objectContaining({ type: "item_updated", itemId: "inbx_test001", status: "completed" })
       );
       expect(result?.status).toBe("completed");
-    });
-
-    it("should callback workflow for workflow_task items", async () => {
-      const item = makeItem({ category: "workflow_task", source: "workflow", sourceId: "42" });
-      mockRepo.findById.mockResolvedValue(item);
-      mockRepo.updateStatusIf.mockResolvedValue(1);
-      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
-
-      await service.completeItem("inbx_test001", { action: "reject", comment: "不同意" });
-
-      expect(mockWorkflowEngine.completeTask).toHaveBeenCalledWith(
-        42,
-        expect.objectContaining({ action: "reject", comment: "不同意" }),
-        "user_1"
-      );
     });
 
     it("should callback evolution for evolution_approval items", async () => {
@@ -320,17 +297,16 @@ describe("InboxService", () => {
 
   describe("completeBySource", () => {
     it("should complete item by source and sourceId", async () => {
-      const item = makeItem({ id: "inbx_src001", source: "workflow", sourceId: "42" });
+      const item = makeItem({ id: "inbx_src001", source: "system", sourceId: "sys_1" });
       mockRepo.findBySourceAndSourceId.mockResolvedValue(item);
       mockRepo.findById
         .mockResolvedValueOnce(item)
         .mockResolvedValueOnce({ ...item, status: "completed" });
       mockRepo.updateStatusIf.mockResolvedValue(1);
-      mockWorkflowEngine.completeTask.mockResolvedValue({ success: true });
 
-      const result = await service.completeBySource("workflow", "42", { action: "approve" });
+      const result = await service.completeBySource("system", "sys_1");
 
-      expect(mockRepo.findBySourceAndSourceId).toHaveBeenCalledWith("workflow", "42");
+      expect(mockRepo.findBySourceAndSourceId).toHaveBeenCalledWith("system", "sys_1");
       expect(mockRepo.updateStatusIf).toHaveBeenCalledWith("inbx_src001", "completed", ["unread", "pending", "read"], expect.any(Number));
       expect(result?.status).toBe("completed");
     });
@@ -338,7 +314,7 @@ describe("InboxService", () => {
     it("should return null when item not found by source", async () => {
       mockRepo.findBySourceAndSourceId.mockResolvedValue(null);
 
-      const result = await service.completeBySource("workflow", "999");
+      const result = await service.completeBySource("system", "999");
 
       expect(result).toBeNull();
     });

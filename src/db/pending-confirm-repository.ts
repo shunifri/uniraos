@@ -4,7 +4,7 @@
  * 用于 user_confirm 的跨会话/跨重启恢复
  */
 import type Database from "better-sqlite3";
-import { getDb, isMySQL } from "./database.js";
+import { getDb } from "./database.js";
 
 export interface PendingConfirm {
   confirmId: string;
@@ -44,16 +44,11 @@ function rowToPendingConfirm(row: PendingConfirmRow): PendingConfirm {
   };
 }
 
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import("./mysql-adapter.js");
-  return getAdapter();
-}
-
 export class PendingConfirmRepository {
   constructor(private sqliteDb?: Database.Database) {}
 
   static getInstance(): PendingConfirmRepository {
-    return new PendingConfirmRepository(isMySQL() ? undefined : getDb());
+    return new PendingConfirmRepository(getDb());
   }
 
   /** 创建 pending confirm（默认 7 天后过期） */
@@ -62,15 +57,7 @@ export class PendingConfirmRepository {
     const createdAt = Date.now();
     const finalExpiresAt = expiresAt ?? createdAt + 7 * 24 * 60 * 60 * 1000; // 默认 7 天
 
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      await adapter.execute(
-        `INSERT INTO pending_confirms (confirm_id, conversation_id, user_id, confirm_data, status, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [confirmId, conversationId, userId, JSON.stringify(confirmData), status, createdAt, finalExpiresAt]
-      );
-      return;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     this.sqliteDb.prepare(
@@ -81,14 +68,7 @@ export class PendingConfirmRepository {
 
   /** 查找 */
   async findById(confirmId: string): Promise<PendingConfirm | null> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query<PendingConfirmRow>(
-        `SELECT * FROM pending_confirms WHERE confirm_id = ?`,
-        [confirmId]
-      );
-      return rows[0] ? rowToPendingConfirm(rows[0]) : null;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const row = this.sqliteDb.prepare(`SELECT * FROM pending_confirms WHERE confirm_id = ?`).get(confirmId) as PendingConfirmRow | undefined;
@@ -99,14 +79,7 @@ export class PendingConfirmRepository {
   async resolve(confirmId: string, responseData?: Record<string, unknown>): Promise<boolean> {
     const resolvedAt = Date.now();
 
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(
-        `UPDATE pending_confirms SET status = 'resolved', response_data = ?, resolved_at = ? WHERE confirm_id = ? AND status = 'pending'`,
-        [responseData ? JSON.stringify(responseData) : null, resolvedAt, confirmId]
-      );
-      return result.affectedRows > 0;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(
@@ -117,13 +90,7 @@ export class PendingConfirmRepository {
 
   /** 列出所有 pending */
   async listPending(): Promise<PendingConfirm[]> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const rows = await adapter.query<PendingConfirmRow>(
-        `SELECT * FROM pending_confirms WHERE status = 'pending' ORDER BY created_at DESC`
-      );
-      return rows.map(rowToPendingConfirm);
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const rows = this.sqliteDb.prepare(`SELECT * FROM pending_confirms WHERE status = 'pending' ORDER BY created_at DESC`).all() as PendingConfirmRow[];
@@ -132,11 +99,7 @@ export class PendingConfirmRepository {
 
   /** 删除 */
   async delete(confirmId: string): Promise<boolean> {
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      const result = await adapter.execute(`DELETE FROM pending_confirms WHERE confirm_id = ?`, [confirmId]);
-      return result.affectedRows > 0;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(`DELETE FROM pending_confirms WHERE confirm_id = ?`).run(confirmId);
@@ -148,15 +111,7 @@ export class PendingConfirmRepository {
     const now = Date.now();
     const resolvedCutoff = now - 30 * 24 * 60 * 60 * 1000; // 30 天前
 
-    if (isMySQL()) {
-      const adapter = await getMySQLAdapter();
-      // 删除已过期超过 30 天的 resolved 记录，以及任何已 expired 的记录
-      const result = await adapter.execute(
-        `DELETE FROM pending_confirms WHERE (status = 'resolved' AND resolved_at < ?) OR (status = 'expired') OR (expires_at < ? AND status = 'pending')`,
-        [resolvedCutoff, now]
-      );
-      return result.affectedRows ?? 0;
-    }
+    
 
     if (!this.sqliteDb) throw new Error("SQLite database not provided");
     const result = this.sqliteDb.prepare(

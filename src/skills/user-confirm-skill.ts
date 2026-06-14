@@ -160,7 +160,6 @@ export function createUserConfirmSkill() {
             }
           }
         },
-        formKey: { type: "string", description: "应用表单标识，自动从 form_definitions 表加载 schema" },
         schema: { type: "object", description: "表单 Schema（RaosFormSchema 格式，与主站对齐，优先于 fields/formKey）" },
         confirmText: { type: "string", description: "确认按钮文字" },
         cancelText: { type: "string", description: "取消按钮文字" },
@@ -195,36 +194,6 @@ export function createUserConfirmSkill() {
               { type: "cancel", label: params.cancelText ?? "取消" },
             ];
           }
-        } else if (params.formKey) {
-          // 从 form_definitions 表加载应用表单 schema
-          const { getFormDefinitionByKey } = await import("../services/form-service.js");
-          const formDef = await getFormDefinitionByKey(params.formKey as string);
-          if (formDef?.schema_json) {
-            schema = { ...(formDef.schema_json as any) };
-            // 使用 form 定义中的 name/description 作为标题（如果未传入）
-            if (!params.title && formDef.name) {
-              params.title = formDef.name;
-            }
-            if (!params.description && formDef.description) {
-              params.description = formDef.description;
-            }
-            // 合并 actions
-            const existingActions = schema.actions as any[] | undefined;
-            if (existingActions && existingActions.length > 0) {
-              schema.actions = existingActions.map((a: any) => {
-                if (a.type === "submit") return { ...a, label: params.confirmText ?? a.label ?? "确定" };
-                if (a.type === "cancel") return { ...a, label: params.cancelText ?? a.label ?? "取消" };
-                return a;
-              });
-            } else {
-              schema.actions = [
-                { type: "submit", label: params.confirmText ?? "确定", primary: true },
-                { type: "cancel", label: params.cancelText ?? "取消" },
-              ];
-            }
-          } else {
-            return { success: false, error: new Error(`表单定义不存在: ${params.formKey}`) };
-          }
         } else {
           schema = convertFieldsToSchema(
             (params.fields as any[]) ?? [],
@@ -243,7 +212,6 @@ export function createUserConfirmSkill() {
           description: params.description,
           schema,
           fields: params.fields as any[],
-          formKey: params.formKey as string | undefined,
           appId: ctx?.appId as string | undefined,
           confirmText: params.confirmText ?? "确定",
           cancelText: params.cancelText ?? "取消",

@@ -2222,60 +2222,11 @@ export function createKnowledgeSkills(registry: SkillRegistry, sessionManager?: 
           const rawFileHash = createHash("md5").update(readFileSync(fullPath)).digest("hex");
           (params as IngestParamsExtension)._fileHash = rawFileHash;
 
-           // 优先尝试使用 Document Mind ParsingQueue（如果已配置）
+            // Community Edition: Document Mind parsing queue removed; always use local parsing
             const ext = fullPath.substring(fullPath.lastIndexOf(".")).toLowerCase();
             console.log(`[kb_ingest] 开始解析文件: ${path}, 文件类型: ${ext}`);
-            const { getParsingQueue } = await import("../services/parsing-queue.js");
-            const queue = getParsingQueue();
             const binaryExts = [".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".pdf"];
-            const skipQueue = (params as IngestParamsExtension)._skipQueue;
-
-            // 音视频文档必须启用 Document Mind 解析，不允许直接本地解析
-            const mediaExts = [".mp3", ".wav", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4a", ".aac", ".ogg"];
-            if (mediaExts.includes(ext) && !skipQueue) {
-              console.warn(`[kb_ingest] 音视频文档必须启用 Document Mind: ${path}`);
-              return {
-                success: false,
-                error: new Error('音视频文档解析需要启用 Document Mind'),
-                queued: false,
-              };
-            }
-
-            // 如果 _skipQueue = true（降级解析），强制跳过队列直接本地解析
-            // 同时检查 Document Mind 是否已启用配置
             const placeholderDocId = (params as IngestParamsExtension)._placeholderDocId;
-
-            // 优先使用 Document Mind 异步解析队列（包括占位文档模式）
-            if (!skipQueue && queue && binaryExts.includes(ext) && configManager.isDocMindConfigured()) {
-             console.log(`[kb_ingest] 文件 ${path} 符合二进制文件类型，使用 Document Mind 解析队列`);
-             const docNameForQueue = docName || path.split("/").pop() || `doc_${Date.now()}`;
-             const tags = (params.tags as string[]) ?? [];
-             const taskDocId = placeholderDocId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-             console.log(`[kb_ingest] taskDocId: ${taskDocId}`);
-
-             try {
-               const task = await queue.addTask(
-                 taskDocId,
-                 docNameForQueue,
-                 fullPath,
-                 owner,
-                 { tags }
-               );
-               docId = task.docId;
-
-               return {
-                 success: true,
-                 data: {
-                   docId,
-                   queued: true,
-                   message: "文档已加入 Document Mind 解析队列",
-                 },
-               };
-             } catch (queueError: unknown) {
-               console.warn(`[kb_ingest] Document Mind 队列处理失败，降级到本地解析: ${queueError instanceof Error ? queueError.message : String(queueError)}`);
-               // Fall through to local parsing
-             }
-           }
 
             // 如果是占位文档模式且未走队列，直接走本地解析
             if (placeholderDocId) {

@@ -22,20 +22,12 @@ import {
   BookOutlined,
   FolderOutlined,
   SettingOutlined,
-  CrownOutlined,
   SunOutlined,
   MoonOutlined,
   LogoutOutlined,
   UserOutlined,
   GlobalOutlined,
-  ReconciliationOutlined,
-  TeamOutlined,
   ApartmentOutlined,
-  LinkOutlined,
-  AuditOutlined,
-  CheckSquareOutlined,
-  FormOutlined,
-  ForkOutlined,
   AppstoreOutlined,
   LockOutlined,
 } from '@ant-design/icons';
@@ -59,8 +51,6 @@ const Layout: React.FC = () => {
   const themeMode = useThemeStore((s) => s.theme);
   const toggleTheme = useThemeStore((s) => s.toggleTheme);
   const user = useAuthStore((s) => s.user);
-  const isAdmin = useAuthStore((s) => s.isAdmin);
-  const isDeveloper = useAuthStore((s) => s.isDeveloper);
   const logout = useAuthStore((s) => s.logout);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const { token: antToken } = theme.useToken();
@@ -80,14 +70,7 @@ const Layout: React.FC = () => {
     'knowledge-graph': 'menu:graph.read',
     files: 'menu:files.read',
     config: 'menu:config.read',
-    evolution: 'menu:evolution.read',
-    federation: 'menu:federation.read',
-    connections: 'connection.read',
-    approvals: 'workflow:task.read',
-    workflows: 'workflow:definition.read',
-    forms: 'form:definition.read',
     apps: 'menu:apps.read',
-    admin: 'menu:admin.read',
   };
 
   // 所有可能的菜单项（包含权限信息）
@@ -128,45 +111,9 @@ const Layout: React.FC = () => {
       label: t('nav_config'),
     },
     {
-      key: 'evolution',
-      icon: <ReconciliationOutlined />,
-      label: t('nav_evolution') || 'Evolution',
-    },
-    {
-      key: 'federation',
-      icon: <TeamOutlined />,
-      label: t('nav_federation') || 'Federation',
-    },
-    {
-      key: 'connections',
-      icon: <LinkOutlined />,
-      label: '连接配置',
-    },
-    {
-      key: 'approvals',
-      icon: <CheckSquareOutlined />,
-      label: '审批中心',
-    },
-    {
-      key: 'workflows',
-      icon: <ForkOutlined />,
-      label: '流程管理',
-    },
-    {
-      key: 'forms',
-      icon: <FormOutlined />,
-      label: '表单中心',
-    },
-    {
       key: 'apps',
       icon: <AppstoreOutlined />,
       label: '应用中心',
-    },
-
-    {
-      key: 'admin',
-      icon: <CrownOutlined />,
-      label: t('nav_admin'),
     },
   ];
 

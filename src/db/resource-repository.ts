@@ -3,7 +3,7 @@
  * 支持 SQLite 和 MySQL 双模式
  */
 import { randomUUID } from "crypto";
-import { getDb, isMySQL } from "./database.js";
+import { getDb } from "./database.js";
 
 export interface Resource {
   id: string;
@@ -21,24 +21,10 @@ export interface Permission {
   action: string;
 }
 
-async function getMySQLAdapter() {
-  const { getMySQLAdapter: getAdapter } = await import('./mysql-adapter.js');
-  return getAdapter();
-}
-
 // ===== 资源 =====
 
 export async function listResources(type?: string): Promise<Resource[]> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      type 
-        ? "SELECT * FROM resources WHERE type = ? ORDER BY name"
-        : "SELECT * FROM resources ORDER BY type, name",
-      type ? [type] : []
-    );
-    return rows.map(mapResource);
-  }
+  
   
   const db = getDb();
   if (type) {
@@ -48,28 +34,14 @@ export async function listResources(type?: string): Promise<Resource[]> {
 }
 
 export async function getResourceByName(name: string): Promise<Resource | null> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      "SELECT * FROM resources WHERE name = ?",
-      [name]
-    );
-    return rows.length > 0 ? mapResource(rows[0]) : null;
-  }
+  
   
   const row = getDb().prepare("SELECT * FROM resources WHERE name = ?").get(name) as any;
   return row ? mapResource(row) : null;
 }
 
 export async function getResourceById(id: string): Promise<Resource | null> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      "SELECT * FROM resources WHERE id = ?",
-      [id]
-    );
-    return rows.length > 0 ? mapResource(rows[0]) : null;
-  }
+  
   
   const row = getDb().prepare("SELECT * FROM resources WHERE id = ?").get(id) as any;
   return row ? mapResource(row) : null;
@@ -78,16 +50,7 @@ export async function getResourceById(id: string): Promise<Resource | null> {
 export async function createResource(input: { name: string; type: string; description?: string }): Promise<Resource> {
   const id = `res_${randomUUID().slice(0, 12)}`;
   
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    await adapter.execute(
-      `INSERT INTO resources (id, name, type, description) VALUES (?, ?, ?, ?)`,
-      [id, input.name, input.type, input.description ?? ""]
-    );
-    const resource = await getResourceById(id);
-    if (!resource) throw new Error("Failed to create resource");
-    return resource;
-  }
+  
   
   const db = getDb();
   db.prepare(`
@@ -102,13 +65,7 @@ export async function createResource(input: { name: string; type: string; descri
 // ===== 权限 =====
 
 export async function listPermissions(): Promise<Permission[]> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      "SELECT * FROM permissions ORDER BY name"
-    );
-    return rows.map(mapPermission);
-  }
+  
   
   return (getDb().prepare("SELECT * FROM permissions ORDER BY name").all() as any[]).map(mapPermission);
 }
@@ -116,16 +73,7 @@ export async function listPermissions(): Promise<Permission[]> {
 export async function createPermission(input: { name: string; description?: string; resourceId: string; action: string }): Promise<Permission> {
   const id = `perm_${randomUUID().slice(0, 12)}`;
   
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    await adapter.execute(
-      `INSERT INTO permissions (id, name, description, resource_id, action) VALUES (?, ?, ?, ?, ?)`,
-      [id, input.name, input.description ?? "", input.resourceId, input.action]
-    );
-    const permission = await getPermissionById(id);
-    if (!permission) throw new Error("Failed to create permission");
-    return permission;
-  }
+  
   
   const db = getDb();
   db.prepare(`
@@ -137,31 +85,14 @@ export async function createPermission(input: { name: string; description?: stri
 }
 
 async function getPermissionById(id: string): Promise<Permission | null> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      "SELECT * FROM permissions WHERE id = ?",
-      [id]
-    );
-    return rows.length > 0 ? mapPermission(rows[0]) : null;
-  }
+  
   
   const row = getDb().prepare("SELECT * FROM permissions WHERE id = ?").get(id) as any;
   return row ? mapPermission(row) : null;
 }
 
 export async function getPermissionsByRole(roleId: string): Promise<Permission[]> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    const rows = await adapter.query(
-      `SELECT p.* FROM permissions p
-       JOIN role_permissions rp ON rp.permission_id = p.id
-       WHERE rp.role_id = ?
-       ORDER BY p.name`,
-      [roleId]
-    );
-    return rows.map(mapPermission);
-  }
+  
   
   return (getDb().prepare(`
     SELECT p.* FROM permissions p
@@ -172,16 +103,7 @@ export async function getPermissionsByRole(roleId: string): Promise<Permission[]
 }
 
 export async function assignPermissionsToRole(roleId: string, permissionIds: string[]): Promise<void> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    for (const pid of permissionIds) {
-      await adapter.execute(
-        `INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
-        [roleId, pid]
-      );
-    }
-    return;
-  }
+  
   
   const db = getDb();
   const stmt = db.prepare(
@@ -196,16 +118,7 @@ export async function assignPermissionsToRole(roleId: string, permissionIds: str
 }
 
 export async function removePermissionsFromRole(roleId: string, permissionIds: string[]): Promise<void> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    for (const pid of permissionIds) {
-      await adapter.execute(
-        `DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?`,
-        [roleId, pid]
-      );
-    }
-    return;
-  }
+  
   
   const db = getDb();
   const stmt = db.prepare(
@@ -224,56 +137,6 @@ export async function removePermissionsFromRole(roleId: string, permissionIds: s
 /** 从 SkillRegistry 同步 Skill 到资源表（upsert） */
 export async function syncSkillResources(skills: Array<{ name: string; description?: string }>): Promise<{ added: number; total: number }> {
   let added = 0;
-  
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-    
-    for (const skill of skills) {
-      const resourceName = `skill:${skill.name}`;
-      const existing = await getResourceByName(resourceName);
-      
-      const resId = `res_skill_${skill.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-      
-      if (!existing) {
-        // Insert resource
-        await adapter.execute(
-          `INSERT INTO resources (id, name, type, description) VALUES (?, ?, 'skill', ?)
-           ON DUPLICATE KEY UPDATE description = VALUES(description)`,
-          [resId, resourceName, skill.description ?? ""]
-        );
-        
-        // Insert permission
-        const permId = `perm_skill_${skill.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        await adapter.execute(
-          `INSERT INTO permissions (id, name, description, resource_id, action) 
-           VALUES (?, ?, ?, ?, 'execute')
-           ON DUPLICATE KEY UPDATE description = VALUES(description)`,
-          [permId, `skill:${skill.name}.execute`, `执行 Skill: ${skill.name}`, resId]
-        );
-        
-        // Assign to root department
-        await adapter.execute(
-          `INSERT IGNORE INTO department_resources (department_id, resource_id) VALUES ('dept_root', ?)`,
-          [resId]
-        );
-        
-        added++;
-      } else {
-        // Update existing
-        await adapter.execute(
-          `UPDATE resources SET description = ? WHERE id = ?`,
-          [skill.description ?? "", existing.id]
-        );
-      }
-    }
-    
-    const rows = await adapter.query(
-      "SELECT COUNT(*) as c FROM resources WHERE type = 'skill'"
-    );
-    return { added, total: rows[0].c };
-  }
-  
-  // SQLite path
   const db = getDb();
 
   const upsertResource = db.prepare(`
@@ -341,24 +204,7 @@ function mapPermission(row: any): Permission {
 }
 
 export async function replacePermissionsForRole(roleId: string, permissionIds: string[]): Promise<void> {
-  if (isMySQL()) {
-    const adapter = await getMySQLAdapter();
-
-    // 先删除所有现有权限
-    await adapter.execute(
-      "DELETE FROM role_permissions WHERE role_id = ?",
-      [roleId]
-    );
-
-    // 再添加新权限
-    for (const permId of permissionIds) {
-      await adapter.execute(
-        "INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)",
-        [roleId, permId]
-      );
-    }
-    return;
-  }
+  
 
   const db = getDb();
   const transaction = db.transaction(() => {

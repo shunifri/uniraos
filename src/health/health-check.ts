@@ -1,4 +1,3 @@
-import { getMySQLAdapter } from '../db/mysql-adapter.js';
 import { getRedisClient } from '../cache/redis-client.js';
 import { getQdrantClient } from '../vector/qdrant-client.js';
 import { getRabbitMQClient } from '../queue/rabbitmq-client.js';
@@ -11,7 +10,6 @@ export interface HealthStatus {
   timestamp: number;
   uptime: number;
   services: {
-    mysql: ServiceHealth;
     redis: ServiceHealth;
     qdrant: ServiceHealth;
     rabbitmq: ServiceHealth;
@@ -30,7 +28,6 @@ let startTime = Date.now();
 
 export async function healthCheck(): Promise<HealthStatus> {
   const checks = await Promise.allSettled([
-    checkMySQL(),
     checkRedis(),
     checkQdrant(),
     checkRabbitMQ(),
@@ -38,22 +35,21 @@ export async function healthCheck(): Promise<HealthStatus> {
     checkMinIO(),
   ]);
 
-  const mysql = unwrap(checks, 0, 'mysql');
-  const redis = unwrap(checks, 1, 'redis');
-  const qdrant = unwrap(checks, 2, 'qdrant');
-  const rabbitmq = unwrap(checks, 3, 'rabbitmq');
-  const neo4j = unwrap(checks, 4, 'neo4j');
-  const minio = unwrap(checks, 5, 'minio');
+  const redis = unwrap(checks, 0, 'redis');
+  const qdrant = unwrap(checks, 1, 'qdrant');
+  const rabbitmq = unwrap(checks, 2, 'rabbitmq');
+  const neo4j = unwrap(checks, 3, 'neo4j');
+  const minio = unwrap(checks, 4, 'minio');
 
-  const allHealthy = [mysql, redis, qdrant, rabbitmq, neo4j, minio].every(s => s.status === 'up');
-  const anyDown = [mysql, redis, qdrant, rabbitmq, neo4j, minio].some(s => s.status === 'down');
+  const allHealthy = [redis, qdrant, rabbitmq, neo4j, minio].every(s => s.status === 'up');
+  const anyDown = [redis, qdrant, rabbitmq, neo4j, minio].some(s => s.status === 'down');
 
   return {
     status: allHealthy ? 'healthy' : anyDown ? 'degraded' : 'unhealthy',
     version: process.env.npm_package_version || '1.0.0',
     timestamp: Date.now(),
     uptime: Date.now() - startTime,
-    services: { mysql, redis, qdrant, rabbitmq, neo4j, minio },
+    services: { redis, qdrant, rabbitmq, neo4j, minio },
   };
 }
 
@@ -65,12 +61,9 @@ function unwrap(checks: PromiseSettledResult<ServiceHealth>[], index: number, na
 
 export async function readinessCheck(): Promise<{ ready: boolean; reason?: string }> {
   try {
-    const mysql = getMySQLAdapter();
-    await mysql.query('SELECT 1');
-    
     const redis = getRedisClient();
     await redis.healthCheck();
-    
+
     // P1 修复：readiness 也检查 Qdrant 和 RabbitMQ
     try {
       const qdrant = getQdrantClient();
@@ -87,23 +80,12 @@ export async function readinessCheck(): Promise<{ ready: boolean; reason?: strin
     } catch {
       // RabbitMQ optional
     }
-    
+
     return { ready: true };
   } catch (error) {
     const reason = (error as Error).message;
     log('error', 'Readiness check failed', { reason });
     return { ready: false, reason };
-  }
-}
-
-async function checkMySQL(): Promise<ServiceHealth> {
-  const start = Date.now();
-  try {
-    const mysql = getMySQLAdapter();
-    const health = await mysql.healthCheck();
-    return { status: health.primary ? 'up' : 'down', latencyMs: Date.now() - start };
-  } catch (error) {
-    return { status: 'down', latencyMs: Date.now() - start, error: (error as Error).message };
   }
 }
 
