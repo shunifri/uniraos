@@ -37,3 +37,7 @@ tests/fixtures/
 
 # Temp
 *.bak
+
+# Environment variables and backups
+.env
+.env.bak.*

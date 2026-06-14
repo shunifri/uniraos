@@ -968,7 +968,7 @@ function step_deploy() {
     qdrant_ready=false
     rabbit_ready=false
 
-    if docker exec raos-mysql-primary mysqladmin ping -h localhost -u root -p"${MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+    if docker exec raos-mysql-primary mysqladmin ping -h localhost -u root -p"${MYSQL_ROOT_PASSWORD:-}" --silent >/dev/null 2>&1; then
       mysql_ready=true
     fi
 
@@ -982,11 +982,11 @@ function step_deploy() {
       fi
     fi
 
-    if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then
+    if curl -sf http://localhost:6333/healthz >/dev/null 2>&1; then
       qdrant_ready=true
     fi
 
-    if docker exec raos-rabbitmq rabbitmq-diagnostics -q ping 2>/dev/null | grep -q ok; then
+    if docker exec raos-rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1; then
       rabbit_ready=true
     fi
 

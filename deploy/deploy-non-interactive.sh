@@ -151,22 +151,28 @@ TIMEOUT=120
 ELAPSED=0
 while [ $ELAPSED -lt $TIMEOUT ]; do
   MYSQL_READY=false
-  if docker exec raos-mysql-primary mysqladmin ping -h localhost -u root -p"${MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+  if docker exec raos-mysql-primary mysqladmin ping -h localhost -u root -p"${MYSQL_ROOT_PASSWORD:-}" --silent >/dev/null 2>&1; then
     MYSQL_READY=true
   fi
 
   REDIS_READY=false
-  if docker exec raos-redis redis-cli ping 2>/dev/null | grep -q PONG; then
-    REDIS_READY=true
+  if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+    if docker exec raos-redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG; then
+      REDIS_READY=true
+    fi
+  else
+    if docker exec raos-redis redis-cli ping 2>/dev/null | grep -q PONG; then
+      REDIS_READY=true
+    fi
   fi
 
   QDRANT_READY=false
-  if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then
+  if curl -sf http://localhost:6333/healthz >/dev/null 2>&1; then
     QDRANT_READY=true
   fi
 
   RABBIT_READY=false
-  if docker exec raos-rabbitmq rabbitmq-diagnostics -q ping 2>/dev/null | grep -q ok; then
+  if docker exec raos-rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1; then
     RABBIT_READY=true
   fi
 
