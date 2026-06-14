@@ -147,6 +147,12 @@ export default function EmbedChat() {
       if (appId) {
         setAppId(appId);
       }
+
+      // iframe 模式未传 title 时，自动使用应用名称作为标题
+      const params = new URLSearchParams(window.location.search);
+      if (appData && !params.get("title")) {
+        setEmbedTitle(appData.name || "RAOS 智能助手");
+      }
     } catch {
       // 加载 skills 失败，静默处理，让对话正常进行
     }
