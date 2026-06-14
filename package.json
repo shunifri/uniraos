@@ -73,7 +73,7 @@
     "@alicloud/docmind-api20220711": "^1.4.15",
     "@alicloud/tea-util": "^1.4.11",
     "@opentelemetry/auto-instrumentations-node": "^0.56.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.57.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
     "@opentelemetry/sdk-node": "^0.57.0",
     "@qdrant/qdrant-js": "^1.17.0",
     "@types/cookie-parser": "^1.4.10",
