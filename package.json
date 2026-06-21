@@ -58,7 +58,7 @@
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.59.2",
     "@typescript-eslint/parser": "^8.59.2",
-    "eslint": "^10.3.0",
+    "eslint": "^10.5.0",
     "express": "^5.2.1",
     "globals": "^17.6.0",
     "happy-dom": "^20.9.0",
